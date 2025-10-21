@@ -1,0 +1,25 @@
+{
+    "trusted_organisations": [
+        "Google LLC",
+        "Total Uptime Technologies, LLC",
+        "Amazon.com, Inc.",
+        "Microsoft Corporation",
+        "Cloudflare, Inc.",
+        "Apple Inc.",
+        "Meta Platforms, Inc.",
+        "Akamai Technologies, Inc.",
+        "Google Cloud",
+        "AWS CloudFront",
+        "GitHub, Inc."
+    ],
+    "suspicious_organisations": [
+        "Unknown ISP",
+        "Generic Hosting",
+        "Suspected Proxy Service"
+    ],
+    "dangerous_organisations": [
+        "Malware Host",
+        "Known Botnet",
+        "Dark Web Service"
+    ]
+}
