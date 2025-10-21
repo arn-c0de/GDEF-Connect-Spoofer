@@ -1,5 +1,9 @@
 # ConnectSpoofer
 
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Version](https://img.shields.io/badge/Version-1.0-brightgreen.svg)
+
 Ein Echtzeit-Netzwerk-Monitoring- und Visualisierungstool für Windows, das Netzwerkverkehr analysiert und auf einer interaktiven Karte darstellt.
 
 ## Features
@@ -162,3 +166,4 @@ GitHub: [@arn-c0de](https://github.com/arn-c0de)
 ---
 
 ⭐ **Gefällt dir das Projekt? Gib einen Star!** ⭐
+
