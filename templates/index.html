@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="Content-Security-Policy" content="
+            default-src 'self';
+            script-src 'self' https://unpkg.com https://cdn.socket.io 'unsafe-eval' 'unsafe-inline';
+            connect-src 'self' ws://localhost:8000 wss://localhost:8000 https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io http://api.ipify.org;
+            style-src 'self' 'unsafe-inline';
+            img-src 'self' https://unpkg.com;
+            font-src 'self';
+        ">
+        <title>OrbDef-L1nk - Visualization Software</title>
+        <script type="text/javascript" src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+        <script type="text/javascript" src="https://unpkg.com/globe.gl@2.30.0/dist/globe.gl.min.js"></script>
+        <script type="text/javascript" src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+        <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    </head>
+    <body>
+    
+
+        <div id="ownConnectionData">
+            <!-- Projekttitel links -->
+            <div id="projectTitle">OrbDef-L1nk </div>
+            
+            <!-- Verbindungsdaten mittig -->
+            <ul id="connectionDataList">
+                <li><strong>Interface:</strong> {{ backend_config.interface_name }}</li>
+                <li><strong>Adapter:</strong> {{ backend_config.adapter_description }}</li>
+                <li><strong>Anbieter:</strong> {{ my_geo_data.org }}</li>   
+                <li><strong>IP:</strong> {{ my_geo_data.ip }}</li> 
+                <li><strong>Speed:</strong> {{ backend_config.speed }} Mbps</li>
+                <li><strong>Land:</strong> {{ my_geo_data.country }}</li>
+                <li><strong>Stadt:</strong> {{ my_geo_data.city }}</li>
+                <li><strong>Region:</strong> {{ my_geo_data.region }}</li>
+
+            </ul>
+
+            <!-- Verbindungsstatus ganz rechts -->
+            <div id="connectionStatus">Verbinden...</div>
+        </div>
+    <!-- Container für den Globus -->
+    <div id="globeViz"></div>
+
+    <!-- Einstellungs-Button -->
+    <button id="menuButton" title="Einstellungen">⚙️</button>
+
+    <!-- Sidebar für Einstellungen -->
+    <div id="sidebar">
+        <label>
+            <input type="checkbox" id="showBorders" checked>
+            Ländergrenzen anzeigen
+        </label>
+        <label>
+            <input type="checkbox" id="showArcs" checked>
+            Linien anzeigen
+        </label>
+    </div>
+
+    <!-- Container für aktive Verbindungen (unten links) -->
+    <div id="activeConnectionsList">
+
+        <div class="filter-buttons">
+                    <div style="display: flex; align-items: center; padding-top: 5px; border-top: 1px solid #444;">
+                    <button id="toggleActiveConnections" title="Aktive Verbindungen ein-/ausblenden">▼</button>
+                    <span id="connectionCount" style="margin-right: 10px;"></span>
+                      <span id="connectionCount" style="margin-right: 10px;">0 : AKTIVE VERBINDUNGEN(TCP: 0, UDP: 0)</span>
+                    <button id="toggleLocalNetwork" title="Lokales Netzwerk ein-/ausblenden">🌐</button>
+                    <button id="toggleExternalNetwork" title="Externes Netzwerk ein-/ausblenden">🔗</button>
+                    <button id="toggleTCPOnly" title="Nur TCP-Verbindungen anzeigen">📡</button>
+                    <button id="toggleAllUDPPackets" title="Alle UDP-Pakete anzeigen">📶</button>
+                    <button id="centerOwnLocation" title="Eigenen Standort zentrieren">📍</button>
+        </div>
+              
+          <ul id="activeConnections"></ul>
+        </div>
+        <ul id="connectionsList">   
+        </ul>
+    </div>
+
+    <!-- Container für interne Netzwerkpakete (unten rechts) -->
+    <div id="internalNetworkList">
+        <div style="display: flex; align-items: center; padding-top: 5px; border-top: 1px solid #444;">
+            <button id="toggleInternalNetwork" title="Interne Netzwerkpakete ein-/ausblenden">▼</button>
+            <h3 style="margin: 0; flex-grow: 1;">Interne Netzwerkpakete</h3>
+            <span id="internalConnectionCount" style="margin-left: 10px;">0 Verbindungen (TCP: 0, UDP: 0)</span>
+            <label style="margin-left: 10px;">
+                <input type="checkbox" id="searchInternalPackets" checked>
+                Aktiv suchen
+            </label>
+        </div>
+        <ul id="internalPacketsList"></ul>
+    </div>
+
+    <!-- Skripte -->
+    <script type="text/javascript">
+        // Jinja2-Werte als JSON rendern
+        window.coords = JSON.parse('{{ {"lat": lat|default(0, true)|float, "lng": lng|default(0, true)|float} | tojson | safe }}');
+    </script>
+    <script type="text/javascript" src="{{ url_for('static', filename='globe.js') }}"></script>
+    <script type="text/javascript" src="{{ url_for('static', filename='init-globe.js') }}"></script>
+</body>
+</html>

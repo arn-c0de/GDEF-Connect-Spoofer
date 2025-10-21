@@ -1,0 +1,576 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Einheitliches Farbschema */
+:root {
+    --primary-bg: #222;
+    --secondary-bg: #333;
+    --hover-bg: #444;
+    --active-bg: #555;
+    --text-color: white;
+    --highlight-color: rgba(0, 128, 0, 0.8);
+}
+
+/* Versteckt Scrollbalken */
+::-webkit-scrollbar,
+#connectionsList::-webkit-scrollbar,
+#internalNetworkList::-webkit-scrollbar {
+    display: none;
+}
+
+* {
+    scrollbar-width: none;
+}
+
+#connectionsList,
+#internalNetworkList {
+    overflow-y: auto;
+    max-height: 300px;
+}
+
+body {
+    background-color: var(--primary-bg);
+    color: var(--text-color);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#globeViz {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+}
+
+
+
+#projectTitle {
+    margin-right: auto; /* Schiebt den Projekttitel nach links */
+    font-size: 14px; /* Schriftgröße */
+    font-weight: bold;
+    color: white; /* Helle Schriftfarbe für besseren Kontrast */
+    background: linear-gradient(90deg, #1e3c72, #2a5298); /* Blauer Farbverlauf */
+    padding: 5px 10px; /* Innenabstand */
+    border-radius: 5px; /* Abgerundete Ecken */
+    white-space: nowrap; /* Verhindert Zeilenumbrüche */
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5); /* Schatten für 3D-Effekt */
+    text-transform: uppercase; /* Text in Großbuchstaben */
+    letter-spacing: 1px; /* Leicht vergrößerter Buchstabenabstand */
+    transition: transform 0.3s ease, box-shadow 0.3s ease; /* Animation bei Hover */
+}
+
+#projectTitle:hover {
+    transform: scale(1.05); /* Leichtes Vergrößern bei Hover */
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.8); /* Intensiverer Schatten bei Hover */
+}
+#closeDataList {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background: none;
+    border: none;
+    color: white;
+    font-size: 16px;
+    cursor: pointer;
+    z-index: 1100;
+}
+
+#closeDataList:hover {
+    color: red; /* Farbe beim Hover */
+}
+
+#dataList {
+
+    position: absolute;
+    top: 50px !important; /* Erzwingt den Wert */
+    left: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    color: var(--text-color);
+    padding: 10px;
+    border-radius: 5px;
+    max-width: 300px;
+    z-index: 1000;
+    box-shadow: 0 4px 8px rgba(50, 50, 50, 0.5); /* Grauer Randschatten */
+}
+
+#connectionStatus {
+    margin-left: auto; /* Schiebt den Verbindungsstatus nach rechts */
+    background: var(--highlight-color);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+#connectionStatus {
+    background: var(--highlight-color);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+#ownConnectionData {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: auto; /* Automatische Höhe, um Platz zu sparen */
+    background: rgba(0, 0, 0, 0.8);
+    color: var(--text-color);
+    padding: 5px 10px; /* Weniger Innenabstand */
+    z-index: 1000;
+    display: flex;
+    align-items: center; /* Zentriert den Inhalt vertikal */
+    gap: 5px; /* Reduzierter Abstand zwischen den Elementen */
+    box-sizing: border-box;
+    box-shadow: 0 4px 8px 0 rgba(50, 50, 50, 0.5);
+    font-size: 12px; /* Kleinere Schriftgröße */
+}
+
+#ownConnectionData ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    gap: 3px; /* Weniger Abstand zwischen den Boxen */
+    font-size: 10px; /* Kleinere Schriftgröße */
+    line-height: 1.1; /* Engere Zeilenhöhe */
+}
+
+#ownConnectionData li {
+    margin: 0;
+    padding: 3px 5px; /* Weniger Innenabstand für die Box */
+    font-size: 10px; /* Kleinere Schriftgröße */
+    line-height: 1.1; /* Engere Zeilenhöhe */
+    background: rgba(40, 40, 40, 0.9); /* Etwas dunklerer Hintergrund für die Box */
+    border: 1px solid rgba(255, 255, 255, 0.1); /* Dünnere Umrandung */
+    border-radius: 3px; /* Kleinere abgerundete Ecken */
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); /* Leichterer Schatten */
+    white-space: nowrap; /* Verhindert Zeilenumbruch */
+    overflow: hidden; /* Versteckt überfließenden Text */
+    text-overflow: ellipsis; /* Fügt "..." bei überlangem Text hinzu */
+}
+
+#ownConnectionData li strong {
+    font-weight: bold;
+    color: #bbb; /* Etwas hellere Farbe für die Labels */
+    margin-right: 3px; /* Weniger Abstand zwischen Label und Wert */
+}
+
+#connectionStatus {
+    margin-left: auto; /* Schiebt den Verbindungsstatus nach rechts */
+    background: var(--highlight-color);
+    padding: 2px 6px; /* Weniger Innenabstand */
+    border-radius: 3px;
+    font-size: 11px; /* Kleinere Schriftgröße */
+    white-space: nowrap;
+}
+
+#menuButton {
+    position: fixed;
+    top: 10%;
+    right: 0;
+    transform: translateY(-50%);
+    width: 50px;
+    height: 50px;
+    background: linear-gradient(90deg, #1e3c72, #2a5298); /* Blauer Farbverlauf */
+    color: white;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    z-index: 2000; /* Höherer z-index, damit der Button immer im Vordergrund bleibt */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+#menuButton:hover {
+    background: linear-gradient(90deg, #2a5298, #1e3c72);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+}
+
+#sidebar {
+    position: fixed;
+    top: 40px; /* Höhe von #ownConnectionData, damit die Sidebar bündig darunter beginnt */
+    right: -100%; /* Verschiebt die Sidebar vollständig außerhalb des Bildschirms */
+    width: 300px;
+    height: calc(100% - 40px); /* Reduziert die Höhe der Sidebar, um Platz für #ownConnectionData zu lassen */
+    background-color: rgba(0, 0, 0, 0.9);
+    color: white;
+    transition: right 0.3s ease; /* Animation für das Öffnen und Schließen */
+    z-index: 1000; /* Niedrigerer z-index als der Menübutton */
+    padding: 20px;
+    box-shadow: -2px 0 5px rgba(0, 0, 0, 0.5); /* Schatten für den Rand */
+    border-left: 3px solid rgba(255, 255, 255, 0.2); /* Heller Rand auf der linken Seite */
+    display: flex; /* Flexbox-Layout aktivieren */
+    flex-direction: column; /* Inhalt vertikal anordnen */
+    gap: 15px; /* Abstand zwischen den Elementen */
+    overflow-y: auto; /* Ermöglicht Scrollen, falls der Inhalt zu groß ist */
+}
+
+#sidebar.open {
+    right: 0; /* Verschiebt die Sidebar ins Sichtfeld */
+}
+
+#dataList {
+    position: absolute;
+    top: 20px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    color: var(--text-color);
+    padding: 10px;
+    border-radius: 5px;
+    max-width: 300px;
+    z-index: 1000;
+}
+
+#dataList ul {
+    list-style: none;
+    padding: 0;
+}
+
+#dataList button {
+    margin-left: 10px;
+    background: var(--secondary-bg);
+    color: var(--text-color);
+    border: none;
+    padding: 10px 15px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+#dataList button:hover {
+    background: var(--hover-bg);
+}
+
+#dataList button:active {
+    background: var(--active-bg);
+    transform: scale(0.95);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+}
+
+#listContainer {
+    position: relative; /* Container für die Listen */
+    display: flex; /* Flexbox-Layout aktivieren */
+    gap: 10px; /* Abstand zwischen den Listen */
+    z-index: 1000;
+}
+
+/* Gemeinsame Eigenschaften für beide Listen */
+#activeConnectionsList,
+#internalNetworkList {
+    position: absolute;
+    bottom: 0; /* Startet am unteren Rand */
+    background: rgba(0, 0, 0, 0.8);
+    color: var(--text-color);
+    padding: 10px;
+    border-radius: 5px 5px 0 0; /* Nur die oberen Ecken sind abgerundet */
+    width: calc(40% - 20px); /* Standardbreite */
+    max-height: 50vh; /* Immer 50% der Bildschirmhöhe */
+    z-index: 1000;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column-reverse; /* Kehrt die Reihenfolge um: Filterknöpfe unten */
+    box-shadow: 0 0 8px rgba(50, 50, 50, 0.5); /* Schatten in alle Richtungen */
+    overflow-y: auto; /* Ermöglicht Scrollen */
+}
+/* Stil für die Einträge in der Liste der aktiven Verbindungen */
+#connectionsList li {
+    font-size: 12px; /* Kleinere Schriftgröße */
+    padding: 3px; /* Weniger Innenabstand */
+    border-bottom: 1px solid var(--hover-bg);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: transform 0.2s ease, background-color 0.2s ease;
+}
+/* Schriftgröße für die Paketinformationen in den Einträgen */
+#connectionsList li small {
+    font-size: 10px; /* Kleinere Schriftgröße */
+    color: #aaa; /* Optional: Hellere Farbe für weniger Hervorhebung */
+}
+
+/* Stil für die Statuskreise */
+.status-circle {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-left: 10px;
+    flex-shrink: 0;
+    background-color: white; /* Standardfarbe für keine Bedrohung */
+    border: 1px solid #ccc; /* Optionaler Rand für bessere Sichtbarkeit */
+}
+
+/* Spezifische Eigenschaften für #activeConnectionsList */
+#activeConnectionsList {
+    left: 0; /* Direkt am linken Bildschirmrand */
+    border-radius: 0 5px 0 0; /* Nur die obere rechte Ecke ist abgerundet */
+    width: calc(50% - 20px); /* Standardbreite */
+    max-height: calc(100vh - 100px); /* Maximal bis unter die connectionDataList */
+    overflow-y: auto;
+    font-size: 12px; /* Kleinere Schriftgröße */
+    padding: 5px;
+}
+
+/* Spezifische Eigenschaften für #internalNetworkList */
+#internalNetworkList {
+    right: 0; /* Direkt am rechten Bildschirmrand */
+    border-radius: 5px 0 0 0; /* Nur die obere linke Ecke ist abgerundet */
+    max-height: calc(100vh - 100px); /* Maximal bis unter die connectionDataList */
+    overflow-y: auto;
+    font-size: 12px; /* Kleinere Schriftgröße */
+    padding: 5px;
+}
+
+#internalNetworkList.collapsed {
+    max-width: 150px; /* Reduzierte Breite im eingeklappten Zustand */
+    max-height: 40px; /* Reduzierte Höhe */
+    overflow: hidden; /* Versteckt den Inhalt, der nicht sichtbar sein soll */
+}
+
+#sidebar.open ~ #activeConnectionsList,
+#sidebar.open ~ #internalNetworkList {
+    right: calc(300px + 20px); /* Verschiebt die Listen bündig mit der Sidebar */
+}
+
+#activeConnectionsList.collapsed,
+#internalNetworkList.collapsed {
+    max-height: 40px;
+    overflow: hidden;
+}
+
+#activeConnectionsList ul,
+#internalNetworkList ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    flex-grow: 1; /* Nimmt den verfügbaren Platz ein */
+    overflow-y: auto; /* Ermöglicht Scrollen */
+    display: flex;
+    flex-direction: column-reverse; /* Elemente werden von unten nach oben angezeigt */
+    transition: max-height 0.3s ease;
+    -webkit-overflow-scrolling: touch;
+}
+
+#activeConnectionsList li,
+#internalNetworkList li {
+    padding: 10px;
+    border-bottom: 1px solid var(--hover-bg);
+    cursor: pointer;
+    font-size: 14px;
+    transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+#activeConnectionsList li:hover,
+#internalNetworkList li:hover {
+    background-color: var(--hover-bg);
+    transform: translateY(-5px); /* Leichtes Verschieben nach oben beim Hover */
+}
+
+#toggleInternalNetwork,
+#toggleActiveConnections {
+    background: var(--secondary-bg);
+    color: var(--text-color);
+    border: none;
+    border-radius: 5px;
+    padding: 10px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    margin-right: 10px;
+    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+#toggleInternalNetwork:hover,
+#toggleActiveConnections:hover {
+    background: var(--hover-bg);
+}
+
+#toggleInternalNetwork:active,
+#toggleActiveConnections:active {
+    background: var(--active-bg);
+    transform: scale(0.95);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+}
+
+#activeConnectionsList .filter-buttons,
+#internalNetworkList .filter-buttons {
+    margin-top: auto; /* Schiebt die Filterknöpfe nach unten */
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end; /* Knöpfe rechtsbündig */
+}
+
+.status-circle {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-left: 10px;
+    flex-shrink: 0;
+}
+
+.toggle-button {
+    background: #555; /* Grauer Hintergrund */
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 5px 5px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.toggle-button:hover {
+    background: #666; /* Etwas helleres Grau beim Hover */
+}
+
+.toggle-button:active {
+    background: #444; /* Dunkleres Grau beim Klicken */
+    transform: scale(0.95);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+}
+
+@media (max-width: 768px) {
+    #ownConnectionData {
+        flex-direction: column;
+        height: auto;
+        padding: 10px;
+    }
+
+    #ownConnectionData ul {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    #activeConnectionsList,
+    #internalNetworkList {
+        position: static; /* Entfernt absolute Positionierung bei kleinen Bildschirmen */
+        max-width: 100%; /* Listen nehmen die volle Breite ein */
+        margin: 0;
+        border-radius: 0;
+    }
+
+    #activeConnectionsList {
+        bottom: calc(70% + 50px);
+    }
+
+    #internalNetworkList {
+        bottom: 50px;
+    }
+
+    #listContainer {
+        flex-wrap: nowrap; /* Verhindert, dass die Listen untereinander verschoben werden */
+    }
+
+    #activeConnectionsList,
+    #internalNetworkList {
+        max-height: 50vh; /* 50% der Bildschirmhöhe */
+        overflow-y: auto; /* Scrollbar aktivieren, falls der Inhalt zu groß ist */
+    }
+}
+
+@media (hover: none) and (pointer: coarse) {
+    #toggleInternalNetwork,
+    #toggleActiveConnections,
+    #menuButton,
+    #dataList button {
+        background: var(--hover-bg);
+    }
+
+    #activeConnectionsList li:hover,
+    #internalNetworkList li:hover {
+        background-color: inherit;
+    }
+}
+
+@media (max-width: 768px) {
+    /* Oberer Bereich (10% Höhe) */
+    #ownConnectionData {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 10%; /* 10% der Bildschirmhöhe */
+        display: flex;
+        flex-direction: row; /* Elemente nebeneinander */
+        align-items: center;
+        justify-content: space-between;
+        padding: 5px 10px;
+        background: rgba(0, 0, 0, 0.8);
+        z-index: 1000;
+    }
+
+    /* Aktive Verbindungen unten links */
+    #activeConnectionsList {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 50%; /* Nimmt die linke Hälfte ein */
+        height: 40%; /* 40% der Bildschirmhöhe */
+        border-radius: 10px 0 0 0; /* Nur die obere linke Ecke abgerundet */
+        overflow-y: auto;
+        background: rgba(0, 0, 0, 0.8);
+        z-index: 1000;
+    }
+
+    /* Interne Verbindungen unten rechts */
+    #internalNetworkList {
+        position: fixed;
+        bottom: 0;
+        right: 0;
+        width: 50%; /* Nimmt die rechte Hälfte ein */
+        height: 40%; /* 40% der Bildschirmhöhe */
+        border-radius: 0 10px 0 0; /* Nur die obere rechte Ecke abgerundet */
+        overflow-y: auto;
+        background: rgba(0, 0, 0, 0.8);
+        z-index: 1000;
+    }
+
+    /* Listencontainer für Flexibilität */
+    #listContainer {
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        gap: 0;
+    }
+
+    /* Allgemeine Anpassungen für kleinere Bildschirme */
+    #activeConnectionsList ul,
+    #internalNetworkList ul {
+        padding: 5px;
+        margin: 0;
+        list-style: none;
+    }
+
+    #activeConnectionsList li,
+    #internalNetworkList li {
+        font-size: 10px; /* Kleinere Schriftgröße */
+        padding: 3px; /* Weniger Innenabstand */
+        border-bottom: 1px solid var(--hover-bg);
+        
+    }
+    /* Reduzierte Schriftgröße für die Leiste */
+    #ownConnectionData {
+    white-space: nowrap; /* Verhindert Zeilenumbrüche */
+    overflow: hidden; /* Versteckt überfließenden Inhalt */
+    text-overflow: ellipsis; /* Fügt "..." bei überlangem Text hinzu */
+    display: flex;
+    align-items: center; /* Zentriert den Inhalt vertikal */
+    justify-content: space-between; /* Elemente gleichmäßig verteilen */
+    height: 10%; /* 10% der Bildschirmhöhe */
+    padding: 5px 10px; /* Innenabstand */
+}
+}
