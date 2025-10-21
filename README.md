@@ -86,17 +86,31 @@ Die Konfiguration wird in `database/backend_conf.json` gespeichert:
 
 ```
 ConnectSpoofer/
-├── app.py                    # Hauptanwendung
-├── start.bat                 # Launcher mit Auto-Setup
-├── select_interface.py       # Interface-Auswahl
-├── requirements.txt          # Python-Dependencies
-├── database/                 # SQLite-Datenbanken & Configs
-│   ├── backend_conf.json
-│   ├── geo_data.db
-│   └── trusted_organisations.json
-├── templates/                # HTML-Templates
-│   └── index.html
-└── venv/                     # Virtuelles Environment (auto-erstellt)
+├── app.py                           # Hauptanwendung (Flask-Server, Packet Sniffing)
+├── start.bat                        # Launcher mit Auto-Setup
+├── select_interface.py              # Interface-Auswahl Tool
+├── debug_interfaces.py              # Interface Debug-Tool
+├── requirements.txt                 # Python-Dependencies
+├── backend_conf.example.json        # Beispiel Backend-Konfiguration
+├── database.zip                     # Database Archiv
+├── README.md                        # Dokumentation
+├── database/                        # SQLite-Datenbanken & Configs
+│   ├── backend_conf.json           # Backend-Konfiguration (Interface)
+│   ├── geo_data.db                 # SQLite Geo-Datenbank
+│   ├── geo_data.db-shm             # SQLite Shared Memory
+│   ├── geo_data.db-wal             # SQLite Write-Ahead Log
+│   ├── trusted_organisations.json  # Liste vertrauenswürdiger Organisationen
+│   └── datasets/                   # GeoIP Datenbanken
+│       ├── 1.mmdb                  # MaxMind GeoIP2 Database
+│       ├── 2.mmdb                  # MaxMind GeoIP2 Database
+│       └── 3.mmdb                  # MaxMind GeoIP2 Database
+├── static/                          # Frontend Static Assets
+│   ├── globe.js                    # 3D-Globe Visualisierung
+│   ├── init-globe.js               # Globe Initialisierung
+│   └── styles.css                  # CSS Styling
+├── templates/                       # Flask HTML-Templates
+│   └── index.html                  # Haupt-Dashboard
+└── venv/                           # Virtuelles Environment (auto-erstellt)
 ```
 
 ## Sicherheitshinweise
