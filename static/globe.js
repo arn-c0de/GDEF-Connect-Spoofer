@@ -848,7 +848,7 @@ async function initializeGlobe(myIpCoords) {
             updateInternalNetworkList();
             console.log("IP point and arc updated:", data.ip);
         } catch (e) {
-            console.error('Fehler beim Parsen der Socket.IO-Nachricht:', e);
+            console.error('Error parsing Socket.IO message:', e);
         }
     });
 
@@ -871,7 +871,7 @@ async function initializeGlobe(myIpCoords) {
     });
 
     socket.on('settings_update', (data) => {
-        console.log('Einstellungen aktualisiert:', data);
+        console.log('Settings updated:', data);
         if (data.is_internal_search_active !== undefined) {
             isInternalSearchActive = data.is_internal_search_active;
             if (searchInternalPacketsCheckbox) {
@@ -913,7 +913,7 @@ async function initializeGlobe(myIpCoords) {
             updateConnectionsList();
             updateInternalNetworkList();
             updateGlobeData();
-            console.log(`Pakete für IP ${ip} wurden zurückgesetzt (synchronisiert).`);
+            console.log(`Packets for IP ${ip} have been reset (synced).`);
         }
     });
 
@@ -944,14 +944,14 @@ async function initializeGlobe(myIpCoords) {
                 if (arcs[ip]) {
                     arcs[ip].expired = true;
                 }
-                console.log("IP-Punkt und Arc entfernt:", ip);
+                console.log("IP point and arc removed:", ip);
             }
         }
         let hasChanges = false;
         for (const ip in internalPackets) {
             if (!pinnedIPs[ip] && now - internalPackets[ip].last_seen > INTERNAL_EXPIRATION_SECONDS) {
                 internalPackets[ip].expired = true;
-                console.log("Internes Netzwerkpaket entfernt:", ip);
+                console.log("Internal network packet removed:", ip);
                 hasChanges = true;
             }
         }
@@ -967,7 +967,7 @@ function scheduleExpiration(ip, expirationTime) {
     setTimeout(() => {
         if (!pinnedIPs[ip] && internalPackets[ip]) {
             internalPackets[ip].expired = true;
-            console.log("Internes Netzwerkpaket entfernt:", ip);
+            console.log("Internal network packet removed:", ip);
             updateInternalNetworkList();
         }
     }, expirationTime * 1000);
