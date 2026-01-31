@@ -3,6 +3,13 @@
 ![Python](https://img.shields.io/badge/Python-3-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Version](https://img.shields.io/badge/Version-1.0-brightgreen.svg)
+[![Build Status](https://github.com/arn-c0de/ConnectSpoofer/actions/workflows/ci.yml/badge.svg)](https://github.com/arn-c0de/ConnectSpoofer/actions)
+[![CodeQL](https://github.com/arn-c0de/ConnectSpoofer/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/arn-c0de/ConnectSpoofer/actions)
+[![Codecov](https://img.shields.io/codecov/c/github/arn-c0de/ConnectSpoofer.svg)](https://codecov.io/gh/arn-c0de/ConnectSpoofer)
+[![Release](https://img.shields.io/github/v/release/arn-c0de/ConnectSpoofer)](https://github.com/arn-c0de/ConnectSpoofer/releases)
+[![Downloads](https://img.shields.io/github/downloads/arn-c0de/ConnectSpoofer/total)](https://github.com/arn-c0de/ConnectSpoofer/releases)
+[![Issues](https://img.shields.io/github/issues/arn-c0de/ConnectSpoofer.svg)](https://github.com/arn-c0de/ConnectSpoofer/issues)
+[![Last Commit](https://img.shields.io/github/last-commit/arn-c0de/ConnectSpoofer)](https://github.com/arn-c0de/ConnectSpoofer/commits)
 
 ![ConnectSpoofer Screenshot](images/Connectspoofer-link.png)
 

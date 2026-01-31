@@ -949,7 +949,7 @@ def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, prot
         "os": os,
         "threat_level": threat_level
     }
-    logger.debug(f"Sende IP-Daten an {len(active_clients)} Clients: {ip}, OS: {os}, Threat Level: {threat_level}")
+    logger.debug(f"Sending IP data to {len(active_clients)} clients: {ip}, OS: {os}, Threat Level: {threat_level}")
     socketio.emit('ip_update', message)
 
 def send_all_ips_to_client(sid=None):
@@ -1246,7 +1246,7 @@ if __name__ == "__main__":
         try:
             ip = data.get('ip')
             if not ip:
-                logger.error("IP-Adresse fehlt in reset_packet_count")
+                logger.error("IP address missing in reset_packet_count")
                 return
             with locked(db_lock):
                 with sqlite3.connect(DATABASE_PATH) as conn:
@@ -1254,12 +1254,12 @@ if __name__ == "__main__":
                     c.execute("UPDATE ip_data SET incoming_count = 0, outgoing_count = 0 WHERE ip = ?", (ip,))
                     c.execute("UPDATE pinned_ips SET packet_count = 0 WHERE ip = ?", (ip,))
                     conn.commit()
-            logger.info(f"Paketanzahl für IP {ip} zurückgesetzt")
+            logger.info(f"Packet count for IP {ip} reset")
             socketio.emit('packet_count_reset', {'ip': ip})
         except Exception as e:
-            logger.error(f"Fehler beim Zurücksetzen der Paketanzahl für IP {ip}: {e}")
+            logger.error(f"Error resetting packet count for IP {ip}: {e}")
 
     try:
         socketio.run(app, host='0.0.0.0', port=8000, debug=False)
     except KeyboardInterrupt:
-        logger.info("Programm beendet")
+        logger.info("Program terminated")
