@@ -1,19 +1,19 @@
 @echo off
 title OrbDef-L1nk - Visualization Software (Admin CMD)
 
-:: Sicherstellen, dass das Skript mit Administratorrechten ausgeführt wird
+:: Ensure the script runs with administrator privileges
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [INFO] Administratorrechte erforderlich. Versuche Neustart mit erhöhten Rechten...
+    echo [INFO] Administrator privileges required. Attempting restart with elevated rights...
     powershell -Command "Start-Process '%~f0' -Verb runAs"
     exit /b
 )
 
-:: Standardausgabe verbessern
+:: Improve default output
 chcp 65001 >nul
 cls
 
-:: Pfad definieren (aktueller Ordner der BAT-Datei)
+:: Define path (current folder of the BAT file)
 set "PROJECT_PATH=%~dp0"
 set "PROJECT_PATH=%PROJECT_PATH:~0,-1%"
 set "PYTHON_SCRIPT=app.py"
@@ -21,75 +21,75 @@ set "VENV_PATH=%PROJECT_PATH%\venv"
 set "VENV_PYTHON=%VENV_PATH%\Scripts\python.exe"
 set "VENV_ACTIVATE=%VENV_PATH%\Scripts\activate.bat"
 
-:: In Projektverzeichnis wechseln
+:: Change to project directory
 cd /d "%PROJECT_PATH%" || (
-    echo [FEHLER] Projektverzeichnis nicht gefunden: %PROJECT_PATH%
+    echo [ERROR] Project directory not found: %PROJECT_PATH%
     pause
     exit /b
 )
 
-:: Prüfen ob venv existiert
+:: Check if venv exists
 if not exist "%VENV_PATH%" (
-    echo [INFO] Virtuelles Environment nicht gefunden. Erstelle venv...
+    echo [INFO] Virtual environment not found. Creating venv...
     python -m venv venv || (
-        echo [FEHLER] Konnte venv nicht erstellen. Stelle sicher, dass Python installiert ist.
+        echo [ERROR] Could not create venv. Make sure Python is installed.
         pause
         exit /b
     )
-    echo [INFO] venv erfolgreich erstellt.
+    echo [INFO] venv created successfully.
     echo.
-    echo [INFO] Installiere Abhängigkeiten aus requirements.txt...
+    echo [INFO] Installing dependencies from requirements.txt...
     "%VENV_PYTHON%" -m pip install --upgrade pip
     "%VENV_PYTHON%" -m pip install -r requirements.txt || (
-        echo [FEHLER] Konnte Abhängigkeiten nicht installieren.
+        echo [ERROR] Could not install dependencies.
         pause
         exit /b
     )
-    echo [INFO] Abhängigkeiten erfolgreich installiert.
+    echo [INFO] Dependencies installed successfully.
     echo.
 ) else (
-    echo [INFO] Virtuelles Environment gefunden: %VENV_PATH%
+    echo [INFO] Virtual environment found: %VENV_PATH%
     echo.
 )
 
-:: Anzeigen von Datum und Zeit
+:: Display date and time
 echo ============================================
-echo   ConnectSpoofer Launcher (Admin Modus)
-echo   Datum: %DATE%   Uhrzeit: %TIME%
+echo   ConnectSpoofer Launcher (Admin Mode)
+echo   Date: %DATE%   Time: %TIME%
 echo ============================================
 echo.
 
-:: Python-Version anzeigen (venv)
-echo [INFO] Verwende Python-Version aus venv:
+:: Show Python version (venv)
+echo [INFO] Using Python version from venv:
 "%VENV_PYTHON%" --version 2>nul || (
-    echo [FEHLER] venv Python wurde nicht gefunden.
+    echo [ERROR] venv Python not found.
     pause
     exit /b
 )
 echo.
 
-:: Netzwerk-Interface Konfiguration prüfen/auswählen
+:: Check/select network interface configuration
 set "BACKEND_CONF=%PROJECT_PATH%\database\backend_conf.json"
 if not exist "%BACKEND_CONF%" (
-    echo [INFO] Keine Netzwerk-Interface-Konfiguration gefunden.
-    echo [INFO] Starte Interface-Auswahl...
+    echo [INFO] No network interface configuration found.
+    echo [INFO] Starting interface selection...
     echo.
     "%VENV_PYTHON%" select_interface.py
     if %ERRORLEVEL% neq 0 (
-        echo [FEHLER] Interface-Auswahl fehlgeschlagen.
+        echo [ERROR] Interface selection failed.
         pause
         exit /b
     )
     echo.
 ) else (
-    echo [INFO] Netzwerk-Interface-Konfiguration gefunden.
-    echo [INFO] Drücke 'I' um Interface neu auszuwählen, oder eine beliebige andere Taste zum Fortfahren...
+    echo [INFO] Network interface configuration found.
+    echo [INFO] Press 'I' to re-select interface, or any other key to continue...
     choice /c IN /n /t 5 /d N >nul
     if %ERRORLEVEL%==1 (
         echo.
         "%VENV_PYTHON%" select_interface.py
         if %ERRORLEVEL% neq 0 (
-            echo [FEHLER] Interface-Auswahl fehlgeschlagen.
+            echo [ERROR] Interface selection failed.
             pause
             exit /b
         )
@@ -97,24 +97,24 @@ if not exist "%BACKEND_CONF%" (
     )
 )
 
-:: Skriptausführung starten
-echo [INFO] Starte %PYTHON_SCRIPT% mit venv Python...
+:: Start script execution
+echo [INFO] Starting %PYTHON_SCRIPT% with venv Python...
 echo --------------------------------------------
 "%VENV_PYTHON%" "%PYTHON_SCRIPT%"
 set "EXIT_CODE=%ERRORLEVEL%"
 echo --------------------------------------------
 
-:: Ergebnis anzeigen
+:: Show result
 if %EXIT_CODE%==0 (
-    echo [INFO] app.py wurde erfolgreich beendet.
+    echo [INFO] app.py exited successfully.
 ) else (
-    echo [WARNUNG] app.py wurde mit Fehlercode %EXIT_CODE% beendet.
+    echo [WARNING] app.py exited with error code %EXIT_CODE%.
 )
 
-:: CMD geöffnet lassen für weitere Befehle
+:: Keep CMD open for further commands
 echo.
-echo [INFO] Du befindest dich nun in:
+echo [INFO] You are now in:
 cd
-echo [INFO] CMD bleibt geöffnet. Du kannst weitere Befehle eingeben.
+echo [INFO] CMD remains open. You can enter further commands.
 echo.
 cmd /k

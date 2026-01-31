@@ -18,84 +18,84 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     </head>
     <body>
-    
+
 
         <div id="ownConnectionData">
-            <!-- Projekttitel links -->
+            <!-- Project title left -->
             <div id="projectTitle">OrbDef-L1nk </div>
-            
-            <!-- Verbindungsdaten mittig -->
+
+            <!-- Connection data center -->
             <ul id="connectionDataList">
                 <li><strong>Interface:</strong> {{ backend_config.interface_name }}</li>
                 <li><strong>Adapter:</strong> {{ backend_config.adapter_description }}</li>
-                <li><strong>Anbieter:</strong> {{ my_geo_data.org }}</li>   
-                <li><strong>IP:</strong> {{ my_geo_data.ip }}</li> 
+                <li><strong>Provider:</strong> {{ my_geo_data.org }}</li>
+                <li><strong>IP:</strong> {{ my_geo_data.ip }}</li>
                 <li><strong>Speed:</strong> {{ backend_config.speed }} Mbps</li>
-                <li><strong>Land:</strong> {{ my_geo_data.country }}</li>
-                <li><strong>Stadt:</strong> {{ my_geo_data.city }}</li>
+                <li><strong>Country:</strong> {{ my_geo_data.country }}</li>
+                <li><strong>City:</strong> {{ my_geo_data.city }}</li>
                 <li><strong>Region:</strong> {{ my_geo_data.region }}</li>
 
             </ul>
 
-            <!-- Verbindungsstatus ganz rechts -->
-            <div id="connectionStatus">Verbinden...</div>
+            <!-- Connection status far right -->
+            <div id="connectionStatus">Connecting...</div>
         </div>
-    <!-- Container für den Globus -->
+    <!-- Globe container -->
     <div id="globeViz"></div>
 
-    <!-- Einstellungs-Button -->
-    <button id="menuButton" title="Einstellungen">⚙️</button>
+    <!-- Settings button -->
+    <button id="menuButton" title="Settings">⚙️</button>
 
-    <!-- Sidebar für Einstellungen -->
+    <!-- Settings sidebar -->
     <div id="sidebar">
         <label>
             <input type="checkbox" id="showBorders" checked>
-            Ländergrenzen anzeigen
+            Show country borders
         </label>
         <label>
             <input type="checkbox" id="showArcs" checked>
-            Linien anzeigen
+            Show lines
         </label>
     </div>
 
-    <!-- Container für aktive Verbindungen (unten links) -->
+    <!-- Active connections container (bottom left) -->
     <div id="activeConnectionsList">
 
         <div class="filter-buttons">
                     <div style="display: flex; align-items: center; padding-top: 5px; border-top: 1px solid #444;">
-                    <button id="toggleActiveConnections" title="Aktive Verbindungen ein-/ausblenden">▼</button>
+                    <button id="toggleActiveConnections" title="Show/hide active connections">▼</button>
                     <span id="connectionCount" style="margin-right: 10px;"></span>
-                      <span id="connectionCount" style="margin-right: 10px;">0 : AKTIVE VERBINDUNGEN(TCP: 0, UDP: 0)</span>
-                    <button id="toggleLocalNetwork" title="Lokales Netzwerk ein-/ausblenden">🌐</button>
-                    <button id="toggleExternalNetwork" title="Externes Netzwerk ein-/ausblenden">🔗</button>
-                    <button id="toggleTCPOnly" title="Nur TCP-Verbindungen anzeigen">📡</button>
-                    <button id="toggleAllUDPPackets" title="Alle UDP-Pakete anzeigen">📶</button>
-                    <button id="centerOwnLocation" title="Eigenen Standort zentrieren">📍</button>
+                      <span id="connectionCount" style="margin-right: 10px;">0 : ACTIVE CONNECTIONS (TCP: 0, UDP: 0)</span>
+                    <button id="toggleLocalNetwork" title="Show/hide local network">🌐</button>
+                    <button id="toggleExternalNetwork" title="Show/hide external network">🔗</button>
+                    <button id="toggleTCPOnly" title="Show TCP connections only">📡</button>
+                    <button id="toggleAllUDPPackets" title="Show all UDP packets">📶</button>
+                    <button id="centerOwnLocation" title="Center on own location">📍</button>
         </div>
-              
+
           <ul id="activeConnections"></ul>
         </div>
-        <ul id="connectionsList">   
+        <ul id="connectionsList">
         </ul>
     </div>
 
-    <!-- Container für interne Netzwerkpakete (unten rechts) -->
+    <!-- Internal network packets container (bottom right) -->
     <div id="internalNetworkList">
         <div style="display: flex; align-items: center; padding-top: 5px; border-top: 1px solid #444;">
-            <button id="toggleInternalNetwork" title="Interne Netzwerkpakete ein-/ausblenden">▼</button>
-            <h3 style="margin: 0; flex-grow: 1;">Interne Netzwerkpakete</h3>
-            <span id="internalConnectionCount" style="margin-left: 10px;">0 Verbindungen (TCP: 0, UDP: 0)</span>
+            <button id="toggleInternalNetwork" title="Show/hide internal network packets">▼</button>
+            <h3 style="margin: 0; flex-grow: 1;">Internal Network Packets</h3>
+            <span id="internalConnectionCount" style="margin-left: 10px;">0 connections (TCP: 0, UDP: 0)</span>
             <label style="margin-left: 10px;">
                 <input type="checkbox" id="searchInternalPackets" checked>
-                Aktiv suchen
+                Active search
             </label>
         </div>
         <ul id="internalPacketsList"></ul>
     </div>
 
-    <!-- Skripte -->
+    <!-- Scripts -->
     <script type="text/javascript">
-        // Jinja2-Werte als JSON rendern
+        // Render Jinja2 values as JSON
         window.coords = JSON.parse('{{ {"lat": lat|default(0, true)|float, "lng": lng|default(0, true)|float} | tojson | safe }}');
     </script>
     <script type="text/javascript" src="{{ url_for('static', filename='globe.js') }}"></script>

@@ -20,3 +20,7 @@ __pycache__/
 database/geo_data.db
 database/geo_data.db-shm
 database/geo_data.db-wal
+
+# Generated config files (created on first start)
+database/backend_conf.json
+database/trusted_organisations.json

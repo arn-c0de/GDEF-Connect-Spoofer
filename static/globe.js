@@ -18,7 +18,7 @@ async function loadTrustedOrgs() {
         console.log("Suspicious organisations loaded:", suspiciousOrgs);
         console.log("Dangerous organisations loaded:", dangerousOrgs);
     } catch (error) {
-        console.error("Fehler beim Laden von trusted_organisations:", error);
+        console.error("Error loading trusted_organisations:", error);
         trustedOrgs = [
             'Google LLC',
             'Amazon.com, Inc.',
@@ -60,12 +60,12 @@ function isLocalNetwork(ip, org) {
 
 function getCircleColor(threat_level, org) {
     if (org && trustedOrgs.includes(org)) {
-        return 'green'; // Grün, wenn die Organisation in "trusted_organisations" gefunden wurde
+        return 'green';
     }
-    if (threat_level === "Hoch") return 'red'; // Rot für hohe Bedrohung
-    if (threat_level === "Mittel") return 'orange'; // Orange für mittlere Bedrohung
-    if (threat_level === "Niedrig") return 'yellow'; // Gelb für niedrige Bedrohung
-    return 'white'; // Weiß, wenn keine Bedrohung und Organisation nicht gefunden
+    if (threat_level === "High") return 'red';
+    if (threat_level === "Medium") return 'orange';
+    if (threat_level === "Low") return 'yellow';
+    return 'white';
 }
 
 async function initializeGlobe(myIpCoords) {
@@ -86,7 +86,7 @@ async function initializeGlobe(myIpCoords) {
         const port = location.port ? `:${location.port}` : '';
         socketUrl = `${window.location.protocol}//${document.domain}${port}`;
     } catch (e) {
-        console.error('Fehler beim Bestimmen der Socket-URL:', e);
+        console.error('Error determining socket URL:', e);
         socketUrl = `${window.location.protocol}//${document.domain}:8000`;
     }
     const socket = io.connect(socketUrl, {
@@ -96,8 +96,8 @@ async function initializeGlobe(myIpCoords) {
     });
 
     if (!isValidCoord(myIpCoords.lat, myIpCoords.lng)) {
-        console.error("Ungültige eigene Koordinaten:", myIpCoords);
-        document.body.innerHTML = '<h1>Fehler beim Laden des Globus</h1><p>Bitte überprüfe die Konsole (F12) für Details.</p>';
+        console.error("Invalid own coordinates:", myIpCoords);
+        document.body.innerHTML = '<h1>Error loading globe</h1><p>Please check the console (F12) for details.</p>';
         return;
     }
 
@@ -135,14 +135,14 @@ async function initializeGlobe(myIpCoords) {
     activeConnectionsList.style.zIndex = '1000';
     activeConnectionsList.innerHTML = `
         <div style="display: flex; align-items: center;">
-            <button id="toggleActiveConnections" title="Aktive Verbindungen ein-/ausblenden">▲</button>
+            <button id="toggleActiveConnections" title="Show/hide active connections">▲</button>
             <span id="connectionCount" style="margin-right: 10px;"></span>
-            <h3 style="margin: 0; flex-grow: 1;">Aktive Verbindungen</h3>
-            <button id="toggleLocalNetwork" title="Lokales Netzwerk ein-/ausblenden">🌐</button>
-            <button id="toggleExternalNetwork" title="Externes Netzwerk ein-/ausblenden">🔗</button>
-            <button id="toggleTCPOnly" title="Nur TCP-Verbindungen anzeigen">📡</button>
-            <button id="toggleAllUDPPackets" title="Alle UDP-Pakete anzeigen">📶</button>
-            <button id="centerOwnLocation" title="Eigenen Standort zentrieren">📍</button>
+            <h3 style="margin: 0; flex-grow: 1;">Active Connections</h3>
+            <button id="toggleLocalNetwork" title="Show/hide local network">🌐</button>
+            <button id="toggleExternalNetwork" title="Show/hide external network">🔗</button>
+            <button id="toggleTCPOnly" title="Show TCP connections only">📡</button>
+            <button id="toggleAllUDPPackets" title="Show all UDP packets">📶</button>
+            <button id="centerOwnLocation" title="Center on own location">📍</button>
         </div>
         <ul id="connectionsList"></ul>
     `;
@@ -152,7 +152,7 @@ async function initializeGlobe(myIpCoords) {
         .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
         .pointOfView({ lat: myIpCoords.lat, lng: myIpCoords.lng, altitude: 2.5 }, 0)
         .pointRadius(getMarkerRadius)
-        .pointColor(point => point.ip === 'Deine IP' ? '#FFFF00' : getCircleColor(point.threat_level))
+        .pointColor(point => point.ip === 'Your IP' ? '#FFFF00' : getCircleColor(point.threat_level))
         .pointLabel(point => `
             <div>
                 ${point.ip || 'N/A'} - ${point.org || 'N/A'}
@@ -162,7 +162,7 @@ async function initializeGlobe(myIpCoords) {
         .pointLng('lng')
         .pointAltitude(0.1)
         .arcColor(arc => {
-            if (arc.city === 'Ungeolokalisierbar' || arc.country === 'Ungeolokalisierbar' || arc.org === 'Nicht verfügbar') {
+            if (arc.city === 'Unknown' || arc.country === 'Unknown' || arc.org === 'Not available') {
                 return '#FFFFFF';
             }
             const point = points[arc.ip];
@@ -184,22 +184,22 @@ async function initializeGlobe(myIpCoords) {
                     <button id="closeDataList" style="margin-left: 10px; background: #555; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">✖</button>
                 </div>
                 <ul>
-                    <li><strong>Hostname:</strong> ${point.hostname || 'Unbekannt'}</li>
-                    <li><strong>Betriebssystem:</strong> ${point.os || 'Unbekannt'}</li>
-                    <li><strong>MAC-Adresse:</strong> ${point.mac || 'N/A'}</li>
-                    <li><strong>Hersteller:</strong> ${point.vendor || 'Unbekannt'}</li>
-                    <li><strong>Stadt:</strong> ${point.city || 'N/A'}</li>
-                    <li><strong>Land:</strong> ${point.country || 'N/A'}</li>
+                    <li><strong>Hostname:</strong> ${point.hostname || 'Unknown'}</li>
+                    <li><strong>OS:</strong> ${point.os || 'Unknown'}</li>
+                    <li><strong>MAC Address:</strong> ${point.mac || 'N/A'}</li>
+                    <li><strong>Vendor:</strong> ${point.vendor || 'Unknown'}</li>
+                    <li><strong>City:</strong> ${point.city || 'N/A'}</li>
+                    <li><strong>Country:</strong> ${point.country || 'N/A'}</li>
                     <li><strong>Region:</strong> ${point.region || 'N/A'}</li>
-                    <li><strong>Organisation:</strong> ${point.org || 'N/A'}</li>
-                    <li><strong>Protokoll:</strong> ${point.protocol || 'N/A'}</li>
-                    <li><strong>Quelle Port:</strong> ${point.src_port || 'N/A'}</li>
-                    <li><strong>Ziel Port:</strong> ${point.dst_port || 'N/A'}</li>
-                    <li><strong>Letztes Signal:</strong> ${point.last_seen ? new Date(point.last_seen * 1000).toLocaleString() : 'N/A'}</li>
-                    <li><strong>Eingehende Pakete:</strong> ${point.incoming_count || 0}</li>
-                    <li><strong>Ausgehende Pakete:</strong> ${point.outgoing_count || 0}</li>
-                    <li><strong>Gesamte Pakete:</strong> ${point.packet_count || 0}</li>
-                    <li><strong>Threat Level:</strong> ${point.threat_level || 'Keine Bedrohung'}</li>
+                    <li><strong>Organization:</strong> ${point.org || 'N/A'}</li>
+                    <li><strong>Protocol:</strong> ${point.protocol || 'N/A'}</li>
+                    <li><strong>Source Port:</strong> ${point.src_port || 'N/A'}</li>
+                    <li><strong>Dest Port:</strong> ${point.dst_port || 'N/A'}</li>
+                    <li><strong>Last Seen:</strong> ${point.last_seen ? new Date(point.last_seen * 1000).toLocaleString() : 'N/A'}</li>
+                    <li><strong>Incoming Packets:</strong> ${point.incoming_count || 0}</li>
+                    <li><strong>Outgoing Packets:</strong> ${point.outgoing_count || 0}</li>
+                    <li><strong>Total Packets:</strong> ${point.packet_count || 0}</li>
+                    <li><strong>Threat Level:</strong> ${point.threat_level || 'No Threat'}</li>
                 </ul>
             `;
             document.getElementById('closeDataList').addEventListener('click', () => {
@@ -217,13 +217,13 @@ async function initializeGlobe(myIpCoords) {
         })
         (document.getElementById('globeViz'));
 
-    console.log("Globe.GL initialisiert");
+    console.log("Globe.GL initialized");
 
     const ownIpPoint = {
         lat: myIpCoords.lat,
         lng: myIpCoords.lng,
-        label: 'Deine IP',
-        ip: 'Deine IP',
+        label: 'Your IP',
+        ip: 'Your IP',
         color: '#FFFF00',
         city: 'N/A',
         country: 'N/A',
@@ -235,7 +235,7 @@ async function initializeGlobe(myIpCoords) {
     };
 
     globe.pointsData([ownIpPoint]);
-    console.log("Eigener IP-Punkt hinzugefügt:", myIpCoords);
+    console.log("Own IP point added:", myIpCoords);
 
     const showArcsCheckbox = document.getElementById('showArcs');
     let showArcs = JSON.parse(localStorage.getItem('showArcs')) ?? true;
@@ -246,10 +246,10 @@ async function initializeGlobe(myIpCoords) {
             showArcs = showArcsCheckbox.checked;
             localStorage.setItem('showArcs', JSON.stringify(showArcs));
             updateGlobeData();
-            console.log(`Linien ${showArcs ? 'eingeblendet' : 'ausgeblendet'}`);
+            console.log(`Lines ${showArcs ? 'shown' : 'hidden'}`);
         });
     } else {
-        console.warn('Checkbox mit ID "showArcs" nicht gefunden.');
+        console.warn('Checkbox with ID "showArcs" not found.');
     }
 
     let countriesData = [];
@@ -259,7 +259,7 @@ async function initializeGlobe(myIpCoords) {
     if (showBordersCheckbox) {
         showBordersCheckbox.checked = showBorders;
     } else {
-        console.warn('Checkbox mit ID "showBorders" nicht gefunden.');
+        console.warn('Checkbox with ID "showBorders" not found.');
     }
 
     fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson')
@@ -272,9 +272,9 @@ async function initializeGlobe(myIpCoords) {
                     .polygonSideColor(() => 'rgba(255, 255, 255, 0.1)')
                     .polygonStrokeColor(() => '#006100');
             }
-            console.log("Ländergrenzen geladen");
+            console.log("Country borders loaded");
         })
-        .catch(err => console.error('Fehler beim Laden der Ländergrenzen:', err));
+        .catch(err => console.error('Error loading country borders:', err));
 
     const menuButton = document.getElementById('menuButton');
     const sidebar = document.getElementById('sidebar');
@@ -283,10 +283,10 @@ async function initializeGlobe(myIpCoords) {
         const isSidebarOpen = sidebar.classList.contains('open');
         if (isSidebarOpen) {
             sidebar.classList.remove('open');
-            console.log('Sidepanel geschlossen');
+            console.log('Sidebar closed');
         } else {
             sidebar.classList.add('open');
-            console.log('Sidepanel geöffnet');
+            console.log('Sidebar opened');
         }
     });
 
@@ -299,7 +299,7 @@ async function initializeGlobe(myIpCoords) {
             } else {
                 globe.polygonsData([]);
             }
-            console.log(`Ländergrenzen ${showBorders ? 'eingeblendet' : 'ausgeblendet'}`);
+            console.log(`Country borders ${showBorders ? 'shown' : 'hidden'}`);
         });
     }
 
@@ -311,9 +311,9 @@ async function initializeGlobe(myIpCoords) {
             lng: myIpCoords.lng,
             altitude: 2.5
         }, 1000);
-        console.log(`Zentriere auf eigenen Standort: lat: ${myIpCoords.lat}, lng: ${myIpCoords.lng}`);
+        console.log(`Centering on own location: lat: ${myIpCoords.lat}, lng: ${myIpCoords.lng}`);
     });
-    console.log(`Zentriere auf eigenen Standort: lat: ${myIpCoords.lat}, lng: ${myIpCoords.lng}`);
+    console.log(`Centering on own location: lat: ${myIpCoords.lat}, lng: ${myIpCoords.lng}`);
 
     let isInternalNetworkCollapsed = localStorage.getItem('isInternalNetworkCollapsed') !== null ? JSON.parse(localStorage.getItem('isInternalNetworkCollapsed')) : false;
     const internalNetworkList = document.getElementById('internalNetworkList');
@@ -334,19 +334,19 @@ async function initializeGlobe(myIpCoords) {
 
     const toggleInternalNetworkButton = document.getElementById('toggleInternalNetwork');
     toggleInternalNetworkButton.textContent = isInternalNetworkCollapsed ? '▼' : '▲';
-    toggleInternalNetworkButton.title = isInternalNetworkCollapsed ? 'Interne Netzwerkpakete einblenden' : 'Interne Netzwerkpakete ausblenden';
+    toggleInternalNetworkButton.title = isInternalNetworkCollapsed ? 'Show internal network packets' : 'Hide internal network packets';
     toggleInternalNetworkButton.addEventListener('click', () => {
         isInternalNetworkCollapsed = !isInternalNetworkCollapsed;
         localStorage.setItem('isInternalNetworkCollapsed', JSON.stringify(isInternalNetworkCollapsed));
         toggleInternalNetworkButton.textContent = isInternalNetworkCollapsed ? '▼' : '▲';
-        toggleInternalNetworkButton.title = isInternalNetworkCollapsed ? 'Interne Netzwerkpakete einblenden' : 'Interne Netzwerkpakete ausblenden';
+        toggleInternalNetworkButton.title = isInternalNetworkCollapsed ? 'Show internal network packets' : 'Hide internal network packets';
         internalNetworkList.classList.toggle('collapsed', isInternalNetworkCollapsed);
-        console.log(`Interne Netzwerkpakete ${isInternalNetworkCollapsed ? 'ausgeblendet' : 'eingeblendet'}`);
+        console.log(`Internal network packets ${isInternalNetworkCollapsed ? 'hidden' : 'shown'}`);
     });
 
     const toggleActiveConnectionsButton = document.getElementById('toggleActiveConnections');
     toggleActiveConnectionsButton.textContent = isActiveConnectionsCollapsed ? '▼' : '▲';
-    toggleActiveConnectionsButton.title = isActiveConnectionsCollapsed ? 'Aktive Verbindungen einblenden' : 'Aktive Verbindungen ausblenden';
+    toggleActiveConnectionsButton.title = isActiveConnectionsCollapsed ? 'Show active connections' : 'Hide active connections';
     toggleActiveConnectionsButton.replaceWith(toggleActiveConnectionsButton.cloneNode(true));
     const newToggleActiveConnectionsButton = document.getElementById('toggleActiveConnections');
 
@@ -354,7 +354,7 @@ async function initializeGlobe(myIpCoords) {
         isActiveConnectionsCollapsed = !isActiveConnectionsCollapsed;
         localStorage.setItem('isActiveConnectionsCollapsed', JSON.stringify(isActiveConnectionsCollapsed));
         newToggleActiveConnectionsButton.textContent = isActiveConnectionsCollapsed ? '▼' : '▲';
-        newToggleActiveConnectionsButton.title = isActiveConnectionsCollapsed ? 'Aktive Verbindungen einblenden' : 'Aktive Verbindungen ausblenden';
+        newToggleActiveConnectionsButton.title = isActiveConnectionsCollapsed ? 'Show active connections' : 'Hide active connections';
         activeConnectionsList.classList.toggle('collapsed', isActiveConnectionsCollapsed);
 
         if (!isActiveConnectionsCollapsed) {
@@ -364,13 +364,13 @@ async function initializeGlobe(myIpCoords) {
             activeConnectionsList.style.height = '40px';
         }
 
-        console.log(`Aktive Verbindungen ${isActiveConnectionsCollapsed ? 'ausgeblendet' : 'eingeblendet'}`);
+        console.log(`Active connections ${isActiveConnectionsCollapsed ? 'hidden' : 'shown'}`);
     });
 
     const toggleLocalNetworkButton = document.getElementById('toggleLocalNetwork');
     toggleLocalNetworkButton.classList.add('toggle-button');
     toggleLocalNetworkButton.textContent = showLocalNetwork ? '🏠' : '🚪';
-    toggleLocalNetworkButton.title = showLocalNetwork ? 'Lokales Netzwerk anzeigen' : 'Lokales Netzwerk ausblenden';
+    toggleLocalNetworkButton.title = showLocalNetwork ? 'Show local network' : 'Hide local network';
 
     let debounceTimer;
     toggleLocalNetworkButton.addEventListener('click', () => {
@@ -378,8 +378,8 @@ async function initializeGlobe(myIpCoords) {
         debounceTimer = setTimeout(() => {
             showLocalNetwork = !showLocalNetwork;
             toggleLocalNetworkButton.textContent = showLocalNetwork ? '🏠' : '🚪';
-            toggleLocalNetworkButton.title = showLocalNetwork ? 'Lokales Netzwerk anzeigen' : 'Lokales Netzwerk ausblenden';
-            console.log(`Lokales Netzwerk ${showLocalNetwork ? 'eingeblendet' : 'ausgeblendet'}`);
+            toggleLocalNetworkButton.title = showLocalNetwork ? 'Show local network' : 'Hide local network';
+            console.log(`Local network ${showLocalNetwork ? 'shown' : 'hidden'}`);
             socket.emit('set_local_network', { showLocalNetwork: showLocalNetwork });
             updateConnectionsList();
             updateInternalNetworkList();
@@ -390,12 +390,12 @@ async function initializeGlobe(myIpCoords) {
     const toggleExternalNetworkButton = document.getElementById('toggleExternalNetwork');
     toggleExternalNetworkButton.classList.add('toggle-button');
     toggleExternalNetworkButton.textContent = showExternalNetwork ? '🌎' : '❌';
-    toggleExternalNetworkButton.title = showExternalNetwork ? 'Externes Netzwerk anzeigen' : 'Externes Netzwerk ausblenden';
+    toggleExternalNetworkButton.title = showExternalNetwork ? 'Show external network' : 'Hide external network';
     toggleExternalNetworkButton.addEventListener('click', () => {
         showExternalNetwork = !showExternalNetwork;
         toggleExternalNetworkButton.textContent = showExternalNetwork ? '🌎' : '❌';
-        toggleExternalNetworkButton.title = showExternalNetwork ? 'Externes Netzwerk anzeigen' : 'Externes Netzwerk ausblenden';
-        console.log(`Externes Netzwerk ${showExternalNetwork ? 'eingeblendet' : 'ausgeblendet'}`);
+        toggleExternalNetworkButton.title = showExternalNetwork ? 'Show external network' : 'Hide external network';
+        console.log(`External network ${showExternalNetwork ? 'shown' : 'hidden'}`);
         socket.emit('set_external_network', { showExternalNetwork: showExternalNetwork });
         updateConnectionsList();
         updateInternalNetworkList();
@@ -886,12 +886,12 @@ async function initializeGlobe(myIpCoords) {
         if (data.show_local_network !== undefined) {
             showLocalNetwork = data.show_local_network;
             toggleLocalNetworkButton.textContent = showLocalNetwork ? '🌐' : '🌍';
-            toggleLocalNetworkButton.title = showLocalNetwork ? 'Lokales Netzwerk ausblenden' : 'Lokales Netzwerk einblenden';
+            toggleLocalNetworkButton.title = showLocalNetwork ? 'Hide local network' : 'Lokales Netzwerk einblenden';
         }
         if (data.show_external_network !== undefined) {
             showExternalNetwork = data.show_external_network;
             toggleExternalNetworkButton.textContent = showExternalNetwork ? '🔗' : '🔌';
-            toggleExternalNetworkButton.title = showExternalNetwork ? 'Externes Netzwerk ausblenden' : 'Externes Netzwerk einblenden';
+            toggleExternalNetworkButton.title = showExternalNetwork ? 'Hide external network' : 'Externes Netzwerk einblenden';
         }
         if (data.show_tcp_only !== undefined) {
             showTCPOnly = data.show_tcp_only;
