@@ -16,3 +16,7 @@ __pycache__/
 
 # Editor files
 .vscode/
+
+database/geo_data.db
+database/geo_data.db-shm
+database/geo_data.db-wal
