@@ -405,12 +405,12 @@ async function initializeGlobe(myIpCoords) {
     const toggleTCPOnlyButton = document.getElementById('toggleTCPOnly');
     toggleTCPOnlyButton.classList.add('toggle-button');
     toggleTCPOnlyButton.textContent = showTCPOnly ? '🔒' : '🌐';
-    toggleTCPOnlyButton.title = showTCPOnly ? 'Nur TCP-Verbindungen anzeigen' : 'Alle Protokolle anzeigen';
+    toggleTCPOnlyButton.title = showTCPOnly ? 'Show TCP connections only' : 'Show all protocols';
     toggleTCPOnlyButton.addEventListener('click', () => {
         showTCPOnly = !showTCPOnly;
         toggleTCPOnlyButton.textContent = showTCPOnly ? '🔒' : '🌐';
-        toggleTCPOnlyButton.title = showTCPOnly ? 'Nur TCP-Verbindungen anzeigen' : 'Alle Protokolle anzeigen';
-        console.log(`Nur TCP-Verbindungen ${showTCPOnly ? 'eingeblendet' : 'ausgeblendet'}`);
+        toggleTCPOnlyButton.title = showTCPOnly ? 'Show TCP connections only' : 'Show all protocols';
+        console.log(`TCP-only ${showTCPOnly ? 'enabled' : 'disabled'}`);
         socket.emit('set_tcp_only', { showTCPOnly: showTCPOnly });
         updateConnectionsList();
         updateInternalNetworkList();
@@ -420,12 +420,12 @@ async function initializeGlobe(myIpCoords) {
     const toggleAllUDPPacketsButton = document.getElementById('toggleAllUDPPackets');
     toggleAllUDPPacketsButton.classList.add('toggle-button');
     toggleAllUDPPacketsButton.textContent = showAllUDPPackets ? '📤' : '📥';
-    toggleAllUDPPacketsButton.title = showAllUDPPackets ? 'Alle UDP-Pakete anzeigen' : 'Gefilterte UDP-Pakete anzeigen';
+    toggleAllUDPPacketsButton.title = showAllUDPPackets ? 'Show all UDP packets' : 'Show filtered UDP packets';
     toggleAllUDPPacketsButton.addEventListener('click', () => {
         showAllUDPPackets = !showAllUDPPackets;
         toggleAllUDPPacketsButton.textContent = showAllUDPPackets ? '📤' : '📥';
-        toggleAllUDPPacketsButton.title = showAllUDPPackets ? 'Alle UDP-Pakete anzeigen' : 'Gefilterte UDP-Pakete anzeigen';
-        console.log(`Alle UDP-Pakete ${showAllUDPPackets ? 'eingeblendet' : 'gefiltert'}`);
+        toggleAllUDPPacketsButton.title = showAllUDPPackets ? 'Show all UDP packets' : 'Show filtered UDP packets';
+        console.log(`All UDP packets ${showAllUDPPackets ? 'shown' : 'filtered'}`);
         socket.emit('set_udp_filter', { showAllUDPPackets: showAllUDPPackets });
         updateConnectionsList();
         updateInternalNetworkList();
@@ -437,14 +437,14 @@ async function initializeGlobe(myIpCoords) {
         searchInternalPacketsCheckbox.checked = isInternalSearchActive;
         searchInternalPacketsCheckbox.addEventListener('change', () => {
             isInternalSearchActive = searchInternalPacketsCheckbox.checked;
-            console.log(`Interne Netzwerkpakete Suche ${isInternalSearchActive ? 'aktiviert' : 'deaktiviert'}`);
+            console.log(`Internal network packet search ${isInternalSearchActive ? 'enabled' : 'disabled'}`);
             socket.emit('set_internal_search', { isInternalSearchActive: isInternalSearchActive });
             updateConnectionsList();
             updateInternalNetworkList();
             updateGlobeData();
         });
     } else {
-        console.warn('Checkbox mit ID "searchInternalPackets" nicht gefunden. Interne Suche bleibt aktiviert.');
+        console.warn('Checkbox with ID "searchInternalPackets" not found. Internal search remains enabled.');
     }
 
     const points = {};
@@ -471,7 +471,7 @@ async function initializeGlobe(myIpCoords) {
 
         const tcpCount = filteredPoints.filter(p => p.protocol === 'TCP').length;
         const udpCount = filteredPoints.filter(p => p.protocol === 'UDP').length;
-        connectionCountElement.textContent = `${filteredPoints.length} Verbindungen (TCP: ${tcpCount}, UDP: ${udpCount})`;
+        connectionCountElement.textContent = `${filteredPoints.length} connections (TCP: ${tcpCount}, UDP: ${udpCount})`;
 
         const sortedPoints = filteredPoints.sort((a, b) => {
             const isPinnedA = !!pinnedIPs[a.ip];
@@ -501,8 +501,8 @@ async function initializeGlobe(myIpCoords) {
 
             const textSpan = document.createElement('span');
             textSpan.innerHTML = `
-                ${point.ip || 'N/A'} (${point.os || 'Unbekannt'}) - ${point.country || 'N/A'} - ${point.org || 'N/A'}
-                (${point.protocol || 'N/A'}, Eingehend: ${point.incoming_count || 0}, Ausgehend: ${point.outgoing_count || 0})
+                ${point.ip || 'N/A'} (${point.os || 'Unknown'}) - ${point.country || 'N/A'} - ${point.org || 'N/A'}
+                (${point.protocol || 'N/A'}, In: ${point.incoming_count || 0}, Out: ${point.outgoing_count || 0})
             `;
             textSpan.style.fontSize = '10px';
             textSpan.style.lineHeight = '1.4';
@@ -521,7 +521,7 @@ async function initializeGlobe(myIpCoords) {
                 point.outgoing_count = 0;
                 point.packet_count = 0;
                 updateConnectionsList();
-                console.log(`Pakete für IP ${point.ip} wurden zurückgesetzt.`);
+                console.log(`Packets for IP ${point.ip} have been reset.`);
             });
 
             const circle = document.createElement('div');
@@ -540,7 +540,7 @@ async function initializeGlobe(myIpCoords) {
                             lng: point.lng,
                             altitude: 2.5
                         }, 1000);
-                        console.log(`Zentriere auf IP: ${point.ip}, lat: ${point.lat}, lng: ${point.lng}`);
+                        console.log(`Centering on IP: ${point.ip}, lat: ${point.lat}, lng: ${point.lng}`);
                     }
                 }
             });
@@ -570,7 +570,7 @@ async function initializeGlobe(myIpCoords) {
 
         const tcpCount = filteredPackets.filter(p => p.protocol === 'TCP').length;
         const udpCount = filteredPackets.filter(p => p.protocol === 'UDP').length;
-        internalConnectionCountElement.textContent = `${filteredPackets.length} Verbindungen (TCP: ${tcpCount}, UDP: ${udpCount})`;
+        internalConnectionCountElement.textContent = `${filteredPackets.length} connections (TCP: ${tcpCount}, UDP: ${udpCount})`;
 
         const sortedPackets = filteredPackets.sort((a, b) => {
             if (a.incoming_count !== b.incoming_count) return b.incoming_count - a.incoming_count;
@@ -598,8 +598,8 @@ async function initializeGlobe(myIpCoords) {
 
             const textSpan = document.createElement('span');
             textSpan.innerHTML = `
-                ${packet.ip || 'N/A'} (${packet.os || 'Unbekannt'}) - ${packet.country || 'N/A'} - ${packet.org || 'N/A'}
-                (${packet.protocol || 'N/A'}, Eingehend: ${packet.incoming_count || 0}, Ausgehend: ${packet.outgoing_count || 0})
+                ${packet.ip || 'N/A'} (${packet.os || 'Unknown'}) - ${packet.country || 'N/A'} - ${packet.org || 'N/A'}
+                (${packet.protocol || 'N/A'}, In: ${packet.incoming_count || 0}, Out: ${packet.outgoing_count || 0})
             `;
             textSpan.style.fontSize = '10px';
             textSpan.style.lineHeight = '1.4';
@@ -618,7 +618,7 @@ async function initializeGlobe(myIpCoords) {
                 packet.outgoing_count = 0;
                 packet.packet_count = 0;
                 updateInternalNetworkList();
-                console.log(`Pakete für IP ${packet.ip} wurden zurückgesetzt.`);
+                console.log(`Packets for IP ${packet.ip} have been reset.`);
             });
 
             const circle = document.createElement('div');
@@ -637,7 +637,7 @@ async function initializeGlobe(myIpCoords) {
                             lng: packet.lng,
                             altitude: 2.5
                         }, 1000);
-                        console.log(`Zentriere auf IP: ${packet.ip}, lat: ${packet.lat}, lng: ${packet.lng}`);
+                        console.log(`Centering on IP: ${packet.ip}, lat: ${packet.lat}, lng: ${packet.lng}`);
                     }
                 }
             });
@@ -658,25 +658,25 @@ async function initializeGlobe(myIpCoords) {
         dataList.innerHTML = `
             <div style="display: flex; align-items: center; justify-content: space-between;">
                 <h3>IP: ${packet.ip || 'N/A'}</h3>
-                <button id="closeDataList" title="Schließen">✖</button>
+                <button id="closeDataList" title="Close">✖</button>
             </div>
             <ul>
-                <li><strong>Hostname:</strong> ${packet.hostname || 'Unbekannt'}</li>
-                <li><strong>Betriebssystem:</strong> ${packet.os || 'Unbekannt'}</li>
-                <li><strong>MAC-Adresse:</strong> ${packet.mac || 'N/A'}</li>
-                <li><strong>Hersteller:</strong> ${packet.vendor || 'Unbekannt'}</li>
-                <li><strong>Stadt:</strong> ${packet.city || 'N/A'}</li>
-                <li><strong>Land:</strong> ${packet.country || 'N/A'}</li>
+                <li><strong>Hostname:</strong> ${packet.hostname || 'Unknown'}</li>
+                <li><strong>OS:</strong> ${packet.os || 'Unknown'}</li>
+                <li><strong>MAC Address:</strong> ${packet.mac || 'N/A'}</li>
+                <li><strong>Vendor:</strong> ${packet.vendor || 'Unknown'}</li>
+                <li><strong>City:</strong> ${packet.city || 'N/A'}</li>
+                <li><strong>Country:</strong> ${packet.country || 'N/A'}</li>
                 <li><strong>Region:</strong> ${packet.region || 'N/A'}</li>
-                <li><strong>Organisation:</strong> ${packet.org || 'N/A'}</li>
-                <li><strong>Protokoll:</strong> ${packet.protocol || 'N/A'}</li>
-                <li><strong>Quelle Port:</strong> ${packet.src_port || 'N/A'}</li>
-                <li><strong>Ziel Port:</strong> ${packet.dst_port || 'N/A'}</li>
-                <li><strong>Letztes Signal:</strong> ${packet.last_seen ? new Date(packet.last_seen * 1000).toLocaleString() : 'N/A'}</li>
-                <li><strong>Eingehende Pakete:</strong> ${packet.incoming_count || 0}</li>
-                <li><strong>Ausgehende Pakete:</strong> ${packet.outgoing_count || 0}</li>
-                <li><strong>Gesamte Pakete:</strong> ${packet.packet_count || 0}</li>
-                <li><strong>Threat Level:</strong> ${packet.threat_level || 'Keine Bedrohung'}</li>
+                <li><strong>Organization:</strong> ${packet.org || 'N/A'}</li>
+                <li><strong>Protocol:</strong> ${packet.protocol || 'N/A'}</li>
+                <li><strong>Source Port:</strong> ${packet.src_port || 'N/A'}</li>
+                <li><strong>Dest Port:</strong> ${packet.dst_port || 'N/A'}</li>
+                <li><strong>Last Seen:</strong> ${packet.last_seen ? new Date(packet.last_seen * 1000).toLocaleString() : 'N/A'}</li>
+                <li><strong>Incoming Packets:</strong> ${packet.incoming_count || 0}</li>
+                <li><strong>Outgoing Packets:</strong> ${packet.outgoing_count || 0}</li>
+                <li><strong>Total Packets:</strong> ${packet.packet_count || 0}</li>
+                <li><strong>Threat Level:</strong> ${packet.threat_level || 'No Threat'}</li>
             </ul>
         `;
         document.getElementById('closeDataList').addEventListener('click', () => {
@@ -709,57 +709,57 @@ async function initializeGlobe(myIpCoords) {
     }
 
     socket.on('connect', () => {
-        console.log('Socket.IO verbunden, SID:', socket.id);
-        connectionStatus.textContent = 'Verbunden';
+        console.log('Socket.IO connected, SID:', socket.id);
+        connectionStatus.textContent = 'Connected';
         connectionStatus.style.background = 'rgba(0, 128, 0, 0.8)';
         socket.emit('set_internal_search', { isInternalSearchActive: isInternalSearchActive });
         socket.emit('request_initial_data');
     });
 
     socket.on('disconnect', () => {
-        console.warn('Socket.IO Verbindung verloren');
-        connectionStatus.textContent = 'Verbindung verloren';
+        console.warn('Socket.IO connection lost');
+        connectionStatus.textContent = 'Connection lost';
         connectionStatus.style.background = 'rgba(255, 0, 0, 0.8)';
     });
 
     socket.on('connect_error', (error) => {
-        console.error('Socket.IO Verbindungsfehler:', error);
-        connectionStatus.textContent = 'Verbindungsfehler';
+        console.error('Socket.IO connection error:', error);
+        connectionStatus.textContent = 'Connection error';
         connectionStatus.style.background = 'rgba(255, 0, 0, 0.8)';
     });
 
     socket.on('reconnect', (attempt) => {
-        console.log('Socket.IO wiederverbunden nach', attempt, 'Versuchen');
-        connectionStatus.textContent = 'Verbunden';
+        console.log('Socket.IO reconnected after', attempt, 'attempts');
+        connectionStatus.textContent = 'Connected';
         connectionStatus.style.background = 'rgba(0, 128, 0, 0.8)';
         socket.emit('request_initial_data');
     });
 
     socket.on('heartbeat', (data) => {
-        console.log('Heartbeat empfangen:', data.timestamp, 'Active Clients:', data.active_clients);
+        console.log('Heartbeat received:', data.timestamp, 'Active Clients:', data.active_clients);
     });
 
     socket.on('ip_update', (data) => {
-        console.log('Empfangene Daten:', data);
+        console.log('Received data:', data);
         if (!data.ip) {
-            console.warn("IP fehlt in den Daten:", data);
+            console.warn("IP missing in data:", data);
             return;
         }
         try {
             if (!isValidCoord(data.lat, data.lon)) {
-                console.warn("Ungültige Koordinaten für IP:", data.ip, "lat:", data.lat, "lon:", data.lon);
+                console.warn("Invalid coordinates for IP:", data.ip, "lat:", data.lat, "lon:", data.lon);
                 return;
             }
             if (data.lat === 0 && data.lon === 0 && data.org !== 'Local Network') return;
 
-            console.log(`Empfange ip_update: IP=${data.ip}, Local=${isLocalNetwork(data.ip, data.org)}, InternalSearchActive=${isInternalSearchActive}, Incoming: ${data.incoming_count}, Outgoing: ${data.outgoing_count}, Protocol: ${data.protocol}, Last Seen: ${new Date(data.last_seen * 1000).toLocaleString()}, Hostname: ${data.hostname || 'Unbekannt'}, OS: ${data.os || 'Unbekannt'}`);
+            console.log(`Received ip_update: IP=${data.ip}, Local=${isLocalNetwork(data.ip, data.org)}, InternalSearchActive=${isInternalSearchActive}, Incoming: ${data.incoming_count}, Outgoing: ${data.outgoing_count}, Protocol: ${data.protocol}, Last Seen: ${new Date(data.last_seen * 1000).toLocaleString()}, Hostname: ${data.hostname || 'Unknown'}, OS: ${data.os || 'Unknown'}`);
 
             const ip = data.ip;
             points[ip] = {
                 ip: data.ip,
                 lat: data.lat,
                 lng: data.lon,
-                label: `${data.hostname || data.ip} (${data.os || 'Unbekannt'})`,
+                label: `${data.hostname || data.ip} (${data.os || 'Unknown'})`,
                 city: data.city,
                 country: data.country,
                 region: data.region,
@@ -774,9 +774,9 @@ async function initializeGlobe(myIpCoords) {
                 mac: data.mac,
                 vendor: data.vendor,
                 packet_count: data.packet_count || 0,
-                hostname: data.hostname || 'Unbekannt',
-                os: data.os || 'Unbekannt',
-                threat_level: data.threat_level || 'Keine Bedrohung',
+                hostname: data.hostname || 'Unknown',
+                os: data.os || 'Unknown',
+                threat_level: data.threat_level || 'No Threat',
                 expired: false
             };
 
@@ -792,11 +792,11 @@ async function initializeGlobe(myIpCoords) {
                 protocol: data.protocol,
                 incoming_count: data.incoming_count || 0,
                 outgoing_count: data.outgoing_count || 0,
-                color: (data.city === 'Ungeolokalisierbar' || data.country === 'Ungeolokalisierbar' || data.org === 'Nicht verfügbar') ? '#FFFFFF' : '#FF0000',
+                color: (data.city === 'Unknown' || data.country === 'Unknown' || data.org === 'Not available') ? '#FFFFFF' : '#FF0000',
                 last_seen: data.last_seen,
                 packet_count: data.packet_count || 0,
-                hostname: data.hostname || 'Unbekannt',
-                os: data.os || 'Unbekannt',
+                hostname: data.hostname || 'Unknown',
+                os: data.os || 'Unknown',
                 expired: false
             };
 
@@ -818,15 +818,15 @@ async function initializeGlobe(myIpCoords) {
                     mac: data.mac,
                     vendor: data.vendor,
                     packet_count: data.packet_count || 0,
-                    hostname: data.hostname || 'Unbekannt',
-                    os: data.os || 'Unbekannt',
+                    hostname: data.hostname || 'Unknown',
+                    os: data.os || 'Unknown',
                     expired: false
                 };
             }
 
             if (Object.keys(points).length > MAX_POINTS) {
                 const oldestIp = Object.keys(points)
-                    .filter(ip => !pinnedIPs[ip] && ip !== 'Deine IP')
+                    .filter(ip => !pinnedIPs[ip] && ip !== 'Your IP')
                     .sort((a, b) => points[a].last_seen - points[b].last_seen)[0];
                 if (oldestIp) {
                     delete points[oldestIp];
@@ -846,7 +846,7 @@ async function initializeGlobe(myIpCoords) {
             updateGlobeData();
             updateConnectionsList();
             updateInternalNetworkList();
-            console.log("IP-Punkt und Arc aktualisiert:", data.ip);
+            console.log("IP point and arc updated:", data.ip);
         } catch (e) {
             console.error('Fehler beim Parsen der Socket.IO-Nachricht:', e);
         }
@@ -881,7 +881,7 @@ async function initializeGlobe(myIpCoords) {
         if (data.show_all_udp_packets !== undefined) {
             showAllUDPPackets = data.show_all_udp_packets;
             toggleAllUDPPacketsButton.textContent = showAllUDPPackets ? '📶' : '📻';
-            toggleAllUDPPacketsButton.title = showAllUDPPackets ? 'Nur gefilterte UDP-Pakete anzeigen' : 'Alle UDP-Pakete anzeigen';
+            toggleAllUDPPacketsButton.title = showAllUDPPackets ? 'Nur gefilterte UDP-Pakete anzeigen' : 'Show all UDP packets';
         }
         if (data.show_local_network !== undefined) {
             showLocalNetwork = data.show_local_network;
@@ -896,7 +896,7 @@ async function initializeGlobe(myIpCoords) {
         if (data.show_tcp_only !== undefined) {
             showTCPOnly = data.show_tcp_only;
             toggleTCPOnlyButton.textContent = showTCPOnly ? '📡' : '📶';
-            toggleTCPOnlyButton.title = showTCPOnly ? 'Alle Protokolle anzeigen' : 'Nur TCP-Verbindungen anzeigen';
+            toggleTCPOnlyButton.title = showTCPOnly ? 'Show all protocols' : 'Show TCP connections only';
         }
         updateConnectionsList();
         updateInternalNetworkList();
@@ -939,7 +939,7 @@ async function initializeGlobe(myIpCoords) {
     setInterval(() => {
         const now = Date.now() / 1000;
         for (const ip in points) {
-            if (!pinnedIPs[ip] && ip !== 'Deine IP' && now - points[ip].last_seen > EXPIRATION_SECONDS) {
+            if (!pinnedIPs[ip] && ip !== 'Your IP' && now - points[ip].last_seen > EXPIRATION_SECONDS) {
                 points[ip].expired = true;
                 if (arcs[ip]) {
                     arcs[ip].expired = true;
