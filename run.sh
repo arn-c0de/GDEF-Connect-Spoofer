@@ -13,10 +13,10 @@ REQ="$PROJECT_DIR/requirements.txt"
 PYTHON="${PYTHON:-python3}"
 BACKEND_CONF="$PROJECT_DIR/database/backend_conf.json"
 
-# Root-Check (noetig fuer Packet-Sniffing)
+# Root check (required for packet sniffing)
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "[WARNUNG] Dieses Skript benoetigt Root-Rechte fuer Packet-Sniffing."
-  echo "[INFO] Starte mit: sudo $0 $*"
+  echo "[WARNING] This script requires root privileges for packet sniffing."
+  echo "[INFO] Run with: sudo $0 $*"
   exit 1
 fi
 
@@ -37,15 +37,15 @@ else
   fi
 fi
 
-# Interface-Auswahl wenn keine Konfiguration vorhanden
+# Interface selection if no configuration exists
 if [[ ! -f "$BACKEND_CONF" ]]; then
-  echo "[INFO] Keine Netzwerk-Interface-Konfiguration gefunden."
-  echo "[INFO] Starte Interface-Auswahl..."
+  echo "[INFO] No network interface configuration found."
+  echo "[INFO] Starting interface selection..."
   echo
   "$VENV/bin/python" "$PROJECT_DIR/select_interface.py"
 else
-  echo "[INFO] Netzwerk-Interface-Konfiguration gefunden."
-  read -t 5 -n 1 -p "[INFO] Druecke 'i' um Interface neu auszuwaehlen, oder warte 5s zum Fortfahren... " key || key=""
+  echo "[INFO] Network interface configuration found."
+  read -t 5 -n 1 -p "[INFO] Press 'i' to re-select interface, or wait 5s to continue... " key || key=""
   echo
   if [[ "${key,,}" == "i" ]]; then
     "$VENV/bin/python" "$PROJECT_DIR/select_interface.py"

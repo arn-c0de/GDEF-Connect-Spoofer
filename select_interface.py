@@ -9,8 +9,8 @@ import platform
 try:
     from scapy.all import get_if_list, conf
 except ImportError:
-    print("[FEHLER] Scapy ist nicht installiert!")
-    input("Drücke ENTER zum Beenden...")
+    print("[ERROR] Scapy is not installed!")
+    input("Press ENTER to exit...")
     sys.exit(1)
 
 BACKEND_CONF_PATH = os.path.join("database", "backend_conf.json")
@@ -19,7 +19,7 @@ IS_WINDOWS = sys.platform == 'win32'
 
 
 def get_friendly_interface_name(iface_name):
-    """Gibt einen benutzerfreundlichen Namen fuer das Interface zurueck (plattformuebergreifend)."""
+    """Returns a user-friendly name for the interface (cross-platform)."""
     if IS_WINDOWS:
         return _get_friendly_name_windows(iface_name)
     else:
@@ -27,7 +27,7 @@ def get_friendly_interface_name(iface_name):
 
 
 def _get_friendly_name_windows(npf_name):
-    """Konvertiert NPF-Device-Namen in benutzerfreundliche Namen (Windows)."""
+    """Converts NPF device names to user-friendly names (Windows)."""
     try:
         from scapy.all import IFACES
         guid_match = re.search(r'\{([A-F0-9\-]+)\}', npf_name, re.IGNORECASE)
@@ -57,12 +57,12 @@ def _get_friendly_name_windows(npf_name):
         return f"Interface {guid[:8]}..."
 
     except Exception as e:
-        print(f"[DEBUG] Fehler beim Auslesen von {npf_name}: {e}")
+        print(f"[DEBUG] Error reading {npf_name}: {e}")
         return npf_name
 
 
 def get_interface_ip(iface_name):
-    """Versucht die IP-Adresse eines Interfaces zu ermitteln (plattformuebergreifend)."""
+    """Attempts to determine the IP address of an interface (cross-platform)."""
     try:
         if IS_WINDOWS:
             return _get_ip_windows(iface_name)
@@ -73,7 +73,7 @@ def get_interface_ip(iface_name):
 
 
 def _get_ip_windows(npf_name):
-    """IP-Adresse ueber Scapy IFACES ermitteln (Windows)."""
+    """Determine IP address via Scapy IFACES (Windows)."""
     try:
         from scapy.all import IFACES
         guid_match = re.search(r'\{([A-F0-9\-]+)\}', npf_name, re.IGNORECASE)
@@ -90,7 +90,7 @@ def _get_ip_windows(npf_name):
 
 
 def _get_ip_unix(iface_name):
-    """IP-Adresse ueber Socket/ioctl ermitteln (Linux/macOS)."""
+    """Determine IP address via socket/ioctl (Linux/macOS)."""
     try:
         import fcntl
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -102,7 +102,7 @@ def _get_ip_unix(iface_name):
         s.close()
         return ip
     except Exception:
-        # Fallback: versuche ueber scapy conf
+        # Fallback: try via scapy conf
         try:
             from scapy.all import get_if_addr
             addr = get_if_addr(iface_name)
@@ -114,9 +114,9 @@ def _get_ip_unix(iface_name):
 
 
 def select_network_interface():
-    """Zeigt verfuegbare Netzwerkschnittstellen und laesst den Benutzer eine auswaehlen."""
+    """Shows available network interfaces and lets the user select one."""
     print("=" * 70)
-    print("   Netzwerkschnittstellen-Auswahl")
+    print("   Network Interface Selection")
     print("   System: " + platform.system() + " " + platform.release())
     print("=" * 70)
     print()
@@ -125,13 +125,13 @@ def select_network_interface():
         interfaces = get_if_list()
 
         if not interfaces:
-            print("[FEHLER] Keine Netzwerkschnittstellen gefunden!")
+            print("[ERROR] No network interfaces found!")
             if not IS_WINDOWS:
-                print("[TIPP] Starte das Skript mit sudo/root-Rechten.")
-            input("Druecke ENTER zum Beenden...")
+                print("[TIP] Run the script with sudo/root privileges.")
+            input("Press ENTER to exit...")
             return False
 
-        # Erstelle Mapping von freundlichen Namen
+        # Create mapping of friendly names
         interface_mapping = {}
         interface_ips = {}
         for iface in interfaces:
@@ -139,13 +139,13 @@ def select_network_interface():
             interface_mapping[iface] = friendly_name
             interface_ips[iface] = get_interface_ip(iface)
 
-        print("Verfuegbare Netzwerkschnittstellen:")
+        print("Available network interfaces:")
         print("-" * 70)
         for idx, iface in enumerate(interfaces, 1):
             friendly_name = interface_mapping[iface]
             ip_addr = interface_ips[iface]
 
-            # Markiere wahrscheinlich bestes Interface
+            # Mark likely best interface
             marker = ""
             if not IS_WINDOWS and iface.startswith(('eth', 'en', 'wl', 'wlan', 'ens', 'enp', 'wlp')) and ip_addr:
                 marker = " *"
@@ -156,12 +156,12 @@ def select_network_interface():
                 print(f"{idx}. {friendly_name}")
         print("-" * 70)
         if not IS_WINDOWS:
-            print("  * = empfohlenes Interface")
+            print("  * = recommended interface")
         print()
-        print("[TIP] Druecke 'D' fuer Debug-Informationen")
+        print("[TIP] Press 'D' for debug information")
         print()
 
-        # Lade aktuelle Konfiguration falls vorhanden
+        # Load current configuration if available
         current_interface = None
         if os.path.exists(BACKEND_CONF_PATH):
             try:
@@ -171,66 +171,66 @@ def select_network_interface():
                     if current_interface in interfaces:
                         current_idx = interfaces.index(current_interface) + 1
                         friendly_current = interface_mapping[current_interface]
-                        print(f"[INFO] Aktuell konfiguriert: #{current_idx} - {friendly_current}")
+                        print(f"[INFO] Currently configured: #{current_idx} - {friendly_current}")
                         print()
             except Exception as e:
-                print(f"[WARNUNG] Fehler beim Laden der Konfiguration: {e}")
+                print(f"[WARNING] Error loading configuration: {e}")
                 print()
 
-        # Benutzerauswahl
+        # User selection
         while True:
-            choice = input("Waehle eine Schnittstelle (Nummer) oder druecke ENTER fuer aktuelle Auswahl: ").strip()
+            choice = input("Select an interface (number) or press ENTER for current selection: ").strip()
 
-            # Debug-Modus
+            # Debug mode
             if choice.upper() == 'D':
                 print("\n" + "=" * 70)
-                print("DEBUG: Interface-Details")
+                print("DEBUG: Interface Details")
                 print("=" * 70)
                 for idx, iface in enumerate(interfaces, 1):
                     print(f"\n#{idx}:")
-                    print(f"  Interface-Name: {iface}")
-                    print(f"  Anzeigename: {interface_mapping[iface]}")
-                    print(f"  IP-Adresse: {interface_ips[iface] or 'Keine'}")
+                    print(f"  Interface name: {iface}")
+                    print(f"  Display name:   {interface_mapping[iface]}")
+                    print(f"  IP address:     {interface_ips[iface] or 'None'}")
                 print("\n" + "=" * 70 + "\n")
                 continue
 
-            # Wenn ENTER gedrueckt und aktuelle Config existiert, verwende diese
+            # If ENTER pressed and current config exists, use it
             if choice == "" and current_interface and current_interface in interfaces:
                 selected_interface = current_interface
                 friendly_selected = interface_mapping[selected_interface]
-                print(f"[INFO] Verwende aktuelle Konfiguration: {friendly_selected}")
+                print(f"[INFO] Using current configuration: {friendly_selected}")
                 break
 
-            # Validiere Eingabe
+            # Validate input
             try:
                 choice_num = int(choice)
                 if 1 <= choice_num <= len(interfaces):
                     selected_interface = interfaces[choice_num - 1]
                     friendly_selected = interface_mapping[selected_interface]
-                    print(f"[INFO] Ausgewaehlt: {friendly_selected}")
+                    print(f"[INFO] Selected: {friendly_selected}")
                     break
                 else:
-                    print(f"[FEHLER] Bitte waehle eine Nummer zwischen 1 und {len(interfaces)}")
+                    print(f"[ERROR] Please choose a number between 1 and {len(interfaces)}")
             except ValueError:
-                print("[FEHLER] Ungueltige Eingabe. Bitte eine Nummer eingeben.")
+                print("[ERROR] Invalid input. Please enter a number.")
 
         print()
 
-        # Erstelle database Ordner falls nicht vorhanden
+        # Create database folder if it doesn't exist
         os.makedirs("database", exist_ok=True)
 
-        # Speichere Konfiguration
+        # Save configuration
         config = {"network_interface": selected_interface}
         with open(BACKEND_CONF_PATH, "w") as f:
             json.dump(config, f, indent=4)
 
-        print(f"[INFO] Konfiguration gespeichert in: {BACKEND_CONF_PATH}")
+        print(f"[INFO] Configuration saved to: {BACKEND_CONF_PATH}")
         print()
         return True
 
     except Exception as e:
-        print(f"[FEHLER] Fehler bei der Interface-Auswahl: {e}")
-        input("Druecke ENTER zum Beenden...")
+        print(f"[ERROR] Error during interface selection: {e}")
+        input("Press ENTER to exit...")
         return False
 
 if __name__ == "__main__":

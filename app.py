@@ -23,23 +23,23 @@ from contextlib import contextmanager
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Pfad zur Konfigurationsdatei
+# Path to configuration file
 BACKEND_CONF_PATH = os.path.join("database", "backend_conf.json")
 
 def load_network_interface():
-    """Lädt die Netzwerkschnittstelle aus der JSON-Konfigurationsdatei."""
+    """Loads the network interface from the JSON configuration file."""
     try:
         if os.path.exists(BACKEND_CONF_PATH):
             with open(BACKEND_CONF_PATH, "r") as f:
                 config = json.load(f)
                 return config.get("network_interface", None)
         else:
-            logger.warning(f"Konfigurationsdatei {BACKEND_CONF_PATH} nicht gefunden. Verwende Standardwert.")
+            logger.warning(f"Configuration file {BACKEND_CONF_PATH} not found. Using default value.")
     except Exception as e:
-        logger.error(f"Fehler beim Laden der Konfigurationsdatei {BACKEND_CONF_PATH}: {e}")
+        logger.error(f"Error loading configuration file {BACKEND_CONF_PATH}: {e}")
     return None
 
-# Konfiguration
+# Configuration
 CONFIG = {
     "network_interface": load_network_interface(),
     "cache_timeout": 3600,
@@ -59,7 +59,7 @@ DATABASE_PATH = CONFIG["database_path"]
 TRUSTED_ORGS_PATH = os.path.join(DATABASE_DIR, "trusted_organisations.json")
 API_TIMEOUT = CONFIG["api_timeout"]
 
-# Globale Variablen
+# Global variables
 geo_cache = {}
 known_ips = set()
 tcp_connections = {}
@@ -78,9 +78,9 @@ class PacketQueue:
             is_external = not (is_private_ip(item.get('ip_src', '')) and is_private_ip(item.get('ip_dst', '')))
             priority = 1 if is_external else 5
             self.queue.put_nowait((priority, item))
-            logger.debug(f"Paket in Warteschlange: {item.get('protocol')}, {'extern' if is_external else 'intern'}")
+            logger.debug(f"Packet queued: {item.get('protocol')}, {'external' if is_external else 'internal'}")
         except Full:
-            logger.warning("Warteschlange voll, Paket verworfen")
+            logger.warning("Queue full, packet dropped")
 
     def get(self, timeout=None):
         return self.queue.get(timeout=timeout)
@@ -90,7 +90,7 @@ class PacketQueue:
 
 def get_mac_vendor(mac):
     if not mac:
-        return "Unbekannt"
+        return "Unknown"
     with locked(db_lock):
         try:
             with sqlite3.connect(DATABASE_PATH) as conn:
@@ -100,12 +100,12 @@ def get_mac_vendor(mac):
                 if result:
                     return result[0]
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Zugriff auf mac_cache für MAC {mac}: {e}")
-            return "Unbekannt"
+            logger.error(f"Error accessing mac_cache for MAC {mac}: {e}")
+            return "Unknown"
     try:
         response = requests.get(f"https://api.macvendors.com/{mac}", timeout=API_TIMEOUT)
         if response.status_code == 200:
-            vendor = response.text.strip() or "Unbekannt"
+            vendor = response.text.strip() or "Unknown"
             with locked(db_lock):
                 try:
                     with sqlite3.connect(DATABASE_PATH) as conn:
@@ -113,18 +113,18 @@ def get_mac_vendor(mac):
                         c.execute("INSERT OR REPLACE INTO mac_cache (mac, vendor) VALUES (?, ?)", (mac, vendor))
                         conn.commit()
                 except sqlite3.Error as e:
-                    logger.error(f"Fehler beim Speichern von MAC {mac} im Cache: {e}")
+                    logger.error(f"Error saving MAC {mac} to cache: {e}")
             return vendor
         elif response.status_code == 429:
-            logger.warning(f"Ratenbegrenzung bei api.macvendors.com für MAC {mac}")
+            logger.warning(f"Rate limited at api.macvendors.com for MAC {mac}")
             time.sleep(5)
     except Exception as e:
-        logger.error(f"Fehler beim Hinzufügen zur Warteschlange: {e}")
+        logger.error(f"Error adding to queue: {e}")
     return None
 
 def get_mac_vendor(mac):
     if not mac:
-        return "Unbekannt"
+        return "Unknown"
     with locked(db_lock):
         try:
             with sqlite3.connect(DATABASE_PATH) as conn:
@@ -134,12 +134,12 @@ def get_mac_vendor(mac):
                 if result:
                     return result[0]
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Zugriff auf mac_cache für MAC {mac}: {e}")
-            return "Unbekannt"
+            logger.error(f"Error accessing mac_cache for MAC {mac}: {e}")
+            return "Unknown"
     try:
         response = requests.get(f"https://api.macvendors.com/{mac}", timeout=API_TIMEOUT)
         if response.status_code == 200:
-            vendor = response.text.strip() or "Unbekannt"
+            vendor = response.text.strip() or "Unknown"
             with locked(db_lock):
                 try:
                     with sqlite3.connect(DATABASE_PATH) as conn:
@@ -147,17 +147,17 @@ def get_mac_vendor(mac):
                         c.execute("INSERT OR REPLACE INTO mac_cache (mac, vendor) VALUES (?, ?)", (mac, vendor))
                         conn.commit()
                 except sqlite3.Error as e:
-                    logger.error(f"Fehler beim Speichern von MAC {mac} im Cache: {e}")
+                    logger.error(f"Error saving MAC {mac} to cache: {e}")
             return vendor
         elif response.status_code == 429:
-            logger.warning(f"Ratenbegrenzung bei api.macvendors.com für MAC {mac}")
+            logger.warning(f"Rate limited at api.macvendors.com for MAC {mac}")
             time.sleep(5)
     except requests.RequestException as e:
-        logger.warning(f"Fehler bei api.macvendors.com für MAC {mac}: {e}")
+        logger.warning(f"Error at api.macvendors.com for MAC {mac}: {e}")
     try:
         response = requests.get(f"https://maclookup.app/api/v2/macs/{mac}", timeout=2)
         if response.status_code == 200:
-            vendor = response.json().get("company", "Unbekannt").strip() or "Unbekannt"
+            vendor = response.json().get("company", "Unknown").strip() or "Unknown"
             with locked(db_lock):
                 try:
                     with sqlite3.connect(DATABASE_PATH) as conn:
@@ -165,11 +165,11 @@ def get_mac_vendor(mac):
                         c.execute("INSERT OR REPLACE INTO mac_cache (mac, vendor) VALUES (?, ?)", (mac, vendor))
                         conn.commit()
                 except sqlite3.Error as e:
-                    logger.error(f"Fehler beim Speichern von MAC {mac} im Cache: {e}")
+                    logger.error(f"Error saving MAC {mac} to cache: {e}")
             return vendor
     except requests.RequestException as e:
-        logger.warning(f"Fehler bei maclookup.app für MAC {mac}: {e}")
-    return "Unbekannt"
+        logger.warning(f"Error at maclookup.app for MAC {mac}: {e}")
+    return "Unknown"
 
 def get_mac_vendor_with_cache(mac):
     return get_mac_vendor(mac)
@@ -183,7 +183,7 @@ def load_pinned_ips():
                 c.execute("SELECT ip, packet_count FROM pinned_ips")
                 pinned_ips_cache = {row[0]: row[1] for row in c.fetchall()}
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Laden der gepinnten IPs: {e}")
+            logger.error(f"Error loading pinned IPs: {e}")
 
 def update_pinned_ips(ip, is_pinned):
     global pinned_ips_cache
@@ -199,7 +199,7 @@ def update_pinned_ips(ip, is_pinned):
                     pinned_ips_cache.pop(ip, None)
                 conn.commit()
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Aktualisieren der gepinnten IPs für {ip}: {e}")
+            logger.error(f"Error updating pinned IPs for {ip}: {e}")
 
 # Flask App und SocketIO
 app = Flask(__name__)
@@ -214,7 +214,7 @@ def get_trusted_organisations():
             data = json.load(f)
         return jsonify(data)
     except Exception as e:
-        logger.error(f"Fehler beim Laden von trusted_organisations.json: {e}")
+        logger.error(f"Error loading trusted_organisations.json: {e}")
         return jsonify({"trusted_organisations": [], "suspicious_organisations": [], "dangerous_organisations": []}), 500
 
 # mDNS Listener
@@ -223,7 +223,7 @@ class MDNSListener:
         self.devices = {}
 
     def remove_service(self, zeroconf, type, name):
-        logger.info(f"mDNS Service entfernt: {name}")
+        logger.info(f"mDNS service removed: {name}")
 
     def add_service(self, zeroconf, type, name):
         try:
@@ -232,9 +232,9 @@ class MDNSListener:
                 ip = socket.inet_ntoa(info.addresses[0])
                 hostname = name.split('.')[0]
                 self.devices[ip] = hostname
-                logger.info(f"mDNS Service hinzugefügt: {ip} -> {hostname}")
+                logger.info(f"mDNS service added: {ip} -> {hostname}")
         except Exception as e:
-            logger.error(f"Fehler beim Hinzufügen von mDNS-Service {name}: {e}")
+            logger.error(f"Error adding mDNS service {name}: {e}")
 
     def update_service(self, zeroconf, type, name):
         pass
@@ -242,7 +242,7 @@ class MDNSListener:
 def init_trusted_organisations():
     try:
         if not os.path.exists(TRUSTED_ORGS_PATH):
-            logger.info(f"Erstelle {TRUSTED_ORGS_PATH} mit Standardwerten")
+            logger.info(f"Creating {TRUSTED_ORGS_PATH} with default values")
             default_orgs = {
                 "trusted_organisations": [
                     "Google LLC", "Total Uptime Technologies, LLC", "Amazon.com, Inc.",
@@ -259,11 +259,11 @@ def init_trusted_organisations():
             }
             with open(TRUSTED_ORGS_PATH, 'w') as f:
                 json.dump(default_orgs, f, indent=4)
-            logger.info(f"{TRUSTED_ORGS_PATH} erfolgreich erstellt")
+            logger.info(f"{TRUSTED_ORGS_PATH} created successfully")
         else:
-            logger.info(f"{TRUSTED_ORGS_PATH} existiert bereits")
+            logger.info(f"{TRUSTED_ORGS_PATH} already exists")
     except Exception as e:
-        logger.error(f"Fehler beim Initialisieren von {TRUSTED_ORGS_PATH}: {e}")
+        logger.error(f"Error initializing {TRUSTED_ORGS_PATH}: {e}")
 
 def start_mdns_listener():
     try:
@@ -272,7 +272,7 @@ def start_mdns_listener():
         ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
         return zeroconf, listener
     except Exception as e:
-        logger.error(f"Fehler beim Starten des mDNS-Listeners: {e}")
+        logger.error(f"Error starting mDNS listener: {e}")
         return None, None
 
 def get_local_ip():
@@ -281,10 +281,10 @@ def get_local_ip():
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
-        logger.info(f"Lokale IP: {local_ip}")
+        logger.info(f"Local IP: {local_ip}")
         return local_ip
     except Exception as e:
-        logger.error(f"Fehler beim Abrufen der lokalen IP: {e}")
+        logger.error(f"Error getting local IP: {e}")
         return "127.0.0.1"
 
 def is_admin():
@@ -294,26 +294,26 @@ def is_admin():
         else:
             return os.geteuid() == 0
     except Exception as e:
-        logger.error(f"Fehler beim Prüfen der Admin-Rechte: {e}")
+        logger.error(f"Error checking admin privileges: {e}")
         return False
 
 def auto_detect_interface():
-    """Erkennt automatisch das beste Netzwerk-Interface auf allen Plattformen."""
+    """Auto-detects the best network interface on all platforms."""
     available = get_if_list()
     if not available:
         return None
 
     if sys.platform == 'win32':
-        # Auf Windows: erstes Interface als Fallback
+        # On Windows: first interface as fallback
         return available[0]
 
-    # Auf Linux/macOS: bevorzuge echte Netzwerk-Interfaces
+    # On Linux/macOS: prefer real network interfaces
     preferred_prefixes = ('eth', 'en', 'wl', 'wlan', 'ens', 'enp', 'wlp')
     for iface in available:
         if iface.startswith(preferred_prefixes):
             return iface
 
-    # Fallback: erstes Interface das nicht lo ist
+    # Fallback: first interface that is not lo
     for iface in available:
         if iface != 'lo':
             return iface
@@ -325,13 +325,13 @@ def validate_interface():
     global NETWORK_INTERFACE
     if not NETWORK_INTERFACE or NETWORK_INTERFACE not in available_interfaces:
         if NETWORK_INTERFACE:
-            logger.warning(f"Interface '{NETWORK_INTERFACE}' nicht gefunden! Verfügbare Interfaces: {available_interfaces}")
+            logger.warning(f"Interface '{NETWORK_INTERFACE}' not found! Available interfaces: {available_interfaces}")
         detected = auto_detect_interface()
         if detected:
             NETWORK_INTERFACE = detected
             logger.info(f"Auto-detected interface: {NETWORK_INTERFACE}")
         else:
-            logger.error("Keine Netzwerkschnittstellen gefunden!")
+            logger.error("No network interfaces found!")
             sys.exit(1)
 
 @contextmanager
@@ -345,7 +345,7 @@ def locked(lock):
 def init_db():
     if not os.path.exists(DATABASE_DIR):
         os.makedirs(DATABASE_DIR)
-        logger.info(f"Datenbankverzeichnis erstellt: {DATABASE_DIR}")
+        logger.info(f"Database directory created: {DATABASE_DIR}")
     init_trusted_organisations()
     with locked(db_lock):
         try:
@@ -390,7 +390,7 @@ def init_db():
                           ('show_tcp_only', '0'))
                 conn.commit()
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Initialisieren der Datenbank: {e}")
+            logger.error(f"Error initializing database: {e}")
 
 def load_settings():
     settings = {
@@ -410,7 +410,7 @@ def load_settings():
             logger.debug(f"Loaded settings: {settings}")
             return settings
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Laden der Einstellungen: {e}")
+            logger.error(f"Error loading settings: {e}")
             return settings
 
 def schedule_threat_list_updates():
@@ -419,7 +419,7 @@ def schedule_threat_list_updates():
             update_threat_list()
             time.sleep(86400)
         except Exception as e:
-            logger.error(f"Fehler beim Aktualisieren der Bedrohungslisten: {e}")
+            logger.error(f"Error updating threat lists: {e}")
             time.sleep(3600)
 
 def update_threat_list():
@@ -451,9 +451,9 @@ def update_threat_list():
                             logger.info(f"Threat list updated: {source}")
                         conn.commit()
                     except Exception as e:
-                        logger.error(f"Fehler beim Abrufen der Bedrohungsliste {source}: {e}")
+                        logger.error(f"Error fetching threat list {source}: {e}")
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Aktualisieren der Bedrohungsliste: {e}")
+            logger.error(f"Error updating threat list: {e}")
 
 # Start the thread
 threading.Thread(target=schedule_threat_list_updates, daemon=True).start()
@@ -463,39 +463,39 @@ def handle_set_local_network(data):
     try:
         show_local = data.get('showLocalNetwork', True)
         if not isinstance(show_local, bool):
-            logger.error(f"Ungültiger Wert für showLocalNetwork: {show_local}")
+            logger.error(f"Invalid value for showLocalNetwork: {show_local}")
             return
         save_setting('show_local_network', show_local)
         socketio.emit('settings_update', {'show_local_network': show_local})
-        logger.info(f"Lokales Netzwerk {'eingeblendet' if show_local else 'ausgeblendet'}")
+        logger.info(f"Local network {'shown' if show_local else 'hidden'}")
     except Exception as e:
-        logger.error(f"Fehler bei set_local_network: {e}")
+        logger.error(f"Error in set_local_network: {e}")
 
 @socketio.on('set_external_network')
 def handle_set_external_network(data):
     try:
         show_external = data.get('showExternalNetwork', True)
         if not isinstance(show_external, bool):
-            logger.error(f"Ungültiger Wert für showExternalNetwork: {show_external}")
+            logger.error(f"Invalid value for showExternalNetwork: {show_external}")
             return
         save_setting('show_external_network', show_external)
         socketio.emit('settings_update', {'show_external_network': show_external})
-        logger.info(f"Externes Netzwerk {'eingeblendet' if show_external else 'ausgeblendet'}")
+        logger.info(f"External network {'shown' if show_external else 'hidden'}")
     except Exception as e:
-        logger.error(f"Fehler bei set_external_network: {e}")
+        logger.error(f"Error in set_external_network: {e}")
 
 @socketio.on('set_tcp_only')
 def handle_set_tcp_only(data):
     try:
         show_tcp = data.get('showTCPOnly', False)
         if not isinstance(show_tcp, bool):
-            logger.error(f"Ungültiger Wert für showTCPOnly: {show_tcp}")
+            logger.error(f"Invalid value for showTCPOnly: {show_tcp}")
             return
         save_setting('show_tcp_only', show_tcp)
         socketio.emit('settings_update', {'show_tcp_only': show_tcp})
-        logger.info(f"Nur TCP-Verbindungen {'eingeblendet' if show_tcp else 'ausgeblendet'}")
+        logger.info(f"TCP-only connections {'enabled' if show_tcp else 'disabled'}")
     except Exception as e:
-        logger.error(f"Fehler bei set_tcp_only: {e}")
+        logger.error(f"Error in set_tcp_only: {e}")
 
 def save_setting(key, value):
     with locked(db_lock):
@@ -506,7 +506,7 @@ def save_setting(key, value):
                 c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, db_value))
                 conn.commit()
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Speichern der Einstellung {key}: {e}")
+            logger.error(f"Error saving setting {key}: {e}")
 
 def is_private_ip(ip):
     try:
@@ -517,7 +517,7 @@ def is_private_ip(ip):
 
 def estimate_os(ttl):
     if ttl is None:
-        return "Unbekannt"
+        return "Unknown"
     ttl = int(ttl)
     if ttl <= 64:
         return "Linux/Unix"
@@ -525,7 +525,7 @@ def estimate_os(ttl):
         return "Windows"
     elif ttl <= 255:
         return "macOS/iOS"
-    return "Unbekannt"
+    return "Unknown"
 
 api_call_lock = threading.Lock()
 last_api_call = 0
@@ -543,9 +543,9 @@ def get_geo_data(ip, my_geo_data=None):
             "ip": ip,
             "lat": my_geo_data["lat"] if my_geo_data else DEFAULT_COORDS[0],
             "lon": my_geo_data["lon"] if my_geo_data else DEFAULT_COORDS[1],
-            "city": my_geo_data["city"] if my_geo_data else "Ungeolokalisierbar",
-            "country": my_geo_data["country"] if my_geo_data else "Ungeolokalisierbar",
-            "region": my_geo_data["region"] if my_geo_data else "Ungeolokalisierbar",
+            "city": my_geo_data["city"] if my_geo_data else "Unknown",
+            "country": my_geo_data["country"] if my_geo_data else "Unknown",
+            "region": my_geo_data["region"] if my_geo_data else "Unknown",
             "org": "Local Network"
         }
         with cache_lock:
@@ -565,10 +565,10 @@ def get_geo_data(ip, my_geo_data=None):
                     "ip": ip,
                     "lat": data["lat"],
                     "lon": data["lon"],
-                    "city": data.get("city", "Ungeolokalisierbar"),
-                    "country": data.get("country", "Ungeolokalisierbar"),
-                    "region": data.get("regionName", "Ungeolokalisierbar"),
-                    "org": data.get("org", data.get("isp", "Nicht verfügbar"))
+                    "city": data.get("city", "Unknown"),
+                    "country": data.get("country", "Unknown"),
+                    "region": data.get("regionName", "Unknown"),
+                    "org": data.get("org", data.get("isp", "Not available"))
                 }
                 with cache_lock:
                     geo_cache[ip] = {"data": geo_data, "timestamp": now}
@@ -585,10 +585,10 @@ def get_geo_data(ip, my_geo_data=None):
                     "ip": ip,
                     "lat": lat,
                     "lon": lon,
-                    "city": data.get("city", "Ungeolokalisierbar"),
-                    "country": data.get("country", "Ungeolokalisierbar"),
-                    "region": data.get("region", "Ungeolokalisierbar"),
-                    "org": data.get("org", "Nicht verfügbar")
+                    "city": data.get("city", "Unknown"),
+                    "country": data.get("country", "Unknown"),
+                    "region": data.get("region", "Unknown"),
+                    "org": data.get("org", "Not available")
                 }
                 with cache_lock:
                     geo_cache[ip] = {"data": geo_data, "timestamp": now}
@@ -599,10 +599,10 @@ def get_geo_data(ip, my_geo_data=None):
             "ip": ip,
             "lat": DEFAULT_COORDS[0],
             "lon": DEFAULT_COORDS[1],
-            "city": "Ungeolokalisierbar",
-            "country": "Ungeolokalisierbar",
-            "region": "Ungeolokalisierbar",
-            "org": "Nicht verfügbar"
+            "city": "Unknown",
+            "country": "Unknown",
+            "region": "Unknown",
+            "org": "Not available"
         }
         with cache_lock:
             geo_cache[ip] = {"data": geo_data, "timestamp": now}
@@ -628,13 +628,13 @@ def get_my_public_ip_coords():
                 "ip": "Unknown",
                 "lat": DEFAULT_COORDS[0],
                 "lon": DEFAULT_COORDS[1],
-                "city": "Ungeolokalisierbar",
-                "country": "Ungeolokalisierbar",
-                "region": "Ungeolokalisierbar",
-                "org": "Nicht verfügbar"
+                "city": "Unknown",
+                "country": "Unknown",
+                "region": "Unknown",
+                "org": "Not available"
             }, "Unknown"
 
-def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, mac=None, vendor="Unbekannt", src_ip=None, dst_ip=None, ttl=None, hostname="Unbekannt"):
+def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, mac=None, vendor="Unknown", src_ip=None, dst_ip=None, ttl=None, hostname="Unknown"):
     if ip in (my_local_ip, my_public_ip):
         return
     with cache_lock:
@@ -657,18 +657,18 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
             suspicious_orgs = org_data.get("suspicious_organisations", [])
             dangerous_orgs = org_data.get("dangerous_organisations", [])
     except Exception as e:
-        logger.error(f"Fehler beim Laden von trusted_organisations.json: {e}")
+        logger.error(f"Error loading trusted_organisations.json: {e}")
         trusted_orgs = []
         suspicious_orgs = []
         dangerous_orgs = []
 
-    org = geo.get("org", "Unbekannt")
+    org = geo.get("org", "Unknown")
     if org in dangerous_orgs:
-        threat_level = "Hoch"
+        threat_level = "High"
     elif org in suspicious_orgs:
-        threat_level = "Mittel"
+        threat_level = "Medium"
     elif org in trusted_orgs:
-        threat_level = "Keine Bedrohung"
+        threat_level = "No Threat"
     else:
         with locked(db_lock):
             try:
@@ -676,15 +676,15 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
                     c = conn.cursor()
                     c.execute("SELECT threat_level FROM threat_list WHERE ip = ?", (ip,))
                     threat = c.fetchone()
-                    threat_level = threat[0] if threat else "Keine Bedrohung"
+                    threat_level = threat[0] if threat else "No Threat"
             except sqlite3.Error as e:
                 logger.error(f"Fehler beim Abrufen des Bedrohungslevels für IP {ip}: {e}")
-                threat_level = "Keine Bedrohung"
+                threat_level = "No Threat"
 
-    valid_threat_levels = ["Hoch", "Mittel", "Niedrig", "Keine Bedrohung"]
+    valid_threat_levels = ["High", "Medium", "Low", "No Threat"]
     if threat_level not in valid_threat_levels:
         logger.warning(f"Ungültiger Threat Level für IP {ip}: {threat_level}. Setze auf 'Keine Bedrohung'.")
-        threat_level = "Keine Bedrohung"
+        threat_level = "No Threat"
 
     with locked(db_lock):
         try:
@@ -770,15 +770,15 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
     dst_port = None
     src_mac = None
     dst_mac = None
-    src_vendor = "Unbekannt"
-    dst_vendor = "Unbekannt"
+    src_vendor = "Unknown"
+    dst_vendor = "Unknown"
     packet_size = len(packet)
 
     if Ether in packet:
         src_mac = packet[Ether].src
         dst_mac = packet[Ether].dst
-        src_vendor = get_mac_vendor_with_cache(src_mac) if not is_private_ip(ip_src) else "Unbekannt"
-        dst_vendor = get_mac_vendor_with_cache(dst_mac) if not is_private_ip(ip_dst) else "Unbekannt"
+        src_vendor = get_mac_vendor_with_cache(src_mac) if not is_private_ip(ip_src) else "Unknown"
+        dst_vendor = get_mac_vendor_with_cache(dst_mac) if not is_private_ip(ip_dst) else "Unknown"
 
     if TCP in packet:
         protocol = "TCP"
@@ -810,8 +810,8 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
         elif dst_port in [80, 443]:
             direction = "outgoing"
 
-    hostname_src = mdns_listener.devices.get(ip_src, ip_src if is_private_ip(ip_src) else "Unbekannt")
-    hostname_dst = mdns_listener.devices.get(ip_dst, ip_dst if is_private_ip(ip_dst) else "Unbekannt")
+    hostname_src = mdns_listener.devices.get(ip_src, ip_src if is_private_ip(ip_src) else "Unknown")
+    hostname_dst = mdns_listener.devices.get(ip_dst, ip_dst if is_private_ip(ip_dst) else "Unknown")
 
     packet_data = {
         "ip_src": ip_src,
@@ -832,7 +832,7 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
         queue.put(packet_data)
         logger.debug(f"Queued packet: {packet_data}")
     except Exception as e:
-        logger.error(f"Fehler beim Hinzufügen zur Warteschlange: {e}")
+        logger.error(f"Error adding to queue: {e}")
 
 def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets):
     logger.debug(f"Internal packet captured: {packet.summary()}")
@@ -850,8 +850,8 @@ def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
     dst_port = None
     src_mac = None
     dst_mac = None
-    src_vendor = "Unbekannt"
-    dst_vendor = "Unbekannt"
+    src_vendor = "Unknown"
+    dst_vendor = "Unknown"
     packet_size = len(packet)
 
     if Ether in packet:
@@ -911,7 +911,7 @@ def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
             "hostname": ip_dst
         })
 
-def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unbekannt", os="Unbekannt", threat_level="Keine Bedrohung"):
+def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat"):
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         logger.warning(f"Ungültige Koordinaten für IP {ip}: lat={lat}, lon={lon}")
         return
@@ -919,14 +919,14 @@ def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, prot
         logger.warning(f"Koordinaten außerhalb des gültigen Bereichs für IP {ip}: lat={lat}, lon={lon}")
         return
 
-    valid_threat_levels = ["Hoch", "Mittel", "Niedrig", "Keine Bedrohung"]
+    valid_threat_levels = ["High", "Medium", "Low", "No Threat"]
     if threat_level not in valid_threat_levels:
         logger.warning(f"Ungültiger Threat Level für IP {ip}: {threat_level}. Setze auf 'Keine Bedrohung'.")
-        threat_level = "Keine Bedrohung"
+        threat_level = "No Threat"
 
-    if os == "Keine Bedrohung":
+    if os == "No Threat":
         logger.warning(f"Ungültiges Betriebssystem für IP {ip}: {os}. Setze auf 'Unbekannt'.")
-        os = "Unbekannt"
+        os = "Unknown"
 
     message = {
         "ip": ip,
@@ -1050,8 +1050,8 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
                     dst_port = packet_data["dst_port"]
                     src_mac = packet_data["src_mac"]
                     dst_mac = packet_data["dst_mac"]
-                    src_vendor = packet_data.get("src_vendor", "Unbekannt")
-                    dst_vendor = packet_data.get("dst_vendor", "Unbekannt")
+                    src_vendor = packet_data.get("src_vendor", "Unknown")
+                    dst_vendor = packet_data.get("dst_vendor", "Unknown")
                     direction = packet_data["direction"]
                     ttl = packet_data.get("ttl")
                     hostname_src = packet_data.get("hostname_src")
@@ -1090,10 +1090,10 @@ def index():
         my_ip_coords = DEFAULT_COORDS
         my_geo_data = {
             "ip": "Unknown",
-            "city": "Ungeolokalisierbar",
-            "country": "Ungeolokalisierbar",
-            "region": "Ungeolokalisierbar",
-            "org": "Nicht verfügbar"
+            "city": "Unknown",
+            "country": "Unknown",
+            "region": "Unknown",
+            "org": "Not available"
         }
     return render_template(
         'index.html',

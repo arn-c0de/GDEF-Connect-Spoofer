@@ -4,167 +4,157 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Version](https://img.shields.io/badge/Version-1.0-brightgreen.svg)
 
-Ein Echtzeit-Netzwerk-Monitoring- und Visualisierungstool für Windows, das Netzwerkverkehr analysiert und auf einer interaktiven Karte darstellt.
+![ConnectSpoofer Screenshot](images/Connectspoofer-link.png)
+
+A real-time network monitoring and visualization tool that analyzes network traffic and displays connections on an interactive 3D globe.
 
 ## Features
 
-🌍 **Geo-Visualisierung** - Zeigt Netzwerkverbindungen auf einer interaktiven Weltkarte
-🔍 **Packet Sniffing** - Erfasst TCP, UDP und ICMP-Pakete in Echtzeit
-🏠 **Lokales Netzwerk** - Erkennt und visualisiert Geräte im lokalen Netzwerk (mDNS)
-🛡️ **Bedrohungserkennung** - Integrierte Threat-Intelligence (FireHOL Listen)
-📊 **Live-Statistiken** - Echtzeit-Netzwerkstatistiken und Verbindungsanalyse
-🎯 **IP-Pinning** - Wichtige IPs pinnen und separat verfolgen
-⚙️ **Flexible Filterung** - TCP/UDP Filter, Lokales/Externes Netzwerk Toggle
+- **Geo-Visualization** - Displays network connections on an interactive world map
+- **Packet Sniffing** - Captures TCP, UDP, and ICMP packets in real-time
+- **Local Network** - Detects and visualizes devices on the local network (mDNS)
+- **Threat Detection** - Integrated threat intelligence (FireHOL blocklists)
+- **Live Statistics** - Real-time network statistics and connection analysis
+- **IP Pinning** - Pin important IPs and track them separately
+- **Flexible Filtering** - TCP/UDP filters, local/external network toggle
 
-## Plattform-Support
+## Platform Support
 
-⚠️ **Aktuell nur für Windows getestet und entwickelt**
+Supports **Windows**, **Linux**, and **macOS**.
 
-Das Tool wurde auf Windows entwickelt und getestet. Theoretisch sollte es auch auf Linux/macOS funktionieren, da es auf Python basiert, jedoch sind **kleinere Anpassungen** erforderlich:
-- Interface-Erkennung (aktuell Windows NPF-spezifisch)
-- `start.bat` → Shell-Skript für Linux/macOS
-- Admin-Rechte-Prüfung (Windows-spezifisch)
+- **Windows**: Run `start.bat` (requests admin rights automatically)
+- **Linux/macOS**: Run `./run.sh` (requires root/sudo for packet sniffing)
 
-🔮 **Zukunft**: Cross-Platform-Support ist geplant und wird in zukünftigen Versionen implementiert.
+## Requirements
 
-## Anforderungen
-
-- **OS**: Windows 10/11 (getestet)
 - **Python**: 3.8+
-- **Rechte**: Administrator-Rechte (für Packet Sniffing)
-- **Dependencies**: Npcap oder WinPcap
+- **Privileges**: Administrator/root rights (required for packet sniffing)
+- **Windows**: Npcap or WinPcap
 
 ## Installation
 
-### 1. Npcap installieren
+### 1. Install Npcap (Windows only)
 ```bash
-# Download und Installation von: https://npcap.com/
+# Download and install from: https://npcap.com/
 ```
 
-### 2. Repository klonen
+### 2. Clone the repository
 ```bash
 git clone https://github.com/arn-c0de/ConnectSpoofer.git
 cd ConnectSpoofer
 ```
 
-### 3. Starten
+### 3. Start
 ```bash
-# Als Administrator ausführen:
+# Windows (run as administrator):
 start.bat
+
+# Linux/macOS:
+sudo ./run.sh
 ```
 
-Die `start.bat` erledigt automatisch:
-- ✅ Erstellt virtuelles Environment (venv)
-- ✅ Installiert alle Dependencies aus `requirements.txt`
-- ✅ Interface-Auswahl beim ersten Start
-- ✅ Startet die Anwendung
+The launcher script automatically:
+- Creates a virtual environment (venv)
+- Installs all dependencies from `requirements.txt`
+- Prompts for interface selection on first start
+- Generates all configuration files on first run
+- Starts the application
 
-## Verwendung
+## Usage
 
-1. **Als Administrator starten**: Rechtsklick auf `start.bat` → "Als Administrator ausführen"
-2. **Netzwerk-Interface auswählen**: Beim ersten Start Interface aus der Liste wählen
-3. **Browser öffnen**: Automatisch öffnet sich `http://localhost:8000`
-4. **Netzwerkverkehr beobachten**: IPs erscheinen auf der Karte in Echtzeit
+1. **Start with admin/root privileges**
+2. **Select a network interface**: Choose an interface from the list on first start
+3. **Open your browser**: Navigate to `http://localhost:8000`
+4. **Monitor network traffic**: IPs appear on the globe in real-time
 
-### Interface neu auswählen
-Beim Start der BAT-Datei innerhalb von 5 Sekunden `I` drücken.
+### Re-select interface
+Press `I` within 5 seconds when the launcher script starts.
 
-## Technologie-Stack
+## Tech Stack
 
 - **Backend**: Python 3, Flask, Flask-SocketIO
 - **Packet Sniffing**: Scapy
-- **Frontend**: HTML5, JavaScript, Leaflet.js
-- **Datenbank**: SQLite3
+- **Frontend**: HTML5, JavaScript, Three.js, Globe.gl
+- **Database**: SQLite3
 - **Service Discovery**: Zeroconf (mDNS)
 
-## Konfiguration
+## Configuration
 
-Die Konfiguration wird in `database/backend_conf.json` gespeichert:
-```json
-{
-    "network_interface": "\\Device\\NPF_{GUID}"
-}
-```
+Configuration files are generated automatically on first start in the `database/` directory:
 
-## Projektstruktur
+- `backend_conf.json` - Network interface selection
+- `trusted_organisations.json` - Organization classification (trusted, suspicious, dangerous)
+
+## Project Structure
 
 ```
 ConnectSpoofer/
-├── app.py                           # Hauptanwendung (Flask-Server, Packet Sniffing)
-├── start.bat                        # Launcher mit Auto-Setup
-├── select_interface.py              # Interface-Auswahl Tool
-├── debug_interfaces.py              # Interface Debug-Tool
-├── requirements.txt                 # Python-Dependencies
-├── backend_conf.example.json        # Beispiel Backend-Konfiguration
-├── database.zip                     # Database Archiv
-├── README.md                        # Dokumentation
-├── database/                        # SQLite-Datenbanken & Configs
-│   ├── backend_conf.json           # Backend-Konfiguration (Interface)
-│   ├── geo_data.db                 # SQLite Geo-Datenbank
-│   ├── geo_data.db-shm             # SQLite Shared Memory
-│   ├── geo_data.db-wal             # SQLite Write-Ahead Log
-│   ├── trusted_organisations.json  # Liste vertrauenswürdiger Organisationen
-│   └── datasets/                   # GeoIP Datenbanken
-│       ├── 1.mmdb                  # MaxMind GeoIP2 Database
-│       ├── 2.mmdb                  # MaxMind GeoIP2 Database
-│       └── 3.mmdb                  # MaxMind GeoIP2 Database
-├── static/                          # Frontend Static Assets
-│   ├── globe.js                    # 3D-Globe Visualisierung
-│   ├── init-globe.js               # Globe Initialisierung
-│   └── styles.css                  # CSS Styling
-├── templates/                       # Flask HTML-Templates
-│   └── index.html                  # Haupt-Dashboard
-└── venv/                           # Virtuelles Environment (auto-erstellt)
+├── app.py                           # Main application (Flask server, packet sniffing)
+├── start.bat                        # Windows launcher with auto-setup
+├── run.sh                           # Linux/macOS launcher with auto-setup
+├── select_interface.py              # Interface selection tool
+├── debug_interfaces.py              # Interface debugging tool
+├── requirements.txt                 # Python dependencies
+├── README.md                        # Documentation
+├── database/                        # SQLite databases & configs (generated)
+│   ├── backend_conf.json           # Backend configuration (generated on first start)
+│   ├── trusted_organisations.json  # Trusted organizations list (generated on first start)
+│   ├── geo_data.db                 # SQLite geo database (generated)
+│   └── datasets/                   # GeoIP databases
+│       └── *.mmdb                  # MaxMind GeoIP2 databases
+├── static/                          # Frontend static assets
+│   ├── globe.js                    # 3D globe visualization
+│   ├── init-globe.js               # Globe initialization
+│   └── styles.css                  # CSS styling
+├── templates/                       # Flask HTML templates
+│   └── index.html                  # Main dashboard
+└── images/                          # Project images
+    └── Connectspoofer-link.png     # Screenshot
 ```
 
-## Sicherheitshinweise
+## Security Notice
 
-⚠️ **Nur für defensive Sicherheitsanalysen verwenden**
-⚠️ **Benötigt Administrator-Rechte**
-⚠️ **Beachte lokale Gesetze bezüglich Netzwerk-Monitoring**
+**Only use for defensive security analysis**
+**Requires administrator/root privileges**
+**Comply with local laws regarding network monitoring**
 
-Dieses Tool ist ausschließlich für:
-- Netzwerk-Sicherheitsanalysen
-- Eigene Netzwerke und Systeme
-- Bildungszwecke
-- Penetration Testing (mit Erlaubnis)
+This tool is intended exclusively for:
+- Network security analysis
+- Your own networks and systems
+- Educational purposes
+- Penetration testing (with authorization)
 
 ## Dependencies
 
 ```
-scapy>=2.5.0
-requests>=2.31.0
-zeroconf>=0.131.0
-flask>=3.0.0
-flask-socketio>=5.3.0
-python-socketio>=5.11.0
+scapy>=2.7.0
+requests>=2.32.5
+zeroconf>=0.148.0
+flask>=3.1.2
+flask-socketio>=5.6.0
+python-socketio>=5.16.0
 ```
 
-## Lizenz
+## License
 
-Dieses Projekt ist nur für legale und ethische Zwecke bestimmt. Der Autor übernimmt keine Verantwortung für Missbrauch.
+This project is intended for legal and ethical purposes only. The author assumes no responsibility for misuse.
 
 ## Troubleshooting
 
-### "NPF nicht gefunden" Fehler
-- Npcap installieren: https://npcap.com/
-- Bei Installation "WinPcap API-compatible Mode" aktivieren
+### "NPF not found" error
+- Install Npcap: https://npcap.com/
+- Enable "WinPcap API-compatible Mode" during installation
 
-### Interface-Namen zeigen nur NPF-Pfade
-- `D` im Interface-Menü drücken für Debug-Informationen
-- Alternativ `debug_interfaces.py` ausführen
+### Interface names show only NPF paths
+- Press `D` in the interface menu for debug information
+- Alternatively run `debug_interfaces.py`
 
-### Keine Administrator-Rechte
-- BAT-Datei fordert automatisch Admin-Rechte an
-- Falls nicht: Rechtsklick → "Als Administrator ausführen"
+### No administrator privileges
+- `start.bat` requests admin rights automatically
+- If not: Right-click -> "Run as administrator"
+- Linux/macOS: Use `sudo ./run.sh`
 
-## Autor
+## Author
 
 **arn-c0de**
 GitHub: [@arn-c0de](https://github.com/arn-c0de)
-
----
-
-⭐ **Gefällt dir das Projekt? Gib einen Star!** ⭐
-
-
