@@ -1,6 +1,6 @@
-scapy>=2.5.0
-requests>=2.31.0
-zeroconf>=0.131.0
-flask>=3.0.0
-flask-socketio>=5.3.0
-python-socketio>=5.11.0
+scapy>=2.7.0
+requests>=2.32.5
+zeroconf>=0.148.0
+flask>=3.1.2
+flask-socketio>=5.6.0
+python-socketio>=5.16.0

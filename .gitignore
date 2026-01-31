@@ -1,0 +1,18 @@
+# Virtual environment
+.venv/
+
+# Logs and runtime
+app.log
+app.pid
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environment files
+.env
+
+# Editor files
+.vscode/
