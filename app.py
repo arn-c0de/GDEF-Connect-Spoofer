@@ -41,7 +41,7 @@ def load_network_interface():
 
 # Konfiguration
 CONFIG = {
-    "network_interface": load_network_interface() or "\\Device\\NPF_{DEFAULT_INTERFACE}",
+    "network_interface": load_network_interface(),
     "cache_timeout": 3600,
     "api_timeout": 5,
     "database_dir": "database",
@@ -121,56 +121,6 @@ def get_mac_vendor(mac):
     except Exception as e:
         logger.error(f"Fehler beim Hinzufügen zur Warteschlange: {e}")
     return None
-
-# Konfiguration
-CONFIG = {
-    "network_interface": load_network_interface() or "\\Device\\NPF_{DEFAULT_INTERFACE}",
-    "cache_timeout": 3600,
-    "api_timeout": 5,
-    "database_dir": "database",
-    "database_path": os.path.join("database", "geo_data.db"),
-}
-
-NETWORK_INTERFACE = CONFIG["network_interface"]
-DEFAULT_COORDS = [0, 0]
-CACHE_TIMEOUT = CONFIG["cache_timeout"]
-EXPIRATION_SECONDS = 3600
-SNIFF_TIMEOUT = 30
-SOCKETIO_PING_TIMEOUT = 120
-SOCKETIO_PING_INTERVAL = 25
-DATABASE_DIR = CONFIG["database_dir"]
-DATABASE_PATH = CONFIG["database_path"]
-TRUSTED_ORGS_PATH = os.path.join(DATABASE_DIR, "trusted_organisations.json")
-API_TIMEOUT = CONFIG["api_timeout"]
-
-# Globale Variablen
-geo_cache = {}
-known_ips = set()
-tcp_connections = {}
-cache_lock = threading.Lock()
-active_clients = set()
-db_lock = threading.Lock()
-pinned_ips_cache = {}
-
-# Packet Queue
-class PacketQueue:
-    def __init__(self):
-        self.queue = Queue(maxsize=5000)
-
-    def put(self, item):
-        try:
-            is_external = not (is_private_ip(item.get('ip_src', '')) and is_private_ip(item.get('ip_dst', '')))
-            priority = 1 if is_external else 5
-            self.queue.put_nowait((priority, item))
-            logger.debug(f"Paket in Warteschlange: {item.get('protocol')}, {'extern' if is_external else 'intern'}")
-        except Full:
-            logger.warning("Warteschlange voll, Paket verworfen")
-
-    def get(self, timeout=None):
-        return self.queue.get(timeout=timeout)
-
-    def empty(self):
-        return self.queue.empty()
 
 def get_mac_vendor(mac):
     if not mac:
@@ -339,19 +289,47 @@ def get_local_ip():
 
 def is_admin():
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
+        if sys.platform == 'win32':
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        else:
+            return os.geteuid() == 0
     except Exception as e:
         logger.error(f"Fehler beim Prüfen der Admin-Rechte: {e}")
         return False
 
+def auto_detect_interface():
+    """Erkennt automatisch das beste Netzwerk-Interface auf allen Plattformen."""
+    available = get_if_list()
+    if not available:
+        return None
+
+    if sys.platform == 'win32':
+        # Auf Windows: erstes Interface als Fallback
+        return available[0]
+
+    # Auf Linux/macOS: bevorzuge echte Netzwerk-Interfaces
+    preferred_prefixes = ('eth', 'en', 'wl', 'wlan', 'ens', 'enp', 'wlp')
+    for iface in available:
+        if iface.startswith(preferred_prefixes):
+            return iface
+
+    # Fallback: erstes Interface das nicht lo ist
+    for iface in available:
+        if iface != 'lo':
+            return iface
+
+    return available[0]
+
 def validate_interface():
     available_interfaces = get_if_list()
     global NETWORK_INTERFACE
-    if NETWORK_INTERFACE not in available_interfaces:
-        logger.warning(f"Interface '{NETWORK_INTERFACE}' nicht gefunden! Verfügbare Interfaces: {available_interfaces}")
-        if available_interfaces:
-            NETWORK_INTERFACE = available_interfaces[0]
-            logger.info(f"Fallback to interface: {NETWORK_INTERFACE}")
+    if not NETWORK_INTERFACE or NETWORK_INTERFACE not in available_interfaces:
+        if NETWORK_INTERFACE:
+            logger.warning(f"Interface '{NETWORK_INTERFACE}' nicht gefunden! Verfügbare Interfaces: {available_interfaces}")
+        detected = auto_detect_interface()
+        if detected:
+            NETWORK_INTERFACE = detected
+            logger.info(f"Auto-detected interface: {NETWORK_INTERFACE}")
         else:
             logger.error("Keine Netzwerkschnittstellen gefunden!")
             sys.exit(1)
@@ -1127,7 +1105,10 @@ def index():
 
 def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
     if not is_admin():
-        logger.error("Dieses Skript benötigt Administratorrechte.")
+        if sys.platform == 'win32':
+            logger.error("Dieses Skript benötigt Administratorrechte.")
+        else:
+            logger.error("Dieses Skript benötigt Root-Rechte (sudo).")
         sys.exit(1)
     validate_interface()
     init_db()
@@ -1151,7 +1132,10 @@ def cleanup(internal_process, zeroconf):
 
 if __name__ == "__main__":
     from multiprocessing import set_start_method
-    set_start_method('spawn')
+    if sys.platform == 'win32':
+        set_start_method('spawn')
+    else:
+        set_start_method('fork', force=True)
 
     my_local_ip = get_local_ip()
     my_ip_coords, my_geo_data, my_public_ip = get_my_public_ip_coords()

@@ -2,10 +2,12 @@ import os
 import json
 import sys
 import re
+import socket
+import struct
+import platform
 
-# Scapy imports für Windows-Interface-Namen
 try:
-    from scapy.all import get_if_list, IFACES
+    from scapy.all import get_if_list, conf
 except ImportError:
     print("[FEHLER] Scapy ist nicht installiert!")
     input("Drücke ENTER zum Beenden...")
@@ -13,84 +15,109 @@ except ImportError:
 
 BACKEND_CONF_PATH = os.path.join("database", "backend_conf.json")
 
-def get_friendly_interface_name(npf_name):
-    """Konvertiert NPF-Device-Namen in benutzerfreundliche Namen."""
+IS_WINDOWS = sys.platform == 'win32'
+
+
+def get_friendly_interface_name(iface_name):
+    """Gibt einen benutzerfreundlichen Namen fuer das Interface zurueck (plattformuebergreifend)."""
+    if IS_WINDOWS:
+        return _get_friendly_name_windows(iface_name)
+    else:
+        return iface_name
+
+
+def _get_friendly_name_windows(npf_name):
+    """Konvertiert NPF-Device-Namen in benutzerfreundliche Namen (Windows)."""
     try:
-        # Extrahiere GUID aus NPF-Namen
-        guid_match = re.search(r'\{([A-F0-9\-]+)\}', npf_name)
+        from scapy.all import IFACES
+        guid_match = re.search(r'\{([A-F0-9\-]+)\}', npf_name, re.IGNORECASE)
 
         if not guid_match:
-            # Fallback für Loopback
             if "Loopback" in npf_name:
                 return "Loopback"
             return npf_name
 
         guid = guid_match.group(1)
 
-        # Durchsuche Scapy IFACES nach passendem Interface
-        for iface_name, iface_obj in IFACES.items():
+        for iface_key, iface_obj in IFACES.items():
             try:
-                # Prüfe ob GUID im Namen vorkommt
-                if guid in str(iface_name):
-                    # Hole beschreibenden Namen
+                if guid.upper() in str(iface_key).upper():
                     if hasattr(iface_obj, 'description') and iface_obj.description:
                         desc = iface_obj.description
-                        # Kürze lange Beschreibungen
                         if len(desc) > 50:
                             desc = desc[:47] + "..."
                         return desc
                     elif hasattr(iface_obj, 'name') and iface_obj.name:
                         return iface_obj.name
-
-                # Prüfe auch data Attribut falls vorhanden
-                if hasattr(iface_obj, 'data'):
-                    data = iface_obj.data
-                    if isinstance(data, dict):
-                        if 'guid' in data and data['guid'] == guid:
-                            if 'description' in data and data['description']:
-                                desc = data['description']
-                                if len(desc) > 50:
-                                    desc = desc[:47] + "..."
-                                return desc
-                            if 'name' in data and data['name']:
-                                return data['name']
             except Exception:
                 continue
 
-        # Fallback: Vereinfache NPF-Namen
         if "Loopback" in npf_name:
             return "Loopback"
-
-        # Letzter Fallback: Zeige GUID
         return f"Interface {guid[:8]}..."
 
     except Exception as e:
         print(f"[DEBUG] Fehler beim Auslesen von {npf_name}: {e}")
         return npf_name
 
-def get_interface_ip(npf_name):
-    """Versucht die IP-Adresse eines Interfaces zu ermitteln."""
+
+def get_interface_ip(iface_name):
+    """Versucht die IP-Adresse eines Interfaces zu ermitteln (plattformuebergreifend)."""
     try:
-        # Extrahiere GUID
-        guid_match = re.search(r'\{([A-F0-9\-]+)\}', npf_name)
+        if IS_WINDOWS:
+            return _get_ip_windows(iface_name)
+        else:
+            return _get_ip_unix(iface_name)
+    except Exception:
+        return None
+
+
+def _get_ip_windows(npf_name):
+    """IP-Adresse ueber Scapy IFACES ermitteln (Windows)."""
+    try:
+        from scapy.all import IFACES
+        guid_match = re.search(r'\{([A-F0-9\-]+)\}', npf_name, re.IGNORECASE)
         if not guid_match:
             return None
-
         guid = guid_match.group(1)
-
-        # Durchsuche IFACES nach IP
-        for iface_name, iface_obj in IFACES.items():
-            if guid in str(iface_name):
+        for iface_key, iface_obj in IFACES.items():
+            if guid.upper() in str(iface_key).upper():
                 if hasattr(iface_obj, 'ip') and iface_obj.ip:
                     return iface_obj.ip
         return None
     except Exception:
         return None
 
+
+def _get_ip_unix(iface_name):
+    """IP-Adresse ueber Socket/ioctl ermitteln (Linux/macOS)."""
+    try:
+        import fcntl
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ip = socket.inet_ntoa(fcntl.ioctl(
+            s.fileno(),
+            0x8915,  # SIOCGIFADDR
+            struct.pack('256s', iface_name[:15].encode('utf-8'))
+        )[20:24])
+        s.close()
+        return ip
+    except Exception:
+        # Fallback: versuche ueber scapy conf
+        try:
+            from scapy.all import get_if_addr
+            addr = get_if_addr(iface_name)
+            if addr and addr != '0.0.0.0':
+                return addr
+        except Exception:
+            pass
+        return None
+
+
 def select_network_interface():
-    """Zeigt verfügbare Netzwerkschnittstellen und lässt den Benutzer eine auswählen."""
+    """Zeigt verfuegbare Netzwerkschnittstellen und laesst den Benutzer eine auswaehlen."""
     print("=" * 70)
     print("   Netzwerkschnittstellen-Auswahl")
+    print("   System: " + platform.system() + " " + platform.release())
     print("=" * 70)
     print()
 
@@ -99,10 +126,12 @@ def select_network_interface():
 
         if not interfaces:
             print("[FEHLER] Keine Netzwerkschnittstellen gefunden!")
-            input("Drücke ENTER zum Beenden...")
+            if not IS_WINDOWS:
+                print("[TIPP] Starte das Skript mit sudo/root-Rechten.")
+            input("Druecke ENTER zum Beenden...")
             return False
 
-        # Erstelle Mapping von freundlichen Namen zu NPF-Namen
+        # Erstelle Mapping von freundlichen Namen
         interface_mapping = {}
         interface_ips = {}
         for iface in interfaces:
@@ -110,19 +139,26 @@ def select_network_interface():
             interface_mapping[iface] = friendly_name
             interface_ips[iface] = get_interface_ip(iface)
 
-        print("Verfügbare Netzwerkschnittstellen:")
+        print("Verfuegbare Netzwerkschnittstellen:")
         print("-" * 70)
         for idx, iface in enumerate(interfaces, 1):
             friendly_name = interface_mapping[iface]
             ip_addr = interface_ips[iface]
 
+            # Markiere wahrscheinlich bestes Interface
+            marker = ""
+            if not IS_WINDOWS and iface.startswith(('eth', 'en', 'wl', 'wlan', 'ens', 'enp', 'wlp')) and ip_addr:
+                marker = " *"
+
             if ip_addr:
-                print(f"{idx}. {friendly_name:<45} (IP: {ip_addr})")
+                print(f"{idx}. {friendly_name:<45} (IP: {ip_addr}){marker}")
             else:
                 print(f"{idx}. {friendly_name}")
         print("-" * 70)
+        if not IS_WINDOWS:
+            print("  * = empfohlenes Interface")
         print()
-        print("[TIP] Drücke 'D' für Debug-Informationen")
+        print("[TIP] Druecke 'D' fuer Debug-Informationen")
         print()
 
         # Lade aktuelle Konfiguration falls vorhanden
@@ -143,7 +179,7 @@ def select_network_interface():
 
         # Benutzerauswahl
         while True:
-            choice = input("Wähle eine Schnittstelle (Nummer) oder drücke ENTER für aktuelle Auswahl: ").strip()
+            choice = input("Waehle eine Schnittstelle (Nummer) oder druecke ENTER fuer aktuelle Auswahl: ").strip()
 
             # Debug-Modus
             if choice.upper() == 'D':
@@ -152,27 +188,13 @@ def select_network_interface():
                 print("=" * 70)
                 for idx, iface in enumerate(interfaces, 1):
                     print(f"\n#{idx}:")
-                    print(f"  NPF-Name: {iface}")
+                    print(f"  Interface-Name: {iface}")
                     print(f"  Anzeigename: {interface_mapping[iface]}")
                     print(f"  IP-Adresse: {interface_ips[iface] or 'Keine'}")
-
-                    # Zeige IFACES Details
-                    import re
-                    guid_match = re.search(r'\{([A-F0-9\-]+)\}', iface)
-                    if guid_match:
-                        guid = guid_match.group(1)
-                        for iface_name, iface_obj in IFACES.items():
-                            if guid in str(iface_name):
-                                print(f"  IFACES Key: {iface_name}")
-                                if hasattr(iface_obj, 'description'):
-                                    print(f"  Description: {iface_obj.description}")
-                                if hasattr(iface_obj, 'name'):
-                                    print(f"  Name: {iface_obj.name}")
-                                break
                 print("\n" + "=" * 70 + "\n")
                 continue
 
-            # Wenn ENTER gedrückt und aktuelle Config existiert, verwende diese
+            # Wenn ENTER gedrueckt und aktuelle Config existiert, verwende diese
             if choice == "" and current_interface and current_interface in interfaces:
                 selected_interface = current_interface
                 friendly_selected = interface_mapping[selected_interface]
@@ -185,12 +207,12 @@ def select_network_interface():
                 if 1 <= choice_num <= len(interfaces):
                     selected_interface = interfaces[choice_num - 1]
                     friendly_selected = interface_mapping[selected_interface]
-                    print(f"[INFO] Ausgewählt: {friendly_selected}")
+                    print(f"[INFO] Ausgewaehlt: {friendly_selected}")
                     break
                 else:
-                    print(f"[FEHLER] Bitte wähle eine Nummer zwischen 1 und {len(interfaces)}")
+                    print(f"[FEHLER] Bitte waehle eine Nummer zwischen 1 und {len(interfaces)}")
             except ValueError:
-                print("[FEHLER] Ungültige Eingabe. Bitte eine Nummer eingeben.")
+                print("[FEHLER] Ungueltige Eingabe. Bitte eine Nummer eingeben.")
 
         print()
 
@@ -208,7 +230,7 @@ def select_network_interface():
 
     except Exception as e:
         print(f"[FEHLER] Fehler bei der Interface-Auswahl: {e}")
-        input("Drücke ENTER zum Beenden...")
+        input("Druecke ENTER zum Beenden...")
         return False
 
 if __name__ == "__main__":
