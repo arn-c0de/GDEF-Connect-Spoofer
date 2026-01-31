@@ -1,15 +1,11 @@
 # ConnectSpoofer
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?logo=windows)
+![License](https://img.shields.io/github/license/arn-c0de/ConnectSpoofer?color=green)
+![Network](https://img.shields.io/badge/Network-Monitoring-critical?logo=wireshark)
+![Map](https://img.shields.io/badge/Visualization-3D%20Globe-blueviolet?logo=googleearth)
+![Backend](https://img.shields.io/badge/Backend-Flask-black?logo=flask)
 
-![Python](https://img.shields.io/badge/Python-3-blue.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/Version-1.0-brightgreen.svg)
-[![Build Status](https://github.com/arn-c0de/ConnectSpoofer/actions/workflows/ci.yml/badge.svg)](https://github.com/arn-c0de/ConnectSpoofer/actions)
-[![CodeQL](https://github.com/arn-c0de/ConnectSpoofer/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/arn-c0de/ConnectSpoofer/actions)
-[![Codecov](https://img.shields.io/codecov/c/github/arn-c0de/ConnectSpoofer.svg)](https://codecov.io/gh/arn-c0de/ConnectSpoofer)
-[![Release](https://img.shields.io/github/v/release/arn-c0de/ConnectSpoofer)](https://github.com/arn-c0de/ConnectSpoofer/releases)
-[![Downloads](https://img.shields.io/github/downloads/arn-c0de/ConnectSpoofer/total)](https://github.com/arn-c0de/ConnectSpoofer/releases)
-[![Issues](https://img.shields.io/github/issues/arn-c0de/ConnectSpoofer.svg)](https://github.com/arn-c0de/ConnectSpoofer/issues)
-[![Last Commit](https://img.shields.io/github/last-commit/arn-c0de/ConnectSpoofer)](https://github.com/arn-c0de/ConnectSpoofer/commits)
 
 ![ConnectSpoofer Screenshot](images/Connectspoofer-link.png)
 
@@ -165,3 +161,4 @@ This project is intended for legal and ethical purposes only. The author assumes
 
 **arn-c0de**
 GitHub: [@arn-c0de](https://github.com/arn-c0de)
+
