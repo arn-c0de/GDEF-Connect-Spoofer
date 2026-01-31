@@ -574,7 +574,7 @@ def get_geo_data(ip, my_geo_data=None):
                     geo_cache[ip] = {"data": geo_data, "timestamp": now}
                 return geo_data
         except Exception as e:
-            logger.warning(f"Fehler bei ip-api für {ip}: {e}")
+            logger.warning(f"Error at ip-api for {ip}: {e}")
         try:
             response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=2)
             last_api_call = time.time()
@@ -594,7 +594,7 @@ def get_geo_data(ip, my_geo_data=None):
                     geo_cache[ip] = {"data": geo_data, "timestamp": now}
                 return geo_data
         except Exception as e:
-            logger.warning(f"Fehler bei ipinfo für {ip}: {e}")
+            logger.warning(f"Error at ipinfo for {ip}: {e}")
         geo_data = {
             "ip": ip,
             "lat": DEFAULT_COORDS[0],
@@ -615,7 +615,7 @@ def get_my_public_ip_coords():
         geo_data = get_geo_data(public_ip)
         return [geo_data["lat"], geo_data["lon"]], geo_data, public_ip
     except Exception as e:
-        logger.warning(f"Fehler bei api.ipify: {e}")
+        logger.warning(f"Error at api.ipify: {e}")
         try:
             response = requests.get("https://ipinfo.io/json", timeout=2)
             data = response.json()
@@ -623,7 +623,7 @@ def get_my_public_ip_coords():
             geo_data = get_geo_data(public_ip)
             return [geo_data["lat"], geo_data["lon"]], geo_data, public_ip
         except Exception as e:
-            logger.error(f"Fehler bei ipinfo: {e}")
+            logger.error(f"Error at ipinfo: {e}")
             return DEFAULT_COORDS, {
                 "ip": "Unknown",
                 "lat": DEFAULT_COORDS[0],
@@ -678,12 +678,12 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
                     threat = c.fetchone()
                     threat_level = threat[0] if threat else "No Threat"
             except sqlite3.Error as e:
-                logger.error(f"Fehler beim Abrufen des Bedrohungslevels für IP {ip}: {e}")
+                logger.error(f"Error fetching threat level for IP {ip}: {e}")
                 threat_level = "No Threat"
 
     valid_threat_levels = ["High", "Medium", "Low", "No Threat"]
     if threat_level not in valid_threat_levels:
-        logger.warning(f"Ungültiger Threat Level für IP {ip}: {threat_level}. Setze auf 'Keine Bedrohung'.")
+        logger.warning(f"Invalid threat level for IP {ip}: {threat_level}. Setting to 'No Threat'.")
         threat_level = "No Threat"
 
     with locked(db_lock):
@@ -714,7 +714,7 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
                 send_ip_to_clients(geo["ip"], geo["lat"], geo["lon"], geo["city"], geo["country"], geo["region"], org, now,
                                    protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, 0, hostname, os_guess, threat_level)
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Aktualisieren von IP {ip}: {e}")
+            logger.error(f"Error updating IP {ip}: {e}")
 
 def send_network_stats(stats):
     while True:
@@ -730,7 +730,7 @@ def send_network_stats(stats):
                 socketio.emit('heartbeat', {'timestamp': time.time(), 'active_clients': len(active_clients)})
             time.sleep(5)
         except Exception as e:
-            logger.error(f"Fehler beim Senden von Netzwerkstatistiken: {e}")
+            logger.error(f"Error sending network statistics: {e}")
             time.sleep(5)
 
 def cleanup_expired_ips(stats):
@@ -753,7 +753,7 @@ def cleanup_expired_ips(stats):
                 stats['active_connections'] = len(tcp_connections)
             time.sleep(10)
         except Exception as e:
-            logger.error(f"Fehler bei der Bereinigung: {e}")
+            logger.error(f"Error during cleanup: {e}")
             time.sleep(10)
 
 def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
@@ -913,19 +913,19 @@ def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
 
 def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat"):
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-        logger.warning(f"Ungültige Koordinaten für IP {ip}: lat={lat}, lon={lon}")
+        logger.warning(f"Invalid coordinates for IP {ip}: lat={lat}, lon={lon}")
         return
     if lat < -90 or lat > 90 or lon < -180 or lon > 180:
-        logger.warning(f"Koordinaten außerhalb des gültigen Bereichs für IP {ip}: lat={lat}, lon={lon}")
+        logger.warning(f"Coordinates out of valid range for IP {ip}: lat={lat}, lon={lon}")
         return
 
     valid_threat_levels = ["High", "Medium", "Low", "No Threat"]
     if threat_level not in valid_threat_levels:
-        logger.warning(f"Ungültiger Threat Level für IP {ip}: {threat_level}. Setze auf 'Keine Bedrohung'.")
+        logger.warning(f"Invalid threat level for IP {ip}: {threat_level}. Setting to 'No Threat'.")
         threat_level = "No Threat"
 
     if os == "No Threat":
-        logger.warning(f"Ungültiges Betriebssystem für IP {ip}: {os}. Setze auf 'Unbekannt'.")
+        logger.warning(f"Invalid OS for IP {ip}: {os}. Setting to 'Unknown'.")
         os = "Unknown"
 
     message = {
@@ -989,7 +989,7 @@ def send_all_ips_to_client(sid=None):
                     else:
                         socketio.emit('ip_update', message)
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Senden aller IPs: {e}")
+            logger.error(f"Error sending all IPs: {e}")
 
 def send_pinned_ips_to_client(sid):
     with locked(db_lock):
@@ -1000,7 +1000,7 @@ def send_pinned_ips_to_client(sid):
                 pinned_ips = {row[0]: {'isPinned': True, 'packet_count': row[1]} for row in c.fetchall()}
                 socketio.emit('pinned_ips_update', pinned_ips, to=sid)
         except sqlite3.Error as e:
-            logger.error(f"Fehler beim Senden der gepinnten IPs: {e}")
+            logger.error(f"Error sending pinned IPs: {e}")
 
 def internal_scanner_process(my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets):
     while True:
@@ -1008,7 +1008,7 @@ def internal_scanner_process(my_geo_data, my_local_ip, my_public_ip, queue, is_i
             sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: internal_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets),
                   filter="ip or icmp", store=0, timeout=SNIFF_TIMEOUT)
         except Exception as e:
-            logger.error(f"Fehler im internen Scanner: {e}")
+            logger.error(f"Error in internal scanner: {e}")
             time.sleep(5)
 
 def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener):
@@ -1066,20 +1066,20 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
                         if is_private_ip(ip_dst) and ip_dst != my_local_ip and ip_dst != my_public_ip:
                             update_ip(ip_dst, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, dst_mac, dst_vendor, ip_src, ip_dst, ttl, hostname_dst)
             except Exception as e:
-                logger.error(f"Fehler beim Verarbeiten von Paket: {e}")
+                logger.error(f"Error processing packet: {e}")
         except Empty:
             continue
         except Exception as e:
-            logger.error(f"Fehler in process_packets: {e}")
+            logger.error(f"Error in process_packets: {e}")
             time.sleep(0.1)
 
 def load_backend_config():
-    """Lädt die Backend-Konfigurationsdaten aus der JSON-Datei."""
+    """Loads backend configuration data from the JSON file."""
     try:
         with open(BACKEND_CONF_PATH, "r") as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"Fehler beim Laden der Backend-Konfigurationsdatei: {e}")
+        logger.error(f"Error loading backend configuration file: {e}")
         return {}
 
 @app.route('/')
@@ -1106,9 +1106,9 @@ def index():
 def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
     if not is_admin():
         if sys.platform == 'win32':
-            logger.error("Dieses Skript benötigt Administratorrechte.")
+            logger.error("This script requires administrator privileges.")
         else:
-            logger.error("Dieses Skript benötigt Root-Rechte (sudo).")
+            logger.error("This script requires root privileges (sudo).")
         sys.exit(1)
     validate_interface()
     init_db()
@@ -1120,11 +1120,11 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
             sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: external_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets),
                   filter="ip or icmp", store=0, timeout=SNIFF_TIMEOUT)
         except Exception as e:
-            logger.error(f"Fehler beim Sniffing: {e}")
+            logger.error(f"Error during sniffing: {e}")
             time.sleep(5)
 
 def cleanup(internal_process, zeroconf):
-    logger.info("Beende Prozesse...")
+    logger.info("Shutting down processes...")
     internal_process.terminate()
     internal_process.join()
     if zeroconf:
@@ -1175,18 +1175,18 @@ if __name__ == "__main__":
             socketio.emit('settings_update', settings, to=sid)
             send_all_ips_to_client(sid)
             send_pinned_ips_to_client(sid)
-            logger.info(f"Client verbunden, SID: {sid}, Aktive Clients: {len(active_clients)}")
+            logger.info(f"Client connected, SID: {sid}, Active clients: {len(active_clients)}")
         except Exception as e:
-            logger.error(f"Fehler beim Client-Connect: {e}")
+            logger.error(f"Error on client connect: {e}")
 
     @socketio.on('disconnect')
     def handle_disconnect():
         try:
             sid = request.sid
             active_clients.discard(sid)
-            logger.info(f"Client getrennt, SID: {sid}, Aktive Clients: {len(active_clients)}")
+            logger.info(f"Client disconnected, SID: {sid}, Active clients: {len(active_clients)}")
         except Exception as e:
-            logger.error(f"Fehler bei Client-Trennung: {e}")
+            logger.error(f"Error on client disconnect: {e}")
 
     @socketio.on('request_initial_data')
     def handle_request_initial_data():
@@ -1197,35 +1197,35 @@ if __name__ == "__main__":
             send_all_ips_to_client(sid)
             send_pinned_ips_to_client(sid)
         except Exception as e:
-            logger.error(f"Fehler beim Senden initialer Daten: {e}")
+            logger.error(f"Error sending initial data: {e}")
 
     @socketio.on('set_internal_search')
     def handle_set_internal_search(data):
         try:
             is_active = data.get('isInternalSearchActive', False)
             if not isinstance(is_active, bool):
-                logger.error(f"Ungültiger Wert für isInternalSearchActive: {is_active}")
+                logger.error(f"Invalid value for isInternalSearchActive: {is_active}")
                 return
             is_internal_search_active.value = is_active
             save_setting('is_internal_search_active', is_active)
             socketio.emit('settings_update', {'is_internal_search_active': is_active})
-            logger.info(f"Interne Suche {'aktiviert' if is_active else 'deaktiviert'}")
+            logger.info(f"Internal search {'enabled' if is_active else 'disabled'}")
         except Exception as e:
-            logger.error(f"Fehler bei set_internal_search: {e}")
+            logger.error(f"Error in set_internal_search: {e}")
 
     @socketio.on('set_udp_filter')
     def handle_set_udp_filter(data):
         try:
             show_all_udp = data.get('showAllUDPPackets', False)
             if not isinstance(show_all_udp, bool):
-                logger.error(f"Ungültiger Wert für showAllUDPPackets: {show_all_udp}")
+                logger.error(f"Invalid value for showAllUDPPackets: {show_all_udp}")
                 return
             showAllUDPPackets.value = show_all_udp
             save_setting('show_all_udp_packets', show_all_udp)
             socketio.emit('settings_update', {'show_all_udp_packets': show_all_udp})
-            logger.info(f"UDP-Filter {'alle Pakete' if show_all_udp else 'gefiltert'}")
+            logger.info(f"UDP filter {'all packets' if show_all_udp else 'filtered'}")
         except Exception as e:
-            logger.error(f"Fehler bei set_udp_filter: {e}")
+            logger.error(f"Error in set_udp_filter: {e}")
 
     @socketio.on('pin_ip')
     def handle_pin_ip(data):
@@ -1233,13 +1233,13 @@ if __name__ == "__main__":
             ip = data.get('ip')
             is_pinned = data.get('isPinned', False)
             if not ip or not isinstance(is_pinned, bool):
-                logger.error(f"Ungültige Daten in pin_ip: ip={ip}, isPinned={is_pinned}")
+                logger.error(f"Invalid data in pin_ip: ip={ip}, isPinned={is_pinned}")
                 return
             update_pinned_ips(ip, is_pinned)
             socketio.emit('ip_pinned_update', {'ip': ip, 'isPinned': is_pinned})
-            logger.info(f"IP {ip} wurde {'gepinnt' if is_pinned else 'entpinnt'}")
+            logger.info(f"IP {ip} {'pinned' if is_pinned else 'unpinned'}")
         except Exception as e:
-            logger.error(f"Fehler beim Pinnen/Entpinnen von IP {ip}: {e}")
+            logger.error(f"Error pinning/unpinning IP {ip}: {e}")
 
     @socketio.on('reset_packet_count')
     def handle_reset_packet_count(data):
