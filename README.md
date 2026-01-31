@@ -43,8 +43,8 @@ Supports **Windows**, **Linux**, and **macOS**.
 
 ### 2. Clone the repository
 ```bash
-git clone https://github.com/arn-c0de/ConnectSpoofer.git
-cd ConnectSpoofer
+git clone https://github.com/arn-c0de/GDEF-Connect-Spoofer.git
+cd GDEF-Connect-Spoofer
 ```
 
 ### 3. Start
@@ -161,4 +161,5 @@ This project is intended for legal and ethical purposes only. The author assumes
 
 **arn-c0de**
 GitHub: [@arn-c0de](https://github.com/arn-c0de)
+
 
