@@ -34,6 +34,22 @@ It is designed as a standalone module that can be run independently today and in
 
 ConnectSpoofer is protected by a token-based login. The access token is generated on first start and stored securely in `database/access_token.txt`.
 
+### Docker (Recommended for Linux servers)
+
+The stack runs the sniffer/web app and a PostgreSQL database together via Docker Compose. The app container uses **host networking** plus the `NET_RAW`/`NET_ADMIN` capabilities so Scapy can capture from the physical interface.
+
+```bash
+cp .env.example .env
+# Edit .env: set NETWORK_INTERFACE (e.g. eth0) and a strong POSTGRES_PASSWORD
+docker compose up --build
+```
+
+- **Dashboard**: `http://localhost:8000`
+- **Token**: `cat database/access_token.txt` (the `database/` directory is mounted into the container)
+- **Data**: PostgreSQL data persists in the `pgdata` named volume; the GeoIP `.mmdb` datasets and generated secrets stay in the mounted `database/` folder.
+
+> The database port is published to `127.0.0.1` only, so PostgreSQL is never exposed to the LAN. Set `APP_HOST=0.0.0.0` in `.env` only if you intentionally want the UI reachable from other hosts.
+
 ### Windows (Recommended)
 
 1.  **Install Npcap**: Download and install from [npcap.com](https://npcap.com/). Select "Install Npcap with WinPcap API-compatible Mode".
@@ -80,6 +96,29 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f .venv/bin/python)"
 ./run.sh start
 ```
 
+## Database (PostgreSQL)
+
+ConnectSpoofer stores its live IP table, pinned IPs, MAC-vendor cache, settings, and threat list in **PostgreSQL** (replacing the former embedded SQLite database). The GeoIP `.mmdb` datasets in `database/datasets/` remain file-based and are unaffected.
+
+- **Docker**: PostgreSQL is provided automatically by the `db` service — nothing to install.
+- **Bare-metal** (`run.sh` / `app.py` directly): point the app at a reachable PostgreSQL instance via environment variables before starting.
+
+**Let `run.sh` manage a local database** (bare-metal convenience): copy `.env.example` to `.env`, keep `MANAGE_LOCAL_DB=1`, and `run.sh` will start a private PostgreSQL cluster on `./run.sh start` and stop it on `./run.sh stop`. It uses port **54329** by default (a system PostgreSQL usually already holds 5432). Under `sudo` the cluster runs as `$SUDO_USER`, since PostgreSQL cannot run as root. `./run.sh status` shows both the app and database state.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | *(unset)* | Full libpq URL, e.g. `postgresql://user:pass@127.0.0.1:5432/connectspoofer`. Overrides the `PG*` vars below. |
+| `PGHOST` | `127.0.0.1` | Database host |
+| `PGPORT` | `5432` | Database port |
+| `PGDATABASE` | `connectspoofer` | Database name |
+| `PGUSER` | `connectspoofer` | Database user |
+| `PGPASSWORD` | `connectspoofer` | Database password |
+| `DB_POOL_SIZE` | `10` | Max pooled connections per process |
+| `DB_CONNECT_TIMEOUT` | `15` | Seconds to wait for a connection |
+| `NETWORK_INTERFACE` | *(from config)* | Capture interface; overrides `database/backend_conf.json` (useful in containers) |
+
+The app waits for PostgreSQL to accept connections on startup and creates its schema automatically (`init_db`).
+
 ## Security & Privacy
 
 ConnectSpoofer is built with a **Security-First** approach:
@@ -121,14 +160,19 @@ Generated runtime files live in `database/` and are ignored by Git where appropr
 
 - `backend_conf.json`: selected packet-capture interface
 - `trusted_organisations.json`: organization classification data
-- `geo_data.db`: generated SQLite cache/database
 - `datasets/*.mmdb`: GeoIP datasets
+
+Application state (live IPs, pinned IPs, settings, MAC cache, threat list) is stored in **PostgreSQL** — see [Database (PostgreSQL)](#database-postgresql).
 
 ## Project Structure
 
 ```text
 ConnectSpoofer/
 ├── app.py                           # Flask server, packet processing, Socket.IO events
+├── db.py                            # PostgreSQL connection-pool layer (fork-aware)
+├── Dockerfile                       # App/sniffer container image
+├── docker-compose.yml              # App + PostgreSQL stack
+├── .env.example                     # Sample environment for Docker Compose
 ├── run.sh                           # Linux/macOS service launcher
 ├── start.bat                        # Windows launcher
 ├── select_interface.py              # Interface selection helper

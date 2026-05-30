@@ -1,0 +1,57 @@
+# ConnectSpoofer — Docker Compose stack.
+#
+#   db   PostgreSQL (persistent: known MACs, pinned IPs, threat list, live table)
+#   app  Flask sniffer + web UI, host networking so Scapy sees the real NIC
+#
+# Quick start:
+#   cp .env.example .env      # then set NETWORK_INTERFACE + a real DB password
+#   docker compose up --build
+#
+# The app uses host networking and therefore reaches PostgreSQL on 127.0.0.1,
+# which is why the db port is published to loopback only (never the LAN).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-connectspoofer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-connectspoofer}
+      POSTGRES_DB: ${POSTGRES_DB:-connectspoofer}
+    # Bind to loopback only: the app (host network) reaches it via 127.0.0.1,
+    # but it is never exposed to the LAN.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-connectspoofer} -d ${POSTGRES_DB:-connectspoofer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    # Required for Scapy to capture from the physical interface. Host networking
+    # alone is not enough — the kernel also needs the raw-socket capabilities.
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Host networking → connect to the published db port on loopback.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-connectspoofer}:${POSTGRES_PASSWORD:-connectspoofer}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-connectspoofer}
+      # Interface Scapy listens on inside the (host) network namespace.
+      NETWORK_INTERFACE: ${NETWORK_INTERFACE:?set NETWORK_INTERFACE in .env}
+      APP_HOST: ${APP_HOST:-127.0.0.1}
+      APP_PORT: ${APP_PORT:-8000}
+    volumes:
+      # geo .mmdb datasets + generated secrets/config persist on the host.
+      - ./database:/app/database
+
+volumes:
+  pgdata:

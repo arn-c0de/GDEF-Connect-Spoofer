@@ -316,10 +316,36 @@ async function initializeGlobe(myIpCoords) {
     let showAllUDPPackets = false;
     let isInternalSearchActive = true;
 
-    function refreshViews() {
+    function _refreshViewsNow() {
         updateConnectionsList();
         updateInternalNetworkList();
         updateGlobeData();
+    }
+
+    // Throttle UI rebuilds. Each refresh rebuilds three lists via replaceChildren
+    // AND resets the globe's points/arcs (a full Three.js re-render). Socket events
+    // (ip_update, ip_update_batch, mac_vendor_update, pin/reset, ...) can arrive far
+    // faster than the eye can follow, so coalesce bursts to at most one rebuild per
+    // REFRESH_MIN_INTERVAL_MS using a leading + trailing edge: the first call runs
+    // immediately, further calls within the window collapse into a single trailing
+    // rebuild that always reflects the latest state (nothing is dropped).
+    const REFRESH_MIN_INTERVAL_MS = 400;
+    let _lastRefresh = 0;
+    let _refreshTimer = null;
+    function refreshViews() {
+        const now = Date.now();
+        const elapsed = now - _lastRefresh;
+        if (elapsed >= REFRESH_MIN_INTERVAL_MS) {
+            _lastRefresh = now;
+            if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
+            _refreshViewsNow();
+        } else if (!_refreshTimer) {
+            _refreshTimer = setTimeout(() => {
+                _refreshTimer = null;
+                _lastRefresh = Date.now();
+                _refreshViewsNow();
+            }, REFRESH_MIN_INTERVAL_MS - elapsed);
+        }
     }
 
     const toggleInternalNetworkButton = document.getElementById('toggleInternalNetwork');

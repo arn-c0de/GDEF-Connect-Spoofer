@@ -1,0 +1,18 @@
+.git
+.venv
+venv
+__pycache__
+*.py[cod]
+.env
+app.log
+app.pid
+images
+*.md
+.vscode
+.agents
+.codex
+.claude
+# Keep database/ (geo .mmdb datasets are needed); the legacy SQLite file is not.
+database/geo_data.db
+database/geo_data.db-shm
+database/geo_data.db-wal
