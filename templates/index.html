@@ -5,7 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta http-equiv="Content-Security-Policy" content="
             default-src 'self';
-            script-src 'self' https://unpkg.com https://cdn.socket.io 'unsafe-eval' 'unsafe-inline';
+            script-src 'self' https://unpkg.com https://cdn.socket.io;
             connect-src 'self' ws://localhost:8000 wss://localhost:8000 https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io http://api.ipify.org;
             style-src 'self' 'unsafe-inline';
             img-src 'self' https://unpkg.com;
@@ -17,7 +17,7 @@
         <script type="text/javascript" src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
         <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     </head>
-    <body>
+    <body data-lat="{{ lat|default(0, true)|float }}" data-lng="{{ lng|default(0, true)|float }}">
 
 
         <div id="ownConnectionData">
@@ -56,6 +56,8 @@
             <input type="checkbox" id="showArcs" checked>
             Show lines
         </label>
+        <hr style="border: 0; border-top: 1px solid #444; margin: 10px 0;">
+        <a href="{{ url_for('logout') }}" style="color: #ff4444; text-decoration: none; font-weight: bold; display: block; margin-top: 10px;">🚪 Logout</a>
     </div>
 
     <!-- Active connections container (bottom left) -->
@@ -65,7 +67,6 @@
                     <div style="display: flex; align-items: center; padding-top: 5px; border-top: 1px solid #444;">
                     <button id="toggleActiveConnections" title="Show/hide active connections">▼</button>
                     <span id="connectionCount" style="margin-right: 10px;"></span>
-                      <span id="connectionCount" style="margin-right: 10px;">0 : ACTIVE CONNECTIONS (TCP: 0, UDP: 0)</span>
                     <button id="toggleLocalNetwork" title="Show/hide local network">🌐</button>
                     <button id="toggleExternalNetwork" title="Show/hide external network">🔗</button>
                     <button id="toggleTCPOnly" title="Show TCP connections only">📡</button>
@@ -94,10 +95,6 @@
     </div>
 
     <!-- Scripts -->
-    <script type="text/javascript">
-        // Render Jinja2 values as JSON
-        window.coords = JSON.parse('{{ {"lat": lat|default(0, true)|float, "lng": lng|default(0, true)|float} | tojson | safe }}');
-    </script>
     <script type="text/javascript" src="{{ url_for('static', filename='globe.js') }}"></script>
     <script type="text/javascript" src="{{ url_for('static', filename='init-globe.js') }}"></script>
 </body>

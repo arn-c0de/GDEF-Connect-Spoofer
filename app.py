@@ -8,8 +8,8 @@ import ctypes
 import sys
 import socket
 from zeroconf import ServiceBrowser, Zeroconf
-from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask_socketio import SocketIO, disconnect
 from uuid import uuid4
 import logging
 from multiprocessing import Process, Manager, Queue
@@ -18,10 +18,24 @@ from multiprocessing.queues import Full
 import os
 import json
 from contextlib import contextmanager
+from functools import wraps
+import secrets
 
 # Logging Setup
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Security Configuration
+ACCESS_TOKEN = secrets.token_urlsafe(16)
+logger.info(f"\n" + "="*50 + f"\nACCESS TOKEN: {ACCESS_TOKEN}\n" + "="*50)
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('authenticated'):
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Path to configuration file
 BACKEND_CONF_PATH = os.path.join("database", "backend_conf.json")
@@ -118,40 +132,6 @@ def get_mac_vendor(mac):
         elif response.status_code == 429:
             logger.warning(f"Rate limited at api.macvendors.com for MAC {mac}")
             time.sleep(5)
-    except Exception as e:
-        logger.error(f"Error adding to queue: {e}")
-    return None
-
-def get_mac_vendor(mac):
-    if not mac:
-        return "Unknown"
-    with locked(db_lock):
-        try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT vendor FROM mac_cache WHERE mac = ?", (mac,))
-                result = c.fetchone()
-                if result:
-                    return result[0]
-        except sqlite3.Error as e:
-            logger.error(f"Error accessing mac_cache for MAC {mac}: {e}")
-            return "Unknown"
-    try:
-        response = requests.get(f"https://api.macvendors.com/{mac}", timeout=API_TIMEOUT)
-        if response.status_code == 200:
-            vendor = response.text.strip() or "Unknown"
-            with locked(db_lock):
-                try:
-                    with sqlite3.connect(DATABASE_PATH) as conn:
-                        c = conn.cursor()
-                        c.execute("INSERT OR REPLACE INTO mac_cache (mac, vendor) VALUES (?, ?)", (mac, vendor))
-                        conn.commit()
-                except sqlite3.Error as e:
-                    logger.error(f"Error saving MAC {mac} to cache: {e}")
-            return vendor
-        elif response.status_code == 429:
-            logger.warning(f"Rate limited at api.macvendors.com for MAC {mac}")
-            time.sleep(5)
     except requests.RequestException as e:
         logger.warning(f"Error at api.macvendors.com for MAC {mac}: {e}")
     try:
@@ -204,10 +184,34 @@ def update_pinned_ips(ip, is_pinned):
 # Flask App und SocketIO
 app = Flask(__name__)
 app.config['SECRET_KEY'] = str(uuid4())
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading',
+socketio_origins = os.environ.get('SOCKETIO_CORS_ORIGINS')
+if socketio_origins:
+    socketio_origins = [origin.strip() for origin in socketio_origins.split(',') if origin.strip()]
+else:
+    app_port = os.environ.get('APP_PORT', '8000')
+    socketio_origins = [f"http://127.0.0.1:{app_port}", f"http://localhost:{app_port}"]
+
+socketio = SocketIO(app, cors_allowed_origins=socketio_origins, async_mode='threading',
                     ping_timeout=SOCKETIO_PING_TIMEOUT, ping_interval=SOCKETIO_PING_INTERVAL)
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        submitted_token = request.form.get('token', '')
+        if secrets.compare_digest(submitted_token, ACCESS_TOKEN):
+            session['authenticated'] = True
+            return redirect(request.args.get('next') or url_for('index'))
+        error = 'Invalid access token'
+    return render_template('login.html', error=error)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
 @app.route('/trusted_organisations')
+@login_required
 def get_trusted_organisations():
     try:
         with open(TRUSTED_ORGS_PATH, 'r') as f:
@@ -424,14 +428,14 @@ def schedule_threat_list_updates():
 
 def update_threat_list():
     threat_sources = {
-        "firehol_level1": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
-        "firehol_level2": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level2.netset",
-        "firehol_level3": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level3.netset",
-        "anonymous_proxies": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/proxy_ips.netset",
-        "malicious_web_clients": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/malicious_web_clients.netset",
-        "30_day_greylist": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/30d.ipset",
-        "24_hour blacklist": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/24h.ipset",
-        "web_server_threats": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/web_server.netset"
+        "firehol_level1": ("High", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset"),
+        "firehol_level2": ("High", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level2.netset"),
+        "firehol_level3": ("Medium", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level3.netset"),
+        "anonymous_proxies": ("Medium", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/proxy_ips.netset"),
+        "malicious_web_clients": ("High", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/malicious_web_clients.netset"),
+        "30_day_greylist": ("Low", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/30d.ipset"),
+        "24_hour_blacklist": ("Medium", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/24h.ipset"),
+        "web_server_threats": ("Medium", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/web_server.netset")
     }
 
     batch_size = 1000
@@ -440,13 +444,13 @@ def update_threat_list():
             with sqlite3.connect(DATABASE_PATH) as conn:
                 c = conn.cursor()
                 c.execute("DELETE FROM threat_list")
-                for source, url in threat_sources.items():
+                for source, (threat_level, url) in threat_sources.items():
                     try:
                         response = requests.get(url, timeout=10)
                         if response.status_code == 200:
                             ips = [ip for ip in response.text.splitlines() if ip and not ip.startswith("#")]
                             for i in range(0, len(ips), batch_size):
-                                batch = [(ip, source, url) for ip in ips[i:i + batch_size]]
+                                batch = [(ip, threat_level, source) for ip in ips[i:i + batch_size]]
                                 c.executemany("INSERT OR IGNORE INTO threat_list (ip, threat_level, source) VALUES (?, ?, ?)", batch)
                             logger.info(f"Threat list updated: {source}")
                         conn.commit()
@@ -460,6 +464,8 @@ threading.Thread(target=schedule_threat_list_updates, daemon=True).start()
 
 @socketio.on('set_local_network')
 def handle_set_local_network(data):
+    if not session.get('authenticated'):
+        return
     try:
         show_local = data.get('showLocalNetwork', True)
         if not isinstance(show_local, bool):
@@ -473,6 +479,8 @@ def handle_set_local_network(data):
 
 @socketio.on('set_external_network')
 def handle_set_external_network(data):
+    if not session.get('authenticated'):
+        return
     try:
         show_external = data.get('showExternalNetwork', True)
         if not isinstance(show_external, bool):
@@ -486,6 +494,8 @@ def handle_set_external_network(data):
 
 @socketio.on('set_tcp_only')
 def handle_set_tcp_only(data):
+    if not session.get('authenticated'):
+        return
     try:
         show_tcp = data.get('showTCPOnly', False)
         if not isinstance(show_tcp, bool):
@@ -1082,7 +1092,18 @@ def load_backend_config():
         logger.error(f"Error loading backend configuration file: {e}")
         return {}
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        token = request.form.get('token')
+        if token == ACCESS_TOKEN:
+            session['authenticated'] = True
+            return redirect(url_for('index'))
+        return render_template('login.html', error="Invalid token")
+    return render_template('login.html')
+
 @app.route('/')
+@login_required
 def index():
     my_ip_coords, my_geo_data, my_public_ip = get_my_public_ip_coords()
     backend_config = load_backend_config()
@@ -1169,6 +1190,9 @@ if __name__ == "__main__":
     @socketio.on('connect')
     def handle_connect():
         try:
+            if not session.get('authenticated'):
+                disconnect()
+                return
             sid = request.sid
             active_clients.add(sid)
             settings = load_settings()
@@ -1190,6 +1214,8 @@ if __name__ == "__main__":
 
     @socketio.on('request_initial_data')
     def handle_request_initial_data():
+        if not session.get('authenticated'):
+            return
         try:
             sid = request.sid
             settings = load_settings()
@@ -1201,6 +1227,8 @@ if __name__ == "__main__":
 
     @socketio.on('set_internal_search')
     def handle_set_internal_search(data):
+        if not session.get('authenticated'):
+            return
         try:
             is_active = data.get('isInternalSearchActive', False)
             if not isinstance(is_active, bool):
@@ -1215,6 +1243,8 @@ if __name__ == "__main__":
 
     @socketio.on('set_udp_filter')
     def handle_set_udp_filter(data):
+        if not session.get('authenticated'):
+            return
         try:
             show_all_udp = data.get('showAllUDPPackets', False)
             if not isinstance(show_all_udp, bool):
@@ -1229,6 +1259,8 @@ if __name__ == "__main__":
 
     @socketio.on('pin_ip')
     def handle_pin_ip(data):
+        if not session.get('authenticated'):
+            return
         try:
             ip = data.get('ip')
             is_pinned = data.get('isPinned', False)
@@ -1243,6 +1275,8 @@ if __name__ == "__main__":
 
     @socketio.on('reset_packet_count')
     def handle_reset_packet_count(data):
+        if not session.get('authenticated'):
+            return
         try:
             ip = data.get('ip')
             if not ip:
@@ -1260,6 +1294,8 @@ if __name__ == "__main__":
             logger.error(f"Error resetting packet count for IP {ip}: {e}")
 
     try:
-        socketio.run(app, host='0.0.0.0', port=8000, debug=False)
+        host = os.environ.get('APP_HOST', '127.0.0.1')
+        port = int(os.environ.get('APP_PORT', '8000'))
+        socketio.run(app, host=host, port=port, debug=False)
     except KeyboardInterrupt:
         logger.info("Program terminated")
