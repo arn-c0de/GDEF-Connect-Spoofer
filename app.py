@@ -2,7 +2,11 @@ import db
 import threading
 import time
 import re
-from scapy.all import sniff, IP, TCP, UDP, ICMP, get_if_list, Ether
+from scapy.all import sniff, get_if_list
+from capture_core import (
+    MAC_RE, MAX_PACKET_LEN, UDP_FILTER_PORTS,
+    is_valid_mac, is_private_ip, estimate_os, build_bpf_filter, classify_packet,
+)
 import requests
 import ipaddress
 import ctypes
@@ -23,7 +27,23 @@ from urllib.parse import urlparse, urljoin
 import secrets
 
 # Logging Setup
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+# Default to INFO so high-traffic environments don't drown in (and fill the disk
+# with) DEBUG output; set LOG_LEVEL=DEBUG to get the verbose stream back.
+# If LOG_FILE is set, logs are written to a self-rotating file (LOG_MAX_BYTES per
+# file, LOG_BACKUP_COUNT rollovers) so the log size stays bounded without relying
+# on an external logrotate.
+_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+_log_format = '%(asctime)s - %(levelname)s - %(message)s'
+_log_handlers = [logging.StreamHandler()]
+_log_file = os.environ.get("LOG_FILE")
+if _log_file:
+    from logging.handlers import RotatingFileHandler
+    _log_handlers.append(RotatingFileHandler(
+        _log_file,
+        maxBytes=int(os.environ.get("LOG_MAX_BYTES", str(10 * 1024 * 1024))),
+        backupCount=int(os.environ.get("LOG_BACKUP_COUNT", "5")),
+    ))
+logging.basicConfig(level=_log_level, format=_log_format, handlers=_log_handlers)
 logger = logging.getLogger(__name__)
 
 # Security Configuration
@@ -182,6 +202,11 @@ NETWORK_INTERFACE = CONFIG["network_interface"]
 DEFAULT_COORDS = [0, 0]
 CACHE_TIMEOUT = CONFIG["cache_timeout"]
 EXPIRATION_SECONDS = 3600
+# Hard ceiling on rows kept in ip_data. Even under a spoofing flood (new IPs are
+# rate-limited but can still accumulate within the EXPIRATION_SECONDS window),
+# the cleanup thread trims the oldest unpinned rows beyond this cap so the DB
+# can't fill the disk. Override via the MAX_IP_ROWS env var.
+MAX_IP_ROWS = int(os.environ.get("MAX_IP_ROWS", "50000"))
 SNIFF_TIMEOUT = 30
 SOCKETIO_PING_TIMEOUT = 120
 SOCKETIO_PING_INTERVAL = 25
@@ -241,22 +266,10 @@ def socket_rate_prune():
 MAX_KNOWN_IPS = 10000
 MAX_CACHE_SIZE = 5000
 IP_UPDATE_INTERVAL = 1.0  # Min seconds between updates for the same IP
-# Upper bound for captured frame size. Standard Ethernet is 1500, but jumbo
-# frames (up to ~9000), VLAN tagging and tunneling produce larger valid frames;
-# a hard 1500 cap let an attacker evade capture with oversized packets. Override
-# with MAX_PACKET_LEN.
-MAX_PACKET_LEN = int(os.environ.get('MAX_PACKET_LEN', '9000'))
-# Kernel-level capture filter (BPF). Restrict to IP/ICMP and drop the dashboard's
-# own TCP traffic (APP_PORT) so the web UI is neither visualized nor adds Python
-# parsing/CPU load under heavy traffic. APP_PORT is validated to a safe integer
-# before interpolation to avoid BPF-expression injection.
-try:
-    _app_port_int = int(os.environ.get('APP_PORT', '8000'))
-    if not 0 < _app_port_int < 65536:
-        raise ValueError("port out of range")
-    CAPTURE_BPF_FILTER = f"(ip or icmp) and not (tcp port {_app_port_int})"
-except (ValueError, TypeError):
-    CAPTURE_BPF_FILTER = "ip or icmp"
+# MAX_PACKET_LEN and the BPF capture filter live in capture_core (shared with the
+# sensor worker). The filter drops the dashboard's own TCP traffic on APP_PORT so
+# the web UI is neither visualized nor adds parsing load under heavy traffic.
+CAPTURE_BPF_FILTER = build_bpf_filter(os.environ.get('APP_PORT', '8000'))
 last_ip_updates = {}
 
 # Packet Queue
@@ -307,13 +320,9 @@ class SharedStats:
     def snapshot(self):
         return {name: v.value for name, v in self._v.items()}
 
-# Strict MAC format (aa:bb:cc:dd:ee:ff or aa-bb-...). Used to validate any value
-# before it is interpolated into an outbound API URL, preventing path-injection
-# / SSRF via a crafted MAC seen on the wire.
-MAC_RE = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
-
-def is_valid_mac(mac):
-    return bool(mac) and bool(MAC_RE.match(mac))
+# MAC_RE / is_valid_mac live in capture_core (shared with the sensor). They
+# validate any MAC before it is interpolated into an outbound API URL, preventing
+# path-injection / SSRF via a crafted MAC seen on the wire.
 
 def get_mac_vendor(mac):
     if not mac:
@@ -494,12 +503,25 @@ app = Flask(__name__)
 # X-Forwarded-For. This is deliberately disabled unless TRUST_PROXY is set:
 # honouring those headers when NOT actually behind a trusted proxy would let
 # any client forge its source IP, which is strictly worse than the default.
+#
+# ProxyFix's only protection is the hop count: with TRUST_PROXY_HOPS=N it trusts
+# exactly the Nth-from-the-right X-Forwarded-For entry and ignores everything a
+# client prepends. So it is safe ONLY when (a) the app is genuinely reachable
+# only via that proxy, and (b) the proxy overwrites/strips any client-supplied
+# X-Forwarded-For. Set N to the exact number of proxies in front of the app; a
+# too-large N trusts a client-controlled hop and re-opens IP spoofing.
 if os.environ.get('TRUST_PROXY', '').lower() in ('1', 'true', 'yes'):
     from werkzeug.middleware.proxy_fix import ProxyFix
     _proxy_hops = int(os.environ.get('TRUST_PROXY_HOPS', '1'))
+    if _proxy_hops < 1:
+        raise ValueError("TRUST_PROXY_HOPS must be >= 1 when TRUST_PROXY is enabled")
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_proxy_hops, x_proto=_proxy_hops,
                             x_host=_proxy_hops, x_port=_proxy_hops)
-    logger.info(f"ProxyFix enabled: trusting {_proxy_hops} proxy hop(s) for X-Forwarded-* headers")
+    logger.warning(
+        "ProxyFix ENABLED: trusting %d proxy hop(s) for X-Forwarded-* headers. "
+        "The app MUST be reachable only through a trusted proxy that overwrites "
+        "client-supplied X-Forwarded-For, or clients can spoof their source IP.",
+        _proxy_hops)
 
 SECRET_KEY_FILE = os.path.join("database", "secret_key")
 
@@ -547,11 +569,23 @@ def add_security_headers(response):
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org; frame-ancestors 'none';"
+    # script-src has NO 'unsafe-inline': every script is loaded from a file or a
+    # pinned CDN (no inline <script>, on*= handlers or javascript: URIs in the
+    # templates), so inline script injection is blocked outright — the primary
+    # XSS defence. style-src keeps 'unsafe-inline' because the 3D globe libraries
+    # (three.js / globe.gl) and the login page set inline styles; CSP cannot
+    # cover those without a nonce-per-element rewrite, and style injection is a
+    # far weaker vector than script injection.
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org; frame-ancestors 'none';"
     return response
 
 @app.before_request
 def csrf_protect():
+    # /socket.io is exempt because Socket.IO POSTs carry no form CSRF token; it is
+    # instead protected by its own handshake and the cors_allowed_origins allow-list
+    # (see socketio_origins below). Keep that in mind before adding any
+    # state-changing/admin action over a socket event — such handlers must do their
+    # own origin/permission check, since this guard won't cover them.
     if request.method == "POST" and not request.path.startswith('/socket.io'):
         token = session.pop('_csrf_token', None)
         if not token or token != request.form.get('_csrf_token'):
@@ -1048,6 +1082,9 @@ threading.Thread(target=schedule_threat_list_updates, daemon=True).start()
 def handle_set_local_network(data):
     if not session.get('authenticated'):
         return
+    if socket_rate_limited('set_local_network'):
+        logger.warning(f"Rate limit exceeded for set_local_network from SID {request.sid}")
+        return
     try:
         show_local = data.get('showLocalNetwork', True)
         if not isinstance(show_local, bool):
@@ -1063,6 +1100,9 @@ def handle_set_local_network(data):
 def handle_set_external_network(data):
     if not session.get('authenticated'):
         return
+    if socket_rate_limited('set_external_network'):
+        logger.warning(f"Rate limit exceeded for set_external_network from SID {request.sid}")
+        return
     try:
         show_external = data.get('showExternalNetwork', True)
         if not isinstance(show_external, bool):
@@ -1077,6 +1117,9 @@ def handle_set_external_network(data):
 @socketio.on('set_tcp_only')
 def handle_set_tcp_only(data):
     if not session.get('authenticated'):
+        return
+    if socket_rate_limited('set_tcp_only'):
+        logger.warning(f"Rate limit exceeded for set_tcp_only from SID {request.sid}")
         return
     try:
         show_tcp = data.get('showTCPOnly', False)
@@ -1101,35 +1144,20 @@ def save_setting(key, value):
         except db.DBError as e:
             logger.error(f"Error saving setting {key}: {e}")
 
-def is_private_ip(ip):
-    try:
-        ip_obj = ipaddress.ip_address(ip)
-        return ip_obj.is_private or ip_obj.is_multicast or ip_obj.is_loopback
-    except ValueError:
-        return False
-
-def estimate_os(ttl):
-    if ttl is None:
-        return "Unknown"
-    ttl = int(ttl)
-    if ttl <= 64:
-        return "Linux/Unix"
-    elif ttl <= 128:
-        return "Windows"
-    elif ttl <= 255:
-        return "macOS/iOS"
-    return "Unknown"
+# is_private_ip / estimate_os / UDP_FILTER_PORTS live in capture_core (shared
+# with the sensor worker).
 
 api_call_lock = threading.Lock()
 last_api_call = 0
 API_CALL_INTERVAL = 0.1
-UDP_FILTER_PORTS = {137, 138, 1900, 5353}
 
-# Geolocation providers. ipinfo.io (HTTPS) is primary; ip-api.com (HTTP) is an
-# optional fallback. Provide IPINFO_TOKEN for higher limits, or set
-# ALLOW_INSECURE_GEO_API=0 to disable the unencrypted HTTP fallback entirely.
+# Geolocation providers. Local MaxMind .mmdb files are primary; ipinfo.io
+# (HTTPS) is the network fallback. ip-api.com (HTTP, unencrypted) leaks the
+# queried IPs to a third party on the wire, so it is OFF by default and only
+# used when ALLOW_INSECURE_GEO_API is explicitly enabled. Provide IPINFO_TOKEN
+# for higher HTTPS limits.
 IPINFO_TOKEN = os.environ.get('IPINFO_TOKEN', '').strip()
-ALLOW_INSECURE_GEO_API = os.environ.get('ALLOW_INSECURE_GEO_API', '1').lower() in ('1', 'true', 'yes')
+ALLOW_INSECURE_GEO_API = os.environ.get('ALLOW_INSECURE_GEO_API', '0').lower() in ('1', 'true', 'yes')
 
 # Local MaxMind GeoLite2 databases (offline geo + ASN lookups). Resolving from
 # local .mmdb files removes per-IP network latency AND the external rate limit
@@ -1270,9 +1298,9 @@ def get_geo_data(ip, my_geo_data=None):
                 return geo_data
         except Exception as e:
             logger.warning(f"Error at ipinfo (https) for {ip}: {e}")
-        # Fallback provider: ip-api.com. The free tier is HTTP-only, so this is
-        # used only when the HTTPS provider above is unavailable. Opt out by
-        # setting ALLOW_INSECURE_GEO_API=0.
+        # Fallback provider: ip-api.com. The free tier is HTTP-only (unencrypted),
+        # so it is used only when the HTTPS provider above is unavailable AND the
+        # operator has explicitly opted in with ALLOW_INSECURE_GEO_API=1.
         if ALLOW_INSECURE_GEO_API:
             try:
                 response = requests.get(f"http://ip-api.com/json/{ip}", timeout=2)
@@ -1674,6 +1702,22 @@ def cleanup_expired_ips(stats):
                     c.execute('''DELETE FROM ip_data WHERE last_seen < %s AND ip NOT IN (SELECT ip FROM pinned_ips)''',
                               (now - EXPIRATION_SECONDS,))
                     conn.commit()
+
+                    # Hard row cap: even within the expiration window a spoofing
+                    # flood could pile up enough rows to fill the disk. Keep the
+                    # newest MAX_IP_ROWS unpinned rows and drop the oldest beyond it.
+                    c.execute("SELECT COUNT(*) FROM ip_data")
+                    if c.fetchone()[0] > MAX_IP_ROWS:
+                        c.execute('''DELETE FROM ip_data WHERE ip IN (
+                                         SELECT ip FROM ip_data
+                                         WHERE ip NOT IN (SELECT ip FROM pinned_ips)
+                                         ORDER BY last_seen DESC
+                                         OFFSET %s)''', (MAX_IP_ROWS,))
+                        trimmed = c.rowcount
+                        conn.commit()
+                        if trimmed > 0:
+                            logger.warning(f"ip_data exceeded MAX_IP_ROWS ({MAX_IP_ROWS}); "
+                                           f"trimmed {trimmed} oldest unpinned rows")
             with cache_lock:
                 # Cleanup geo_cache
                 for ip in list(geo_cache.keys()):
@@ -1704,51 +1748,38 @@ def cleanup_expired_ips(stats):
             time.sleep(10)
 
 def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
-    if len(packet) < 20 or len(packet) > MAX_PACKET_LEN or IP not in packet:
+    # Shared, side-effect-free L3/L4 parsing (see capture_core.classify_packet).
+    # Everything below is the hub-specific layer: stats counters + the
+    # non-blocking MAC-vendor cache lookup.
+    parsed = classify_packet(packet, show_all_udp=showAllUDPPackets.value)
+    if parsed is None:
         return None
 
-    # IP-fragmentation evasion: a non-initial fragment (frag offset > 0) carries
-    # no L4 header, so it can't be classified by port and would fall through to
-    # "return None" below — silently. An attacker can split traffic into tiny
-    # fragments that the destination OS reassembles while the monitor records
-    # nothing. We deliberately do NOT do stateful reassembly here (the reassembly
-    # buffers are themselves a memory-exhaustion vector and belong in the kernel),
-    # but we count every fragment so the activity is observable in the stats feed
-    # instead of vanishing.
-    ip_layer = packet[IP]
-    if ip_layer.frag > 0 or (int(ip_layer.flags) & 0x1):  # MF bit set or offset > 0
+    # IP-fragmentation evasion: a fragment can't be classified by port and would
+    # otherwise vanish silently. We don't reassemble here (the buffers are
+    # themselves a memory-exhaustion vector and belong in the kernel) but we
+    # count every fragment — BEFORE any UDP-filter drop — so the activity stays
+    # observable in the stats feed.
+    if parsed["fragmented"]:
         stats.incr('fragmented_packets')
-
-    ip_src = packet[IP].src
-    ip_dst = packet[IP].dst
-    src_port = None
-    dst_port = None
-
-    if TCP in packet:
-        protocol = "TCP"
-        src_port = packet[TCP].sport
-        dst_port = packet[TCP].dport
-        stats.incr('tcp_packets')
-    elif UDP in packet:
-        protocol = "UDP"
-        src_port = packet[UDP].sport
-        dst_port = packet[UDP].dport
-        if not showAllUDPPackets.value and (src_port in UDP_FILTER_PORTS or dst_port in UDP_FILTER_PORTS):
-            return None
-        stats.incr('udp_packets')
-    elif ICMP in packet and packet[ICMP].type == 8:
-        protocol = "ICMP"
-        stats.incr('icmp_packets')
-    else:
+    if parsed["udp_filtered"]:
         return None
 
-    src_mac = None
-    dst_mac = None
+    protocol = parsed["protocol"]
+    if protocol == "TCP":
+        stats.incr('tcp_packets')
+    elif protocol == "UDP":
+        stats.incr('udp_packets')
+    elif protocol == "ICMP":
+        stats.incr('icmp_packets')
+
+    ip_src = parsed["ip_src"]
+    ip_dst = parsed["ip_dst"]
+    src_mac = parsed["src_mac"]
+    dst_mac = parsed["dst_mac"]
     src_vendor = "Unknown"
     dst_vendor = "Unknown"
-    if Ether in packet:
-        src_mac = packet[Ether].src
-        dst_mac = packet[Ether].dst
+    if src_mac is not None:
         # Non-blocking: only consult the local cache here so packet capture is
         # never stalled by an HTTP vendor lookup. Misses stay "Unknown" and are
         # resolved asynchronously by the background enrichment worker.
@@ -1757,14 +1788,14 @@ def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
         if lookup_private_macs or not is_private_ip(ip_dst):
             dst_vendor = get_mac_vendor_cached(dst_mac) or "Unknown"
 
-    stats.incr('total_bytes', len(packet))
+    stats.incr('total_bytes', parsed["length"])
     return {
         "ip_src": ip_src,
         "ip_dst": ip_dst,
-        "ttl": packet[IP].ttl,
+        "ttl": parsed["ttl"],
         "protocol": protocol,
-        "src_port": src_port,
-        "dst_port": dst_port,
+        "src_port": parsed["src_port"],
+        "dst_port": parsed["dst_port"],
         "src_mac": src_mac,
         "dst_mac": dst_mac,
         "src_vendor": src_vendor,
@@ -2200,6 +2231,9 @@ if __name__ == "__main__":
     def handle_request_initial_data():
         if not session.get('authenticated'):
             return
+        if socket_rate_limited('request_initial_data'):
+            logger.warning(f"Rate limit exceeded for request_initial_data from SID {request.sid}")
+            return
         try:
             sid = request.sid
             settings = load_settings()
@@ -2212,6 +2246,9 @@ if __name__ == "__main__":
     @socketio.on('set_internal_search')
     def handle_set_internal_search(data):
         if not session.get('authenticated'):
+            return
+        if socket_rate_limited('set_internal_search'):
+            logger.warning(f"Rate limit exceeded for set_internal_search from SID {request.sid}")
             return
         try:
             is_active = data.get('isInternalSearchActive', False)
@@ -2228,6 +2265,9 @@ if __name__ == "__main__":
     @socketio.on('set_udp_filter')
     def handle_set_udp_filter(data):
         if not session.get('authenticated'):
+            return
+        if socket_rate_limited('set_udp_filter'):
+            logger.warning(f"Rate limit exceeded for set_udp_filter from SID {request.sid}")
             return
         try:
             show_all_udp = data.get('showAllUDPPackets', False)
