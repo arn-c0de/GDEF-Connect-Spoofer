@@ -1,15 +1,15 @@
-# ConnectSpoofer
+# GDEF-L1NK
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)
 ![Package Manager](https://img.shields.io/badge/Package%20Manager-uv-4B32C3)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?logo=windows)
-![License](https://img.shields.io/github/license/arn-c0de/ConnectSpoofer?color=green)
+![License](https://img.shields.io/github/license/arn-c0de/GDEF-L1NK?color=green)
 ![Network](https://img.shields.io/badge/Network-Monitoring-critical?logo=wireshark)
 ![Backend](https://img.shields.io/badge/Backend-Flask-black?logo=flask)
 
-![ConnectSpoofer screenshot](images/Connectspoofer-link.png)
+![GDEF-L1NK screenshot](images/Connectspoofer-link.png)
 
-ConnectSpoofer is a modular network intelligence component of the **GDEF Suite**. It captures authorized network traffic, enriches observed endpoints, and visualizes live connections on an interactive 3D globe for defensive analysis, lab work, and internal security operations.
+GDEF-L1NK is a modular network intelligence component of the **GDEF Suite**. It captures authorized network traffic, enriches observed endpoints, and visualizes live connections on an interactive 3D globe for defensive analysis, lab work, and internal security operations.
 
 It is designed as a standalone module that can be run independently today and integrated into larger GDEF Suite workflows over time.
 
@@ -34,7 +34,7 @@ It is designed as a standalone module that can be run independently today and in
 
 ## Quick Start
 
-ConnectSpoofer is protected by a token-based login. The access token is generated on first start and stored securely in `database/access_token.txt`.
+GDEF-L1NK is protected by a token-based login. The access token is generated on first start and stored securely in `database/access_token.txt`.
 
 ### Docker (Linux — the standard way to run it)
 
@@ -94,7 +94,7 @@ Prefix with `sudo` if your user isn't in the `docker` group. Capture works via t
 
 ## Database (PostgreSQL)
 
-ConnectSpoofer stores its live IP table, pinned IPs, MAC-vendor cache, settings, and threat list in **PostgreSQL** (replacing the former embedded SQLite database). The GeoIP `.mmdb` datasets in `database/datasets/` remain file-based and are unaffected.
+GDEF-L1NK stores its live IP table, pinned IPs, MAC-vendor cache, settings, and threat list in **PostgreSQL** (replacing the former embedded SQLite database). The GeoIP `.mmdb` datasets in `database/datasets/` remain file-based and are unaffected.
 
 With the Docker stack the `db` service provides PostgreSQL automatically — nothing to install. It is published to `127.0.0.1` only, on port **55432** by default (set via `POSTGRES_PORT` in `.env`) to avoid clashing with a system PostgreSQL on 5432.
 
@@ -116,7 +116,7 @@ The app waits for PostgreSQL to accept connections on startup and creates its sc
 
 ## Multi-Device Monitoring (Sensors)
 
-ConnectSpoofer can act as a **central hub** that aggregates traffic from several
+GDEF-L1NK can act as a **central hub** that aggregates traffic from several
 capture **devices** at once — your local host plus any number of remote
 **sensors**. Each device is its own named, coloured origin on the globe, so you
 can see at a glance which connections belong to which machine.
@@ -239,7 +239,7 @@ run FritzDump yourself and have the hub only **read** the pcaps.
 
 ## Security & Privacy
 
-ConnectSpoofer is built with a **Security-First** approach:
+GDEF-L1NK is built with a **Security-First** approach:
 - **Authentication**: Mandatory token-based login (Timing-safe comparison).
 - **Hardened Sessions**: HTTPOnly, SameSite=Lax, and Secure-cookie support.
 - **XSS Protection**: Strict HTML escaping and a robust Content Security Policy (CSP).
@@ -304,7 +304,7 @@ Application state (live IPs, pinned IPs, settings, MAC cache, threat list) is st
 ## Project Structure
 
 ```text
-ConnectSpoofer/
+GDEF-L1NK/
 ├── app.py                           # Flask hub: capture, ingestion, devices, Socket.IO
 ├── capture_core.py                  # Shared packet classification (hub + sensor)
 ├── capture_sources.py               # Pcap-file capture sources (FritzDump tailing)
@@ -332,7 +332,7 @@ ConnectSpoofer/
 
 ## Security Notice
 
-ConnectSpoofer is intended only for authorized defensive use:
+GDEF-L1NK is intended only for authorized defensive use:
 
 - Monitor only networks and systems you own or are explicitly authorized to assess.
 - Prefer the least-privilege capability setup over full root; only packet capture (`CAP_NET_RAW`) is required.

@@ -1,4 +1,4 @@
-# ConnectSpoofer Sensor
+# GDEF-L1NK Sensor
 
 A thin capture worker you install on each server you want to monitor. It sniffs
 locally, coalesces connections, and pushes them **gzip-compressed and
