@@ -13,7 +13,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_socketio import SocketIO, disconnect
 from uuid import uuid4
 import logging
-from multiprocessing import Process, Manager, Queue
+from multiprocessing import Process, Manager, Queue, Value
 from queue import Empty, Full, Queue as ThreadQueue
 import os
 import json
@@ -233,6 +233,34 @@ class PacketQueue:
 
     def empty(self):
         return self.queue.empty()
+
+class SharedStats:
+    """Cross-process packet counters backed by multiprocessing.Value (shared
+    memory) instead of a Manager().dict() proxy.
+
+    A Manager proxy serializes every read/write over a socket to the manager
+    process. Updating it on every captured packet from two processes becomes a
+    hard IPC bottleneck at high packet rates and makes the sniffer drop frames at
+    the kernel. Value uses a shared-memory cell with a tiny lock, which is orders
+    of magnitude cheaper. Created before fork so children share the same cells."""
+    _FIELDS = ('tcp_packets', 'udp_packets', 'icmp_packets', 'total_bytes', 'active_connections')
+
+    def __init__(self):
+        # 'q' = signed 64-bit, so total_bytes cannot overflow under sustained load.
+        self._v = {name: Value('q', 0) for name in self._FIELDS}
+
+    def incr(self, name, amount=1):
+        v = self._v[name]
+        with v.get_lock():
+            v.value += amount
+
+    def set(self, name, value):
+        v = self._v[name]
+        with v.get_lock():
+            v.value = value
+
+    def snapshot(self):
+        return {name: v.value for name, v in self._v.items()}
 
 # Strict MAC format (aa:bb:cc:dd:ee:ff or aa-bb-...). Used to validate any value
 # before it is interpolated into an outbound API URL, preventing path-injection
@@ -1240,13 +1268,7 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
 def send_network_stats(stats):
     while True:
         try:
-            socketio.emit('network_stats', {
-                'tcp_packets': stats['tcp_packets'],
-                'udp_packets': stats['udp_packets'],
-                'icmp_packets': stats['icmp_packets'],
-                'total_bytes': stats['total_bytes'],
-                'active_connections': stats['active_connections']
-            })
+            socketio.emit('network_stats', stats.snapshot())
             with active_clients_lock:
                 count = len(active_clients)
             if count > 0:
@@ -1289,7 +1311,7 @@ def cleanup_expired_ips(stats):
                     if now - last_ip_updates[ip] > 60:
                         del last_ip_updates[ip]
 
-                stats['active_connections'] = len(tcp_connections)
+                stats.set('active_connections', len(tcp_connections))
             time.sleep(10)
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
@@ -1308,17 +1330,17 @@ def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
         protocol = "TCP"
         src_port = packet[TCP].sport
         dst_port = packet[TCP].dport
-        stats['tcp_packets'] += 1
+        stats.incr('tcp_packets')
     elif UDP in packet:
         protocol = "UDP"
         src_port = packet[UDP].sport
         dst_port = packet[UDP].dport
         if not showAllUDPPackets.value and (src_port in UDP_FILTER_PORTS or dst_port in UDP_FILTER_PORTS):
             return None
-        stats['udp_packets'] += 1
+        stats.incr('udp_packets')
     elif ICMP in packet and packet[ICMP].type == 8:
         protocol = "ICMP"
-        stats['icmp_packets'] += 1
+        stats.incr('icmp_packets')
     else:
         return None
 
@@ -1337,7 +1359,7 @@ def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
         if lookup_private_macs or not is_private_ip(ip_dst):
             dst_vendor = get_mac_vendor_cached(dst_mac) or "Unknown"
 
-    stats['total_bytes'] += len(packet)
+    stats.incr('total_bytes', len(packet))
     return {
         "ip_src": ip_src,
         "ip_dst": ip_dst,
@@ -1681,13 +1703,9 @@ if __name__ == "__main__":
     my_local_ip = get_local_ip()
     my_ip_coords, my_geo_data, my_public_ip = get_my_public_ip_coords()
     manager = Manager()
-    stats = manager.dict({
-        'tcp_packets': 0,
-        'udp_packets': 0,
-        'icmp_packets': 0,
-        'total_bytes': 0,
-        'active_connections': 0
-    })
+    # Shared-memory counters (created before fork so the child sniffer shares the
+    # same cells); replaces a Manager().dict() to avoid per-packet IPC overhead.
+    stats = SharedStats()
     settings = load_settings()
     is_internal_search_active = manager.Value('b', settings.get('is_internal_search_active', True))
     showAllUDPPackets = manager.Value('b', settings.get('show_all_udp_packets', True))
