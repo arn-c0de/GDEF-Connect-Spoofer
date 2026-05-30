@@ -26,7 +26,10 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 logger = logging.getLogger(__name__)
 
 # Security Configuration
-ACCESS_TOKEN = secrets.token_urlsafe(16)
+# A fixed token can be supplied via the ACCESS_TOKEN env var (e.g. in .env) so it
+# stays stable across restarts; otherwise a fresh random token is generated each
+# start. Either way the active token is persisted to TOKEN_FILE (0600).
+ACCESS_TOKEN = os.environ.get('ACCESS_TOKEN', '').strip() or secrets.token_urlsafe(16)
 TOKEN_FILE = os.path.join("database", "access_token.txt")
 
 # O_NOFOLLOW only exists on POSIX; degrade to 0 on platforms (Windows) that

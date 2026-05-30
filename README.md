@@ -34,21 +34,21 @@ It is designed as a standalone module that can be run independently today and in
 
 ConnectSpoofer is protected by a token-based login. The access token is generated on first start and stored securely in `database/access_token.txt`.
 
-### Docker (Recommended for Linux servers)
+### Docker (Linux — the standard way to run it)
 
-The stack runs the sniffer/web app and a PostgreSQL database together via Docker Compose. The app container uses **host networking** plus the `NET_RAW`/`NET_ADMIN` capabilities so Scapy can capture from the physical interface.
+`run.sh` is a thin wrapper around Docker Compose: the sniffer/web app and a PostgreSQL database run as containers. The app container uses **host networking** plus the `NET_RAW`/`NET_ADMIN` capabilities so Scapy captures from the physical interface — no host-level `setcap` needed. Requires [Docker Engine + the Compose plugin](https://docs.docker.com/engine/install/).
 
 ```bash
 cp .env.example .env
-# Edit .env: set NETWORK_INTERFACE (e.g. eth0) and a strong POSTGRES_PASSWORD
-docker compose up --build
+# Edit .env: set NETWORK_INTERFACE (e.g. eth0/enp3s0) and a strong POSTGRES_PASSWORD
+./run.sh start        # build (if needed) + start the stack
 ```
 
 - **Dashboard**: `http://localhost:8000`
-- **Token**: `cat database/access_token.txt` (the `database/` directory is mounted into the container)
+- **Token**: `./run.sh token` (the app writes it into the mounted `database/` folder; `cat database/access_token.txt` also works). Set a fixed `ACCESS_TOKEN` in `.env` to keep it stable across restarts.
 - **Data**: PostgreSQL data persists in the `pgdata` named volume; the GeoIP `.mmdb` datasets and generated secrets stay in the mounted `database/` folder.
 
-> The database port is published to `127.0.0.1` only, so PostgreSQL is never exposed to the LAN. Set `APP_HOST=0.0.0.0` in `.env` only if you intentionally want the UI reachable from other hosts.
+> The database port is published to `127.0.0.1` only (default **55432**, to avoid a system PostgreSQL on 5432), so it is never exposed to the LAN. Set `APP_HOST=0.0.0.0` in `.env` only if you intentionally want the UI reachable from other hosts. If your user isn't in the `docker` group, prefix the commands with `sudo`.
 
 ### Windows (Recommended)
 
@@ -59,51 +59,30 @@ docker compose up --build
 3.  **Access Dashboard**: Open `http://localhost:8000`.
 4.  **Login**: Find your access token in `database/access_token.txt`.
 
-### Linux / macOS
+## Service Commands (Linux — Docker)
 
-1.  **Install & Setup**:
-    ```bash
-    sudo ./run.sh install
-    ```
-2.  **Start the Service**:
-    ```bash
-    sudo ./run.sh start
-    ```
-    *   *Note: Use `sudo ./run.sh logs` to follow the output.*
-3.  **Access Dashboard**: Open `http://localhost:8000`.
-4.  **Login**: Retrieve your token: `cat database/access_token.txt`.
-
-## Service Commands (Linux/macOS)
+`run.sh` drives the Docker Compose stack:
 
 ```bash
-sudo ./run.sh install   # install system packages, sync Python deps, configure interface
-sudo ./run.sh start     # start ConnectSpoofer in the background
-sudo ./run.sh stop      # stop the running process
-sudo ./run.sh restart   # stop and start again
-sudo ./run.sh status    # print running/stopped state
-sudo ./run.sh logs      # follow app.log
+./run.sh start      # build (if needed) + start app + PostgreSQL
+./run.sh stop       # stop and remove the containers
+./run.sh restart    # restart the containers
+./run.sh status     # container status (docker compose ps)
+./run.sh logs       # follow the app logs
+./run.sh build      # (re)build the app image
+./run.sh rebuild    # rebuild from scratch and start
+./run.sh token      # print the dashboard access token
 ```
 
-### Least-Privilege Mode (Linux)
-
-You can run ConnectSpoofer without full `root` by granting specific network capabilities to the Python interpreter:
-
-```bash
-# Grant capabilities once
-sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f .venv/bin/python)"
-
-# Now run without sudo
-./run.sh start
-```
+Prefix with `sudo` if your user isn't in the `docker` group. Capture works via the container's `NET_RAW`/`NET_ADMIN` capabilities, so no host `setcap` is required (and `setcap` is in any case ignored on `nosuid`/`ecryptfs` mounts).
 
 ## Database (PostgreSQL)
 
 ConnectSpoofer stores its live IP table, pinned IPs, MAC-vendor cache, settings, and threat list in **PostgreSQL** (replacing the former embedded SQLite database). The GeoIP `.mmdb` datasets in `database/datasets/` remain file-based and are unaffected.
 
-- **Docker**: PostgreSQL is provided automatically by the `db` service — nothing to install.
-- **Bare-metal** (`run.sh` / `app.py` directly): point the app at a reachable PostgreSQL instance via environment variables before starting.
+With the Docker stack the `db` service provides PostgreSQL automatically — nothing to install. It is published to `127.0.0.1` only, on port **55432** by default (set via `POSTGRES_PORT` in `.env`) to avoid clashing with a system PostgreSQL on 5432.
 
-**Let `run.sh` manage a local database** (bare-metal convenience): copy `.env.example` to `.env`, keep `MANAGE_LOCAL_DB=1`, and `run.sh` will start a private PostgreSQL cluster on `./run.sh start` and stop it on `./run.sh stop`. It uses port **54329** by default (a system PostgreSQL usually already holds 5432). Under `sudo` the cluster runs as `$SUDO_USER`, since PostgreSQL cannot run as root. `./run.sh status` shows both the app and database state.
+To run the app outside Docker against your own PostgreSQL, configure the connection via these environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -173,7 +152,7 @@ ConnectSpoofer/
 ├── Dockerfile                       # App/sniffer container image
 ├── docker-compose.yml              # App + PostgreSQL stack
 ├── .env.example                     # Sample environment for Docker Compose
-├── run.sh                           # Linux/macOS service launcher
+├── run.sh                           # Docker Compose launcher (Linux)
 ├── start.bat                        # Windows launcher
 ├── select_interface.py              # Interface selection helper
 ├── debug_interfaces.py              # Interface diagnostics helper
@@ -205,24 +184,20 @@ This indicates that Npcap is missing or not running.
 - **Fix**: Install Npcap from [npcap.com](https://npcap.com/).
 - **Crucial**: Ensure "WinPcap API-compatible Mode" is checked during installation.
 
-### Permission Denied (Linux)
-Packet capture requires raw socket access.
-- **Solution 1 (Recommended)**: Use the Least-Privilege mode with `setcap` (see above).
-- **Solution 2**: Run the service with `sudo ./run.sh start`.
+### Permission Denied / capture fails (Linux)
+With the Docker stack, capture runs via the container's `NET_RAW`/`NET_ADMIN` capabilities — no host `setcap` is needed (and `setcap` is silently ignored on `nosuid`/`ecryptfs` mounts, a common cause of "Operation not permitted" when running outside Docker).
+- **Fix**: Use `./run.sh start` (Docker). If `docker` itself is permission-denied, add your user to the `docker` group or run `sudo ./run.sh start`.
+
+### Cannot bind port 8000 / database port
+Another process holds the port. Stop stray bare-metal instances (`sudo pkill -f app.py`) before `./run.sh start`. The database publishes **55432** by default to avoid a system PostgreSQL on 5432 — change `POSTGRES_PORT` in `.env` if needed.
 
 ### Login Failed / Token Missing
 The dashboard is locked by default.
-- **Fix**: Check `database/access_token.txt` for your unique code.
+- **Fix**: Run `./run.sh token` (or `cat database/access_token.txt`). Set a fixed `ACCESS_TOKEN` in `.env` to keep it stable across restarts.
 - **Windows**: If you cannot see the file, ensure you ran `start.bat` as Administrator.
 
-### Interface names show only NPF paths
-Use the interface diagnostics helper:
-```bash
-python debug_interfaces.py
-```
-Or use the interactive selection via launcher:
-- **Linux**: `sudo RESELECT_INTERFACE=1 ./run.sh start`
-- **Windows**: Press `I` when prompted by `start.bat`.
+### Wrong capture interface
+Set `NETWORK_INTERFACE` in `.env` to a real host interface (e.g. `enp3s0`, `wlan0`), then `./run.sh restart`. List interfaces with `python debug_interfaces.py` or `ip -br link`.
 
 ## License
 

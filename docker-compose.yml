@@ -1,14 +1,16 @@
-# ConnectSpoofer — Docker Compose stack.
+# ConnectSpoofer — Docker Compose stack (driven by ./run.sh).
 #
 #   db   PostgreSQL (persistent: known MACs, pinned IPs, threat list, live table)
 #   app  Flask sniffer + web UI, host networking so Scapy sees the real NIC
 #
 # Quick start:
-#   cp .env.example .env      # then set NETWORK_INTERFACE + a real DB password
-#   docker compose up --build
+#   cp .env.example .env      # set NETWORK_INTERFACE + a real DB password
+#   ./run.sh start
 #
-# The app uses host networking and therefore reaches PostgreSQL on 127.0.0.1,
-# which is why the db port is published to loopback only (never the LAN).
+# The app uses host networking and reaches PostgreSQL on 127.0.0.1 via the db
+# container's published port. That port defaults to 55432 (not 5432) so it never
+# clashes with a system PostgreSQL already listening on 5432. It is bound to
+# loopback only, so the database is never exposed to the LAN.
 
 services:
   db:
@@ -18,10 +20,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-connectspoofer}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-connectspoofer}
       POSTGRES_DB: ${POSTGRES_DB:-connectspoofer}
-    # Bind to loopback only: the app (host network) reaches it via 127.0.0.1,
-    # but it is never exposed to the LAN.
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -42,13 +42,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # All app configuration (NETWORK_INTERFACE, APP_HOST/PORT, ACCESS_TOKEN,
+    # FLASK_SECRET_KEY, POSTGRES_*, ...) comes from .env.
+    env_file:
+      - .env
     environment:
-      # Host networking → connect to the published db port on loopback.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-connectspoofer}:${POSTGRES_PASSWORD:-connectspoofer}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-connectspoofer}
-      # Interface Scapy listens on inside the (host) network namespace.
-      NETWORK_INTERFACE: ${NETWORK_INTERFACE:?set NETWORK_INTERFACE in .env}
-      APP_HOST: ${APP_HOST:-127.0.0.1}
-      APP_PORT: ${APP_PORT:-8000}
+      # Host networking → connect to the db container's published loopback port.
+      # Set explicitly here so it always wins over any DATABASE_URL left in .env.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-connectspoofer}:${POSTGRES_PASSWORD:-connectspoofer}@127.0.0.1:${POSTGRES_PORT:-55432}/${POSTGRES_DB:-connectspoofer}
     volumes:
       # geo .mmdb datasets + generated secrets/config persist on the host.
       - ./database:/app/database
