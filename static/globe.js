@@ -674,8 +674,7 @@ async function initializeGlobe(myIpCoords) {
         console.log('Heartbeat received:', data.timestamp, 'Active Clients:', data.active_clients);
     });
 
-    socket.on('ip_update', (data) => {
-        console.log('Received data:', data);
+    function applyIpUpdate(data) {
         if (!data.ip) {
             console.warn("IP missing in data:", data);
             return;
@@ -778,11 +777,17 @@ async function initializeGlobe(myIpCoords) {
                 }
             }
 
-            refreshViews();
             console.log("IP point and arc updated:", data.ip);
         } catch (e) {
             console.error('Error parsing Socket.IO message:', e);
         }
+    }
+
+    socket.on('ip_update', (data) => { applyIpUpdate(data); refreshViews(); });
+    socket.on('ip_update_batch', (list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach(applyIpUpdate);
+        refreshViews();
     });
 
     socket.on('mac_vendor_update', (data) => {
