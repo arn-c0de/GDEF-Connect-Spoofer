@@ -133,7 +133,9 @@ ConnectSpoofer is built with a **Security-First** approach:
 | `SESSION_COOKIE_SECURE` | off | Set to `1` when using HTTPS |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Failed logins per IP before lockout |
 | `SOCKET_RATE_LIMIT` | `5` | Max Socket.IO events per second per client |
-| `ALLOW_INSECURE_GEO_API`| `1` | Set to `0` to disable HTTP fallbacks (ip-api.com) |
+| `ALLOW_INSECURE_GEO_API`| `0` | Geo lookups are HTTPS-only by default; set to `1` to allow the unencrypted `http://ip-api.com` fallback |
+| `TRUST_PROXY` | off | Set to `1` ONLY when behind a trusted reverse proxy that overwrites `X-Forwarded-For`; lets per-IP limits see the real client IP |
+| `TRUST_PROXY_HOPS` | `1` | Exact number of trusted proxies in front of the app (only with `TRUST_PROXY=1`) |
 
 ## Python Workflow
 
