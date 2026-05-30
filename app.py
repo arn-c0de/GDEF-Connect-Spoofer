@@ -7,6 +7,7 @@ from capture_core import (
     MAC_RE, MAX_PACKET_LEN, UDP_FILTER_PORTS,
     is_valid_mac, is_private_ip, estimate_os, build_bpf_filter, classify_packet,
 )
+import device_crypto
 import requests
 import ipaddress
 import ctypes
@@ -213,6 +214,18 @@ SOCKETIO_PING_INTERVAL = 25
 DATABASE_DIR = CONFIG["database_dir"]
 DATABASE_PATH = CONFIG["database_path"]
 TRUSTED_ORGS_PATH = os.path.join(DATABASE_DIR, "trusted_organisations.json")
+
+# --- Multi-device (sensor) identity -----------------------------------------
+# Every captured connection belongs to a "device". The hub's own local capture
+# is the built-in device 'local'; remote sensors register their own ids. Devices
+# are NEVER identified by IP — sensors in the same network share one public IP —
+# so the id is the sole identity, carried explicitly through the pipeline.
+LOCAL_DEVICE_ID = 'local'
+LOCAL_DEVICE_COLOR = '#FFFF00'  # the legacy "Your IP" yellow
+HUB_DEVICE_NAME = os.environ.get('HUB_DEVICE_NAME', '').strip() or socket.gethostname() or 'local'
+# Per-device sensor keys (Fernet) live here as 0600 files, written via
+# write_secret_file (symlink-safe), mirroring how the access token is stored.
+DEVICE_KEYS_DIR = os.path.join(DATABASE_DIR, "devices")
 API_TIMEOUT = CONFIG["api_timeout"]
 
 # Global variables
@@ -586,7 +599,16 @@ def csrf_protect():
     # (see socketio_origins below). Keep that in mind before adding any
     # state-changing/admin action over a socket event — such handlers must do their
     # own origin/permission check, since this guard won't cover them.
-    if request.method == "POST" and not request.path.startswith('/socket.io'):
+    # /api/ingest is a machine-to-machine endpoint authenticated by a per-device
+    # Fernet key (no browser session, no form token), so the form-CSRF check can't
+    # apply; it does its own auth. The JSON device-management API under /api/devices
+    # is session-authenticated and, like the existing /api/organisations PUT, relies
+    # on SameSite=Lax cookies to block cross-site state changes rather than the
+    # single-use form token (which a fetch() body can't carry).
+    csrf_exempt = (request.path == '/api/ingest'
+                   or request.path == '/api/devices'
+                   or request.path.startswith('/api/devices/'))
+    if request.method == "POST" and not request.path.startswith('/socket.io') and not csrf_exempt:
         token = session.pop('_csrf_token', None)
         if not token or token != request.form.get('_csrf_token'):
             logger.warning(f"CSRF attempt detected from {request.remote_addr}")
@@ -957,12 +979,25 @@ def init_db():
         try:
             with db.get_connection() as conn:
                 c = conn.cursor()
-                # Create tables
+                # Create tables. ip_data is keyed by (device_id, ip): the same
+                # external IP can be seen by several capture devices, each keeping
+                # its own counts/ports/last_seen for it.
                 c.execute('''CREATE TABLE IF NOT EXISTS ip_data
-                             (ip TEXT PRIMARY KEY, lat DOUBLE PRECISION, lon DOUBLE PRECISION, city TEXT,
+                             (device_id TEXT NOT NULL DEFAULT 'local', ip TEXT,
+                              lat DOUBLE PRECISION, lon DOUBLE PRECISION, city TEXT,
                               country TEXT, last_seen DOUBLE PRECISION, org TEXT,
                               src_port INTEGER, dst_port INTEGER, protocol TEXT, incoming_count BIGINT DEFAULT 0,
-                              outgoing_count BIGINT DEFAULT 0, mac TEXT, vendor TEXT, hostname TEXT, os TEXT)''')
+                              outgoing_count BIGINT DEFAULT 0, mac TEXT, vendor TEXT, hostname TEXT, os TEXT,
+                              PRIMARY KEY (device_id, ip))''')
+                # Devices: the hub's own local capture plus any registered remote
+                # sensors. Secrets (Fernet keys) are NOT stored here — only on disk
+                # under DEVICE_KEYS_DIR (0600) — so a DB leak yields no sensor key.
+                c.execute('''CREATE TABLE IF NOT EXISTS devices
+                             (device_id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT,
+                              kind TEXT NOT NULL DEFAULT 'remote', public_ip TEXT,
+                              lat DOUBLE PRECISION, lon DOUBLE PRECISION,
+                              enabled BOOLEAN NOT NULL DEFAULT TRUE, seq BIGINT NOT NULL DEFAULT 0,
+                              last_seen DOUBLE PRECISION, created_at DOUBLE PRECISION)''')
                 c.execute('''CREATE TABLE IF NOT EXISTS pinned_ips
                              (ip TEXT PRIMARY KEY, packet_count BIGINT DEFAULT 0)''')
                 c.execute('''CREATE TABLE IF NOT EXISTS settings
@@ -972,9 +1007,28 @@ def init_db():
                 c.execute('''CREATE TABLE IF NOT EXISTS threat_list
                              (ip TEXT PRIMARY KEY, threat_level TEXT, source TEXT)''')
 
+                # Migrate a pre-multi-device ip_data (single-column 'ip' PK) in
+                # place: add device_id, then swap the PK to (device_id, ip).
+                # Idempotent — only runs when the PK isn't already composite.
+                c.execute('''SELECT a.attname FROM pg_index i
+                             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                             WHERE i.indrelid = 'ip_data'::regclass AND i.indisprimary''')
+                pk_cols = {r[0] for r in c.fetchall()}
+                if pk_cols != {'device_id', 'ip'}:
+                    c.execute("ALTER TABLE ip_data ADD COLUMN IF NOT EXISTS device_id TEXT NOT NULL DEFAULT 'local'")
+                    c.execute("ALTER TABLE ip_data DROP CONSTRAINT IF EXISTS ip_data_pkey")
+                    c.execute("ALTER TABLE ip_data ADD PRIMARY KEY (device_id, ip)")
+
                 # Create indexes
                 c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_last_seen ON ip_data(last_seen)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_ip ON ip_data(ip)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_threat_list_ip ON threat_list(ip)")
+
+                # Seed the built-in local-capture device (kind='local').
+                c.execute('''INSERT INTO devices (device_id, name, color, kind, enabled, seq, created_at)
+                             VALUES (%s, %s, %s, 'local', TRUE, 0, %s)
+                             ON CONFLICT (device_id) DO NOTHING''',
+                          (LOCAL_DEVICE_ID, HUB_DEVICE_NAME, LOCAL_DEVICE_COLOR, time.time()))
 
                 # Initialize settings
                 c.executemany(
@@ -1439,34 +1493,40 @@ def geo_enrichment_worker(my_geo_data):
             # If a write for this IP is still buffered (geo resolved before the
             # first flush), patch it so the flush persists the resolved location
             # instead of the placeholder.
+            # Geo is device-independent: the same IP may be buffered for several
+            # devices. Patch every pending entry for this ip so each flush persists
+            # the resolved location instead of the placeholder.
             with locked(ip_write_buffer_lock):
-                be = ip_write_buffer.get(ip)
-                if be is not None:
-                    be.update({"lat": geo["lat"], "lon": geo["lon"], "city": geo["city"],
-                               "country": geo["country"], "region": geo.get("region", ""), "org": org})
-            row = None
+                for (_d_id, b_ip), be in ip_write_buffer.items():
+                    if b_ip == ip:
+                        be.update({"lat": geo["lat"], "lon": geo["lon"], "city": geo["city"],
+                                   "country": geo["country"], "region": geo.get("region", ""), "org": org})
+            rows = []
             with locked(db_lock):
                 try:
                     with db.get_connection() as conn:
                         c = conn.cursor()
-                        c.execute('''SELECT incoming_count, outgoing_count, src_port, dst_port, protocol,
+                        # One row per device that has seen this ip.
+                        c.execute('''SELECT device_id, incoming_count, outgoing_count, src_port, dst_port, protocol,
                                      mac, vendor, hostname, os,
                                      (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip)
                                      FROM ip_data WHERE ip = %s''', (ip,))
-                        row = c.fetchone()
-                        if row:
+                        rows = c.fetchall()
+                        if rows:
+                            # Geo applies to every device's row for this ip.
                             c.execute("UPDATE ip_data SET lat = %s, lon = %s, city = %s, country = %s, org = %s WHERE ip = %s",
                                       (geo["lat"], geo["lon"], geo["city"], geo["country"], org, ip))
                             conn.commit()
                 except db.DBError as e:
                     logger.error(f"Error storing geo for {ip}: {e}")
-                    row = None
-            if row:
-                incoming_count, outgoing_count, src_port, dst_port, protocol, mac, vendor, hostname, os_guess, packet_count = row
+                    rows = []
+            for row in rows:
+                device_id, incoming_count, outgoing_count, src_port, dst_port, protocol, mac, vendor, hostname, os_guess, packet_count = row
                 display_hostname = ip if is_private_ip(ip) else hostname
                 send_ip_to_clients(ip, geo["lat"], geo["lon"], geo["city"], geo["country"], geo.get("region", ""),
                                    org, time.time(), protocol, src_port, dst_port, mac, vendor,
-                                   incoming_count, outgoing_count, packet_count or 0, display_hostname, os_guess, threat_level)
+                                   incoming_count, outgoing_count, packet_count or 0, display_hostname, os_guess, threat_level,
+                                   device_id=device_id)
         except Exception as e:
             logger.error(f"Error enriching geo for {ip}: {e}")
         finally:
@@ -1567,22 +1627,31 @@ ip_write_buffer = {}
 ip_write_buffer_lock = threading.Lock()
 _ip_write_buffer_dropped = 0
 
-def buffer_ip_write(ip, direction, data):
-    """Accumulate a pending write for `ip`: latest field values win, packet
-    counts accumulate as deltas (only for non-private IPs, matching the original
-    semantics)."""
+def buffer_ip_write(ip, direction, data, device_id=LOCAL_DEVICE_ID, in_delta=None, out_delta=None):
+    """Accumulate a pending write for `(device_id, ip)`: latest field values win,
+    packet counts accumulate as deltas (only for non-private IPs, matching the
+    original semantics). The buffer is keyed per device so the same external IP
+    seen by two devices stays two independent rows.
+
+    Live capture passes `direction` and counts one packet. Batched sensor
+    ingestion passes explicit `in_delta`/`out_delta` (already-summed packet
+    counts) instead, so a whole batch folds in without N calls."""
     global _ip_write_buffer_dropped
+    key = (device_id, ip)
     with locked(ip_write_buffer_lock):
-        e = ip_write_buffer.get(ip)
+        e = ip_write_buffer.get(key)
         if e is None:
             if len(ip_write_buffer) >= IP_WRITE_BUFFER_MAX:
                 _ip_write_buffer_dropped += 1
                 return
-            e = {"in_delta": 0, "out_delta": 0, "is_private": is_private_ip(ip)}
-            ip_write_buffer[ip] = e
+            e = {"device_id": device_id, "in_delta": 0, "out_delta": 0, "is_private": is_private_ip(ip)}
+            ip_write_buffer[key] = e
         e.update(data)
         if not e["is_private"]:
-            if direction == "incoming":
+            if in_delta is not None or out_delta is not None:
+                e["in_delta"] += int(in_delta or 0)
+                e["out_delta"] += int(out_delta or 0)
+            elif direction == "incoming":
                 e["in_delta"] += 1
             elif direction == "outgoing":
                 e["out_delta"] += 1
@@ -1611,14 +1680,15 @@ def flush_ip_writes():
                 try:
                     with db.get_connection() as conn:
                         c = conn.cursor()
-                        for ip, e in batch.items():
+                        for (device_id, ip), e in batch.items():
                             org = e.get("org", "Unknown")
                             threat_level = classify_org_threat(org, org_lists)
                             if threat_level is None:
                                 c.execute("SELECT threat_level FROM threat_list WHERE ip = %s", (ip,))
                                 r = c.fetchone()
                                 threat_level = r[0] if r else "No Threat"
-                            c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE ip = %s", (ip,))
+                            c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE device_id = %s AND ip = %s",
+                                      (device_id, ip))
                             row = c.fetchone()
                             if row:
                                 inc, out = row[0] + e["in_delta"], row[1] + e["out_delta"]
@@ -1643,18 +1713,18 @@ def flush_ip_writes():
                                              last_seen = %s, src_port = %s, dst_port = %s, protocol = %s,
                                              incoming_count = %s, outgoing_count = %s, mac = %s,
                                              vendor = CASE WHEN %s=1 THEN %s ELSE vendor END,
-                                             hostname = %s, os = %s WHERE ip = %s''',
+                                             hostname = %s, os = %s WHERE device_id = %s AND ip = %s''',
                                           (geo_ok, e["lat"], geo_ok, e["lon"], geo_ok, e["city"],
                                            geo_ok, e["country"], geo_ok, org,
                                            e["last_seen"], e["src_port"], e["dst_port"], e["protocol"],
                                            inc, out, e["mac"], vendor_ok, e["vendor"],
-                                           e["hostname"], e["os"], ip))
+                                           e["hostname"], e["os"], device_id, ip))
                             else:
                                 inc, out = e["in_delta"], e["out_delta"]
-                                c.execute('''INSERT INTO ip_data (ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
+                                c.execute('''INSERT INTO ip_data (device_id, ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
                                              protocol, incoming_count, outgoing_count, mac, vendor, hostname, os)
-                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
-                                          (ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
+                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                                          (device_id, ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
                                            e["src_port"], e["dst_port"], e["protocol"], inc, out,
                                            e["mac"], e["vendor"], e["hostname"], e["os"]))
                             broadcasts.append((e, inc, out, threat_level))
@@ -1670,7 +1740,8 @@ def flush_ip_writes():
             for e, inc, out, threat_level in broadcasts:
                 m = build_ip_message(e["geo_ip"], e["lat"], e["lon"], e["city"], e["country"], e["region"],
                                      e.get("org", "Unknown"), e["last_seen"], e["protocol"], e["src_port"], e["dst_port"],
-                                     e["mac"], e["vendor"], inc, out, 0, e["hostname"], e["os"], threat_level)
+                                     e["mac"], e["vendor"], inc, out, 0, e["hostname"], e["os"], threat_level,
+                                     device_id=e.get("device_id", LOCAL_DEVICE_ID))
                 if m is not None:
                     messages.append(m)
             if messages:
@@ -1679,10 +1750,455 @@ def flush_ip_writes():
             logger.error(f"Error in flush_ip_writes: {ex}")
             time.sleep(IP_WRITE_FLUSH_INTERVAL)
 
+# --- Devices & sensor ingestion ---------------------------------------------
+# Remote sensors push captured connections to /api/ingest. Each device
+# authenticates with its own Fernet key (see device_crypto): a payload that
+# decrypts cleanly is authentic, so possession of the key IS the credential.
+# The hub enriches (geo/threat/vendor) centrally, keeping sensors thin.
+INGEST_MAX_AGE = int(os.environ.get('INGEST_MAX_AGE', '300'))         # replay window (s)
+INGEST_MAX_EVENTS = int(os.environ.get('INGEST_MAX_EVENTS', '5000'))  # events per batch
+INGEST_MAX_BODY = int(os.environ.get('INGEST_MAX_BODY', str(8 * 1024 * 1024)))  # bytes
+INGEST_RATE_LIMIT = int(os.environ.get('INGEST_RATE_LIMIT', '20'))    # batches per window
+INGEST_RATE_WINDOW = float(os.environ.get('INGEST_RATE_WINDOW', '1.0'))
+
+_DEVICE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_COLOR_RE = re.compile(r'^#[0-9A-Fa-f]{6}$')
+_DEFAULT_DEVICE_COLORS = ['#4FC3F7', '#FF8A65', '#BA68C8', '#81C784', '#FFD54F',
+                          '#F06292', '#4DB6AC', '#9575CD', '#A1887F', '#90A4AE']
+
+# Per-device cumulative protocol/byte counters for remote sensors (the 'active'
+# gauge is derived from ip_data at emit time; the hub's own local capture is
+# reported from SharedStats, so only remote devices live here).
+device_stats = {}
+device_stats_lock = threading.Lock()
+
+# Per-device ingest rate limiter (mirrors socket_rate_limited, keyed by device).
+_ingest_times = {}
+_ingest_rate_lock = threading.Lock()
+
+_DEVICE_COLS = ("device_id", "name", "color", "kind", "public_ip", "lat", "lon",
+                "enabled", "seq", "last_seen", "created_at")
+_DEVICE_SELECT = ("SELECT device_id, name, color, kind, public_ip, lat, lon, "
+                  "enabled, seq, last_seen, created_at FROM devices")
+
+
+def _valid_device_id(s):
+    return isinstance(s, str) and bool(_DEVICE_ID_RE.match(s))
+
+
+def device_key_path(device_id):
+    return os.path.join(DEVICE_KEYS_DIR, f"{device_id}.key")
+
+
+def load_device_key(device_id):
+    """Return a device's Fernet key (str) or None. Refuses to read through a
+    symlink so a planted link can't redirect the read to another file."""
+    if not _valid_device_id(device_id):
+        return None
+    path = device_key_path(device_id)
+    try:
+        if os.path.islink(path):
+            logger.warning(f"Device key path is a symlink, refusing to read: {path}")
+            return None
+        with open(path, 'r') as f:
+            key = f.read().strip()
+        return key or None
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        logger.error(f"Error reading device key for {device_id}: {e}")
+        return None
+
+
+def save_device_key(device_id, key):
+    os.makedirs(DEVICE_KEYS_DIR, exist_ok=True)
+    try:
+        os.chmod(DEVICE_KEYS_DIR, 0o700)
+    except OSError:
+        pass
+    write_secret_file(device_key_path(device_id), key)
+
+
+def delete_device_key(device_id):
+    if not _valid_device_id(device_id):
+        return
+    try:
+        os.unlink(device_key_path(device_id))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.error(f"Error deleting device key for {device_id}: {e}")
+
+
+def _device_row_to_dict(row):
+    return dict(zip(_DEVICE_COLS, row))
+
+
+def get_device(device_id):
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute(_DEVICE_SELECT + " WHERE device_id = %s", (device_id,))
+            row = c.fetchone()
+    except db.DBError as e:
+        logger.error(f"Error loading device {device_id}: {e}")
+        return None
+    return _device_row_to_dict(row) if row else None
+
+
+def list_devices():
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute(_DEVICE_SELECT + " ORDER BY created_at")
+            rows = c.fetchall()
+    except db.DBError as e:
+        logger.error(f"Error listing devices: {e}")
+        return []
+    return [_device_row_to_dict(r) for r in rows]
+
+
+def public_device_list():
+    """Device list for the UI: identity + colour + liveness, never secrets."""
+    return [{
+        "device_id": d["device_id"], "name": d["name"], "color": d["color"],
+        "kind": d["kind"], "lat": d["lat"], "lon": d["lon"],
+        "enabled": d["enabled"], "last_seen": d["last_seen"],
+    } for d in list_devices()]
+
+
+def emit_devices_update():
+    socketio.emit('devices_update', public_device_list())
+
+
+def _next_device_color():
+    existing = {d["color"] for d in list_devices() if d["color"]}
+    for col in _DEFAULT_DEVICE_COLORS:
+        if col not in existing:
+            return col
+    return _DEFAULT_DEVICE_COLORS[len(existing) % len(_DEFAULT_DEVICE_COLORS)]
+
+
+def incr_device_stat(device_id, protocol, packets, nbytes):
+    with locked(device_stats_lock):
+        s = device_stats.get(device_id)
+        if s is None:
+            s = {"tcp": 0, "udp": 0, "icmp": 0, "bytes": 0}
+            device_stats[device_id] = s
+        if protocol == "TCP":
+            s["tcp"] += packets
+        elif protocol == "UDP":
+            s["udp"] += packets
+        elif protocol == "ICMP":
+            s["icmp"] += packets
+        if isinstance(nbytes, (int, float)) and nbytes > 0:
+            s["bytes"] += int(nbytes)
+
+
+def ingest_rate_limited(device_id):
+    now = time.time()
+    with locked(_ingest_rate_lock):
+        times = [t for t in _ingest_times.get(device_id, []) if now - t < INGEST_RATE_WINDOW]
+        if len(times) >= INGEST_RATE_LIMIT:
+            _ingest_times[device_id] = times
+            return True
+        times.append(now)
+        _ingest_times[device_id] = times
+        return False
+
+
+def _clamp_int(v, lo, hi, default=0):
+    try:
+        return max(lo, min(hi, int(v)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _valid_port(v):
+    try:
+        p = int(v)
+    except (TypeError, ValueError):
+        return None
+    return p if 0 <= p <= 65535 else None
+
+
+def _short_str(v, default="Unknown", maxlen=128):
+    return v[:maxlen] if isinstance(v, str) and v else default
+
+
+def ingest_events(device_id, events, device_geo):
+    """Validate and buffer a batch of sensor-reported connection events for
+    `device_id`. Enrichment (geo/threat/vendor) happens centrally, exactly like
+    live capture. Returns the count of accepted events."""
+    accepted = 0
+    now = time.time()
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        ip = ev.get("ip")
+        try:
+            ipaddress.ip_address(ip)
+        except (ValueError, TypeError):
+            continue
+        protocol = ev.get("protocol")
+        if protocol not in ("TCP", "UDP", "ICMP"):
+            continue
+        in_delta = _clamp_int(ev.get("in_delta"), 0, 100_000_000)
+        out_delta = _clamp_int(ev.get("out_delta"), 0, 100_000_000)
+        src_port = _valid_port(ev.get("src_port"))
+        dst_port = _valid_port(ev.get("dst_port"))
+        mac = ev.get("mac") if is_valid_mac(ev.get("mac")) else None
+        vendor = _short_str(ev.get("vendor"))
+        hostname = _short_str(ev.get("hostname"))
+        ttl = ev.get("ttl")
+        os_guess = estimate_os(ttl) if isinstance(ttl, (int, float)) else "Unknown"
+
+        # Non-blocking geo, mirroring update_ip: cached/private resolve instantly,
+        # an uncached public IP gets a placeholder now + async enrichment.
+        geo = get_geo_data_cached(ip, device_geo)
+        if geo is None:
+            queue_geo_enrichment(ip)
+            geo = {"ip": ip, "lat": DEFAULT_COORDS[0], "lon": DEFAULT_COORDS[1],
+                   "city": "Unknown", "country": "Unknown", "region": "Unknown",
+                   "org": "Not available"}
+
+        buffer_ip_write(ip, None, {
+            "geo_ip": geo.get("ip", ip), "lat": geo["lat"], "lon": geo["lon"],
+            "city": geo["city"], "country": geo["country"], "region": geo.get("region", ""),
+            "org": geo.get("org", "Unknown"), "protocol": protocol, "src_port": src_port,
+            "dst_port": dst_port, "mac": mac, "vendor": vendor, "hostname": hostname,
+            "os": os_guess, "last_seen": now,
+        }, device_id=device_id, in_delta=in_delta, out_delta=out_delta)
+
+        incr_device_stat(device_id, protocol, in_delta + out_delta, ev.get("bytes"))
+        accepted += 1
+    return accepted
+
+
+def update_device_after_ingest(device_id, seq, public_ip, dev):
+    """Persist the new sequence number, liveness and egress IP, and resolve the
+    device's globe origin from its public IP (offline mmdb first) the first time
+    we learn it."""
+    lat, lon = dev.get("lat"), dev.get("lon")
+    learned_coords = False
+    if (lat is None or lon is None) and public_ip and not is_private_ip(public_ip):
+        geo = mmdb_lookup(public_ip) or get_geo_data_cached(public_ip, None)
+        if geo and isinstance(geo.get("lat"), (int, float)):
+            lat, lon, learned_coords = geo["lat"], geo["lon"], True
+    try:
+        with locked(db_lock):
+            with db.get_connection() as conn:
+                c = conn.cursor()
+                c.execute("""UPDATE devices SET seq = %s, last_seen = %s, public_ip = %s,
+                             lat = COALESCE(%s, lat), lon = COALESCE(%s, lon)
+                             WHERE device_id = %s""",
+                          (seq, time.time(), public_ip, lat, lon, device_id))
+                conn.commit()
+    except db.DBError as e:
+        logger.error(f"Error updating device after ingest {device_id}: {e}")
+    if learned_coords:
+        emit_devices_update()
+
+
+@app.route('/api/devices', methods=['GET', 'POST'])
+@login_required
+def api_devices():
+    if request.method == 'GET':
+        return jsonify({"devices": public_device_list()})
+    # POST: register a new remote sensor -> returns id + one-time key.
+    data = request.get_json(silent=True) or {}
+    name = _short_str(data.get('name'), default='', maxlen=64).strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    color = data.get('color')
+    if not (isinstance(color, str) and _COLOR_RE.match(color or '')):
+        color = _next_device_color()
+    device_id = uuid4().hex
+    key = device_crypto.generate_key()
+    try:
+        save_device_key(device_id, key)
+    except OSError as e:
+        logger.error(f"Could not persist device key: {e}")
+        return jsonify({"error": "could not store key"}), 500
+    try:
+        with locked(db_lock):
+            with db.get_connection() as conn:
+                c = conn.cursor()
+                c.execute("""INSERT INTO devices (device_id, name, color, kind, enabled, seq, created_at)
+                             VALUES (%s, %s, %s, 'remote', TRUE, 0, %s)""",
+                          (device_id, name, color, time.time()))
+                conn.commit()
+    except db.DBError as e:
+        delete_device_key(device_id)
+        logger.error(f"Error creating device: {e}")
+        return jsonify({"error": "could not create device"}), 500
+    emit_devices_update()
+    logger.info(f"Registered sensor device {device_id} ({name})")
+    # The key is shown exactly once and is never retrievable again.
+    return jsonify({"device_id": device_id, "name": name, "color": color, "key": key}), 201
+
+
+@app.route('/api/devices/<device_id>', methods=['PATCH', 'DELETE'])
+@login_required
+def api_device(device_id):
+    if not _valid_device_id(device_id):
+        return jsonify({"error": "invalid device id"}), 400
+    dev = get_device(device_id)
+    if not dev:
+        return jsonify({"error": "not found"}), 404
+    if request.method == 'DELETE':
+        if dev["kind"] == 'local':
+            return jsonify({"error": "cannot delete the local device"}), 400
+        try:
+            with locked(db_lock):
+                with db.get_connection() as conn:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM devices WHERE device_id = %s", (device_id,))
+                    c.execute("DELETE FROM ip_data WHERE device_id = %s", (device_id,))
+                    conn.commit()
+        except db.DBError as e:
+            logger.error(f"Error deleting device {device_id}: {e}")
+            return jsonify({"error": "could not delete"}), 500
+        delete_device_key(device_id)
+        with locked(device_stats_lock):
+            device_stats.pop(device_id, None)
+        emit_devices_update()
+        return jsonify({"ok": True})
+    # PATCH: name / color / enabled. Column names are hardcoded literals (no
+    # injection); only the values are parameterized.
+    data = request.get_json(silent=True) or {}
+    fields, params = [], []
+    if 'name' in data:
+        nm = _short_str(data.get('name'), default='', maxlen=64).strip()
+        if not nm:
+            return jsonify({"error": "name cannot be empty"}), 400
+        fields.append("name = %s")
+        params.append(nm)
+    if 'color' in data:
+        col = data.get('color')
+        if not (isinstance(col, str) and _COLOR_RE.match(col or '')):
+            return jsonify({"error": "invalid color"}), 400
+        fields.append("color = %s")
+        params.append(col)
+    if 'enabled' in data:
+        if dev["kind"] == 'local':
+            return jsonify({"error": "cannot disable the local device"}), 400
+        fields.append("enabled = %s")
+        params.append(bool(data.get('enabled')))
+    if not fields:
+        return jsonify({"error": "nothing to update"}), 400
+    params.append(device_id)
+    try:
+        with locked(db_lock):
+            with db.get_connection() as conn:
+                c = conn.cursor()
+                c.execute(f"UPDATE devices SET {', '.join(fields)} WHERE device_id = %s", params)
+                conn.commit()
+    except db.DBError as e:
+        logger.error(f"Error updating device {device_id}: {e}")
+        return jsonify({"error": "could not update"}), 500
+    emit_devices_update()
+    return jsonify({"ok": True})
+
+
+@app.route('/api/devices/<device_id>/rotate-key', methods=['POST'])
+@login_required
+def api_device_rotate_key(device_id):
+    if not _valid_device_id(device_id):
+        return jsonify({"error": "invalid device id"}), 400
+    dev = get_device(device_id)
+    if not dev or dev["kind"] == 'local':
+        return jsonify({"error": "not found"}), 404
+    key = device_crypto.generate_key()
+    try:
+        save_device_key(device_id, key)
+    except OSError as e:
+        logger.error(f"Could not rotate device key for {device_id}: {e}")
+        return jsonify({"error": "could not store key"}), 500
+    logger.info(f"Rotated key for device {device_id}")
+    return jsonify({"device_id": device_id, "key": key})
+
+
+@app.route('/api/ingest', methods=['POST'])
+def api_ingest():
+    """Sensor ingestion endpoint. Auth = the per-device Fernet key (a payload that
+    decrypts is authentic). No browser session; exempt from form-CSRF."""
+    device_id = request.headers.get('X-Device-Id', '')
+    # Generic 401 for every auth failure so we never reveal which check failed.
+    if not _valid_device_id(device_id) or device_id == LOCAL_DEVICE_ID:
+        return jsonify({"error": "unauthorized"}), 401
+    if ingest_rate_limited(device_id):
+        return jsonify({"error": "rate limited"}), 429
+    body = request.get_data(cache=False)
+    if not body or len(body) > INGEST_MAX_BODY:
+        return jsonify({"error": "bad payload"}), 413
+    key = load_device_key(device_id)
+    if not key:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        batch = device_crypto.decrypt_batch(key, body, max_age=INGEST_MAX_AGE)
+    except device_crypto.InvalidBatch:
+        return jsonify({"error": "unauthorized"}), 401
+    dev = get_device(device_id)
+    if not dev:
+        return jsonify({"error": "unauthorized"}), 401
+    if not dev["enabled"]:
+        return jsonify({"error": "device disabled"}), 403
+    # Replay/dup protection: the sequence number must strictly advance.
+    seq = batch.get('seq')
+    if not isinstance(seq, int) or isinstance(seq, bool) or seq <= (dev["seq"] or 0):
+        return jsonify({"error": "stale sequence"}), 409
+    events = batch.get('events')
+    if not isinstance(events, list):
+        return jsonify({"error": "bad events"}), 400
+    if len(events) > INGEST_MAX_EVENTS:
+        events = events[:INGEST_MAX_EVENTS]
+        logger.warning(f"Ingest batch from {device_id} truncated to {INGEST_MAX_EVENTS} events")
+    device_geo = None
+    if dev["lat"] is not None and dev["lon"] is not None:
+        device_geo = {"lat": dev["lat"], "lon": dev["lon"]}
+    accepted = ingest_events(device_id, events, device_geo)
+    update_device_after_ingest(device_id, seq, request.remote_addr, dev)
+    return jsonify({"accepted": accepted, "next_seq": seq + 1, "server_time": time.time()})
+
+
+def _device_stats_payload(stats):
+    """Assemble the network_stats payload: legacy flat keys (the hub's own
+    capture, for the current UI) plus per-device breakdown and an aggregate."""
+    snap = stats.snapshot()
+    # Active-connection gauge per device, straight from ip_data.
+    active_by_device = {}
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT device_id, COUNT(*) FROM ip_data WHERE last_seen > %s GROUP BY device_id",
+                      (time.time() - EXPIRATION_SECONDS,))
+            active_by_device = {r[0]: r[1] for r in c.fetchall()}
+    except db.DBError as e:
+        logger.error(f"Error computing per-device active counts: {e}")
+    by_device = {LOCAL_DEVICE_ID: {
+        "tcp": snap.get("tcp_packets", 0), "udp": snap.get("udp_packets", 0),
+        "icmp": snap.get("icmp_packets", 0), "bytes": snap.get("total_bytes", 0),
+        "active": active_by_device.get(LOCAL_DEVICE_ID, 0),
+    }}
+    with locked(device_stats_lock):
+        for did, s in device_stats.items():
+            by_device[did] = {"tcp": s["tcp"], "udp": s["udp"], "icmp": s["icmp"],
+                              "bytes": s["bytes"], "active": active_by_device.get(did, 0)}
+    for did, n in active_by_device.items():
+        if did not in by_device:
+            by_device[did] = {"tcp": 0, "udp": 0, "icmp": 0, "bytes": 0, "active": n}
+    agg = {k: sum(d[k] for d in by_device.values()) for k in ("tcp", "udp", "icmp", "bytes", "active")}
+    payload = dict(snap)            # legacy flat keys for the current UI
+    payload["by_device"] = by_device
+    payload["all"] = agg
+    return payload
+
+
 def send_network_stats(stats):
     while True:
         try:
-            socketio.emit('network_stats', stats.snapshot())
+            socketio.emit('network_stats', _device_stats_payload(stats))
             with active_clients_lock:
                 count = len(active_clients)
             if count > 0:
@@ -1890,7 +2406,7 @@ def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
             "hostname": ip_dst
         })
 
-def build_ip_message(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat"):
+def build_ip_message(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat", device_id=LOCAL_DEVICE_ID):
     """Validate and assemble an ip_update payload, or return None if invalid."""
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         logger.warning(f"Invalid coordinates for IP {ip}: lat={lat}, lon={lon}")
@@ -1909,6 +2425,7 @@ def build_ip_message(ip, lat, lon, city, country, region, org, last_seen, protoc
         os = "Unknown"
 
     return {
+        "device_id": device_id,
         "ip": ip,
         "lat": lat,
         "lon": lon,
@@ -1963,7 +2480,7 @@ def send_all_ips_to_client(sid=None):
     try:
         with db_connect() as conn:
             c = conn.cursor()
-            c.execute('''SELECT ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol,
+            c.execute('''SELECT device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol,
                          incoming_count, outgoing_count, mac, vendor, hostname, os,
                          (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip) as packet_count
                          FROM ip_data WHERE last_seen > %s''', (time.time() - EXPIRATION_SECONDS,))
@@ -1972,9 +2489,10 @@ def send_all_ips_to_client(sid=None):
         logger.error(f"Error sending all IPs: {e}")
         return
     for row in rows:
-        ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, packet_count = row
+        device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, packet_count = row
         display_hostname = ip if is_private_ip(ip) else hostname
         messages.append({
+            "device_id": device_id,
             "ip": ip,
             "lat": lat,
             "lon": lon,
@@ -2238,6 +2756,7 @@ if __name__ == "__main__":
             sid = request.sid
             settings = load_settings()
             socketio.emit('settings_update', settings, to=sid)
+            socketio.emit('devices_update', public_device_list(), to=sid)
             send_all_ips_to_client(sid)
             send_pinned_ips_to_client(sid)
         except Exception as e:
