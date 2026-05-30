@@ -235,6 +235,14 @@ async function initializeGlobe(myIpCoords) {
     };
     globe.pointsData([ownIpPoint]);
 
+    // Resize the globe canvas whenever the container changes size.
+    const globeContainer = document.getElementById('globeViz');
+    const resizeObserver = new ResizeObserver(() => {
+        globe.width(globeContainer.clientWidth)
+             .height(globeContainer.clientHeight);
+    });
+    resizeObserver.observe(globeContainer);
+
     // ── Country borders checkbox ──────────────────────────
     const showArcsCheckbox = document.getElementById('showArcs');
     let showArcs = JSON.parse(localStorage.getItem('showArcs') ?? 'true');
