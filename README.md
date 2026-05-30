@@ -172,6 +172,11 @@ FRITZ!Box ──(login + capture)──> modules/FritzDump/run.sh ──> dumps/
 4. Geo/threat/vendor enrichment happens centrally, exactly like live capture, and
    the connections appear on the globe and in the stats.
 
+Because the FRITZ!Box sees the whole LAN, each external connection also records
+its **local peer** — *which device in your network* (e.g. `192.168.178.50`) is
+talking to that external IP. It is shown as **"Local device"** in a point's detail
+panel and as a **"LAN device"** column in the Connections tab.
+
 **Stop** kills the worker and clears its data. The module is just another device,
 so it honours the same per-device colour, visibility, and Start/Stop as any sensor.
 

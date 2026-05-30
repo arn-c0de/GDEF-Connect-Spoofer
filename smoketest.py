@@ -1179,6 +1179,25 @@ def t_capture_sources_modified_pcap():
         shutil.rmtree(d, ignore_errors=True)
 
 
+@check("update_ip records the LAN peer (local_ip)")
+def t_local_ip_captured():
+    with app.locked(app.ip_write_buffer_lock):
+        app.ip_write_buffer.clear()
+    # External 8.8.8.8 talking to LAN device 192.168.178.50 (as a FritzDump packet).
+    app.update_ip("8.8.8.8", "incoming", "TCP", 443, 51000, FAKE_GEO,
+                  "192.168.178.1", "203.0.113.1",
+                  src_ip="8.8.8.8", dst_ip="192.168.178.50",
+                  device_id=app.FRITZDUMP_DEVICE_ID)
+    with app.locked(app.ip_write_buffer_lock):
+        e = app.ip_write_buffer.get((app.FRITZDUMP_DEVICE_ID, "8.8.8.8"))
+    assert_true(e is not None, "external IP buffered")
+    assert_eq(e.get("local_ip"), "192.168.178.50", "records the private LAN peer")
+    # build_ip_message carries it through to the client payload.
+    m = app.build_ip_message("8.8.8.8", 1.0, 2.0, "C", "CO", "R", "Org", time.time(),
+                             "TCP", 443, 51000, "mac", "V", 1, 0, local_ip="192.168.178.50")
+    assert_eq(m["local_ip"], "192.168.178.50", "local_ip in the ip_update payload")
+
+
 @check("fritzdump_packet_callback (device-tagged queue item)")
 def t_fritzdump_callback():
     q = app.PacketQueue()
@@ -1370,6 +1389,7 @@ ALL_TESTS = [
     t_network_stats_by_device,
     t_capture_sources_fritzdump,
     t_capture_sources_modified_pcap,
+    t_local_ip_captured,
     t_fritzdump_callback,
     t_device_startstop,
     t_fritzdump_end_to_end,

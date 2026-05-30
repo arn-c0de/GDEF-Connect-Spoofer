@@ -1068,6 +1068,7 @@ def init_db():
                               country TEXT, last_seen DOUBLE PRECISION, org TEXT,
                               src_port INTEGER, dst_port INTEGER, protocol TEXT, incoming_count BIGINT DEFAULT 0,
                               outgoing_count BIGINT DEFAULT 0, mac TEXT, vendor TEXT, hostname TEXT, os TEXT,
+                              local_ip TEXT,
                               PRIMARY KEY (device_id, ip))''')
                 # Devices: the hub's own local capture plus any registered remote
                 # sensors. Secrets (Fernet keys) are NOT stored here — only on disk
@@ -1098,6 +1099,10 @@ def init_db():
                     c.execute("ALTER TABLE ip_data ADD COLUMN IF NOT EXISTS device_id TEXT NOT NULL DEFAULT 'local'")
                     c.execute("ALTER TABLE ip_data DROP CONSTRAINT IF EXISTS ip_data_pkey")
                     c.execute("ALTER TABLE ip_data ADD PRIMARY KEY (device_id, ip)")
+                # Local (LAN) peer of each external connection — which device in the
+                # network the external IP is actually talking to (most useful for the
+                # FritzDump source, which sees the whole home LAN).
+                c.execute("ALTER TABLE ip_data ADD COLUMN IF NOT EXISTS local_ip TEXT")
 
                 # Create indexes
                 c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_last_seen ON ip_data(last_seen)")
@@ -1695,6 +1700,14 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
     now = time.time()
 
     os_guess = estimate_os(ttl)
+    # The LAN-side peer of this external connection: whichever endpoint is a
+    # private address (and not the external IP itself). For the FritzDump source
+    # this is the actual home-network device the external IP is talking to.
+    local_ip = None
+    for cand in (src_ip, dst_ip):
+        if cand and cand != ip and is_private_ip(cand):
+            local_ip = cand
+            break
     conn_key = tuple(sorted([src_ip, dst_ip]) + [src_port, dst_port, protocol]) if src_ip and dst_ip else None
     if protocol == "TCP" and conn_key:
         with cache_lock:
@@ -1714,7 +1727,7 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
         "region": geo.get("region", ""), "org": geo.get("org", "Unknown"),
         "protocol": protocol, "src_port": src_port, "dst_port": dst_port,
         "mac": mac, "vendor": vendor, "hostname": hostname, "os": os_guess,
-        "last_seen": now,
+        "last_seen": now, "local_ip": local_ip,
     }, device_id=device_id)
 
 # --- Buffered IP writes (DoS protection: coalesce + batch DB writes) ----------
@@ -1812,20 +1825,22 @@ def flush_ip_writes():
                                              last_seen = %s, src_port = %s, dst_port = %s, protocol = %s,
                                              incoming_count = %s, outgoing_count = %s, mac = %s,
                                              vendor = CASE WHEN %s=1 THEN %s ELSE vendor END,
-                                             hostname = %s, os = %s WHERE device_id = %s AND ip = %s''',
+                                             hostname = %s, os = %s,
+                                             local_ip = COALESCE(%s, local_ip)
+                                             WHERE device_id = %s AND ip = %s''',
                                           (geo_ok, e["lat"], geo_ok, e["lon"], geo_ok, e["city"],
                                            geo_ok, e["country"], geo_ok, org,
                                            e["last_seen"], e["src_port"], e["dst_port"], e["protocol"],
                                            inc, out, e["mac"], vendor_ok, e["vendor"],
-                                           e["hostname"], e["os"], device_id, ip))
+                                           e["hostname"], e["os"], e.get("local_ip"), device_id, ip))
                             else:
                                 inc, out = e["in_delta"], e["out_delta"]
                                 c.execute('''INSERT INTO ip_data (device_id, ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
-                                             protocol, incoming_count, outgoing_count, mac, vendor, hostname, os)
-                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                                             protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip)
+                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                                           (device_id, ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
                                            e["src_port"], e["dst_port"], e["protocol"], inc, out,
-                                           e["mac"], e["vendor"], e["hostname"], e["os"]))
+                                           e["mac"], e["vendor"], e["hostname"], e["os"], e.get("local_ip")))
                             broadcasts.append((e, inc, out, threat_level))
                         conn.commit()
                 except db.DBError as ex:
@@ -1840,7 +1855,7 @@ def flush_ip_writes():
                 m = build_ip_message(e["geo_ip"], e["lat"], e["lon"], e["city"], e["country"], e["region"],
                                      e.get("org", "Unknown"), e["last_seen"], e["protocol"], e["src_port"], e["dst_port"],
                                      e["mac"], e["vendor"], inc, out, 0, e["hostname"], e["os"], threat_level,
-                                     device_id=e.get("device_id", LOCAL_DEVICE_ID))
+                                     device_id=e.get("device_id", LOCAL_DEVICE_ID), local_ip=e.get("local_ip"))
                 if m is not None:
                     messages.append(m)
             if messages:
@@ -2563,7 +2578,7 @@ def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
             "hostname": ip_dst
         })
 
-def build_ip_message(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat", device_id=LOCAL_DEVICE_ID):
+def build_ip_message(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat", device_id=LOCAL_DEVICE_ID, local_ip=None):
     """Validate and assemble an ip_update payload, or return None if invalid."""
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         logger.warning(f"Invalid coordinates for IP {ip}: lat={lat}, lon={lon}")
@@ -2584,6 +2599,7 @@ def build_ip_message(ip, lat, lon, city, country, region, org, last_seen, protoc
     return {
         "device_id": device_id,
         "ip": ip,
+        "local_ip": local_ip,
         "lat": lat,
         "lon": lon,
         "city": city,
@@ -2638,7 +2654,7 @@ def send_all_ips_to_client(sid=None):
         with db_connect() as conn:
             c = conn.cursor()
             c.execute('''SELECT device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol,
-                         incoming_count, outgoing_count, mac, vendor, hostname, os,
+                         incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip,
                          (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip) as packet_count
                          FROM ip_data WHERE last_seen > %s''', (time.time() - EXPIRATION_SECONDS,))
             rows = c.fetchall()
@@ -2646,7 +2662,7 @@ def send_all_ips_to_client(sid=None):
         logger.error(f"Error sending all IPs: {e}")
         return
     for row in rows:
-        device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, packet_count = row
+        device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip, packet_count = row
         # Stopped devices contribute no data to any client (initial load or
         # rebroadcast), matching the "no traffic while stopped" guarantee.
         if device_id in disabled_devices:
@@ -2655,6 +2671,7 @@ def send_all_ips_to_client(sid=None):
         messages.append({
             "device_id": device_id,
             "ip": ip,
+            "local_ip": local_ip,
             "lat": lat,
             "lon": lon,
             "city": city,
