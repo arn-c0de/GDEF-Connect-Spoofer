@@ -2039,6 +2039,12 @@ if __name__ == "__main__":
     is_internal_search_active = manager.Value('b', settings.get('is_internal_search_active', True))
     showAllUDPPackets = manager.Value('b', settings.get('show_all_udp_packets', True))
     packet_queue = PacketQueue()
+    # Validate/auto-detect the capture interface BEFORE forking the internal
+    # scanner. The child inherits NETWORK_INTERFACE as it is at fork time, so a
+    # stale value (e.g. a Windows \Device\NPF_... path in backend_conf.json after
+    # moving to Linux) would otherwise make internal_scanner_process fail forever
+    # while only the external sniffer self-heals.
+    validate_interface()
     zeroconf, mdns_listener = start_mdns_listener()
     internal_process = Process(
         target=internal_scanner_process,
