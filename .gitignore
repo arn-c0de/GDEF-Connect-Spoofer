@@ -25,3 +25,7 @@ database/geo_data.db-wal
 # Generated config files (created on first start)
 database/backend_conf.json
 database/trusted_organisations.json
+
+# Secrets (created on first start) - never commit
+database/access_token.txt
+database/secret_key

@@ -1,6 +1,7 @@
 import sqlite3
 import threading
 import time
+import re
 from scapy.all import sniff, IP, TCP, UDP, ICMP, get_if_list, Ether
 import requests
 import ipaddress
@@ -37,9 +38,11 @@ try:
 except Exception as e:
     logger.error(f"Could not save access token to file: {e}")
 
-# Log hygiene: never write the token itself to stderr/app.log. The token is
-# only persisted to TOKEN_FILE (0600). Retrieve it with: cat database/access_token.txt
-print(f"Access token written to: {TOKEN_FILE} (run: cat {TOKEN_FILE})", file=sys.stderr)
+# Log hygiene: never write the token itself anywhere a log can capture it. The
+# token value is only persisted to TOKEN_FILE (0600); we log a pointer, not the
+# secret. Route it through the logger (not a bare stderr print) so it is subject
+# to the same handling as every other log line. Retrieve with: cat database/access_token.txt
+logger.info(f"Access token written to {TOKEN_FILE} (retrieve with: cat {TOKEN_FILE})")
 
 def login_required(f):
     @wraps(f)
@@ -209,8 +212,20 @@ class PacketQueue:
     def empty(self):
         return self.queue.empty()
 
+# Strict MAC format (aa:bb:cc:dd:ee:ff or aa-bb-...). Used to validate any value
+# before it is interpolated into an outbound API URL, preventing path-injection
+# / SSRF via a crafted MAC seen on the wire.
+MAC_RE = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
+
+def is_valid_mac(mac):
+    return bool(mac) and bool(MAC_RE.match(mac))
+
 def get_mac_vendor(mac):
     if not mac:
+        return "Unknown"
+    if not is_valid_mac(mac):
+        # Never put an unvalidated value into the request URL.
+        logger.warning(f"Refusing vendor lookup for malformed MAC: {mac!r}")
         return "Unknown"
     with locked(db_lock):
         try:
@@ -355,7 +370,36 @@ def update_pinned_ips(ip, is_pinned):
 
 # Flask app and Socket.IO
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', str(uuid4()))
+
+SECRET_KEY_FILE = os.path.join("database", "secret_key")
+
+def load_or_create_secret_key():
+    """Return a stable Flask secret key.
+
+    Priority: FLASK_SECRET_KEY env var > persisted file > newly generated and
+    persisted. Persisting avoids invalidating every session (logging all users
+    out) on each restart, which under a systemd auto-restart loop would behave
+    like a self-inflicted DoS."""
+    env_key = os.environ.get('FLASK_SECRET_KEY')
+    if env_key:
+        return env_key
+    try:
+        if os.path.exists(SECRET_KEY_FILE):
+            with open(SECRET_KEY_FILE, 'r') as f:
+                key = f.read().strip()
+            if key:
+                return key
+        key = secrets.token_urlsafe(32)
+        os.makedirs("database", exist_ok=True)
+        with open(SECRET_KEY_FILE, 'w') as f:
+            f.write(key)
+        os.chmod(SECRET_KEY_FILE, 0o600)
+        return key
+    except Exception as e:
+        logger.error(f"Could not persist secret key ({e}); falling back to an ephemeral key")
+        return secrets.token_urlsafe(32)
+
+app.config['SECRET_KEY'] = load_or_create_secret_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
@@ -366,11 +410,14 @@ app.config.update(
 @app.after_request
 def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    # The UI is never framed (no iframes), so deny framing outright. CSP
+    # frame-ancestors 'none' is the modern, finer-grained control; X-Frame-Options
+    # DENY is kept for older browsers that ignore frame-ancestors.
+    response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org;"
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org; frame-ancestors 'none';"
     return response
 
 @app.before_request
@@ -396,15 +443,6 @@ else:
 
 socketio = SocketIO(app, cors_allowed_origins=socketio_origins, async_mode='threading',
                     ping_timeout=SOCKETIO_PING_TIMEOUT, ping_interval=SOCKETIO_PING_INTERVAL)
-
-@app.after_request
-def add_security_headers(response):
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org;"
-    return response
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -824,6 +862,22 @@ def get_geo_data(ip, my_geo_data=None):
     with cache_lock:
         if ip in geo_cache and now - geo_cache[ip]["timestamp"] < CACHE_TIMEOUT:
             return geo_cache[ip]["data"]
+
+    # Reject anything that is not a syntactically valid IP before it can be
+    # interpolated into an outbound geolocation URL (SSRF / path-injection guard).
+    try:
+        ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
+        logger.warning(f"Refusing geo lookup for invalid IP: {ip!r}")
+        return {
+            "ip": str(ip),
+            "lat": DEFAULT_COORDS[0],
+            "lon": DEFAULT_COORDS[1],
+            "city": "Unknown",
+            "country": "Unknown",
+            "region": "Unknown",
+            "org": "Not available"
+        }
 
     if is_private_ip(ip):
         geo_data = {
