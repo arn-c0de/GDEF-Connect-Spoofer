@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Security Configuration
 ACCESS_TOKEN = secrets.token_urlsafe(16)
-logger.info(f"\n" + "="*50 + f"\nACCESS TOKEN: {ACCESS_TOKEN}\n" + "="*50)
+# Print token to stdout only, avoid logging to persistent log files via logger
+print("\n" + "="*50 + f"\nACCESS TOKEN: {ACCESS_TOKEN}\n" + "="*50 + "\n", file=sys.stderr)
 
 def login_required(f):
     @wraps(f)
@@ -79,8 +80,15 @@ known_ips = set()
 tcp_connections = {}
 cache_lock = threading.Lock()
 active_clients = set()
+active_clients_lock = threading.Lock()
 db_lock = threading.Lock()
 pinned_ips_cache = {}
+
+# Constants for DoS protection
+MAX_KNOWN_IPS = 10000
+MAX_CACHE_SIZE = 5000
+IP_UPDATE_INTERVAL = 1.0  # Min seconds between updates for the same IP
+last_ip_updates = {}
 
 # Packet Queue
 class PacketQueue:
@@ -150,9 +158,6 @@ def get_mac_vendor(mac):
     except requests.RequestException as e:
         logger.warning(f"Error at maclookup.app for MAC {mac}: {e}")
     return "Unknown"
-
-def get_mac_vendor_with_cache(mac):
-    return get_mac_vendor(mac)
 
 def load_pinned_ips():
     global pinned_ips_cache
@@ -540,6 +545,7 @@ def estimate_os(ttl):
 api_call_lock = threading.Lock()
 last_api_call = 0
 API_CALL_INTERVAL = 0.1
+UDP_FILTER_PORTS = {137, 138, 1900, 5353}
 
 def get_geo_data(ip, my_geo_data=None):
     global last_api_call
@@ -647,10 +653,28 @@ def get_my_public_ip_coords():
 def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, mac=None, vendor="Unknown", src_ip=None, dst_ip=None, ttl=None, hostname="Unknown"):
     if ip in (my_local_ip, my_public_ip):
         return
+    
     with cache_lock:
+        if len(known_ips) >= MAX_KNOWN_IPS and ip not in known_ips:
+            # Simple eviction: clear 10% of entries if limit reached
+            to_remove = list(known_ips)[:int(MAX_KNOWN_IPS * 0.1)]
+            for old_ip in to_remove:
+                known_ips.discard(old_ip)
         known_ips.add(ip)
+        
     geo = get_geo_data(ip, my_geo_data)
     now = time.time()
+    
+    # Rate limit updates sent to clients for this specific IP
+    with cache_lock:
+        last_update = last_ip_updates.get(ip, 0)
+        if now - last_update < IP_UPDATE_INTERVAL:
+            # Still update internal counts but skip socket.io broadcast to save bandwidth/client CPU
+            broadcast_needed = False
+        else:
+            last_ip_updates[ip] = now
+            broadcast_needed = True
+
     os_guess = estimate_os(ttl)
     conn_key = tuple(sorted([src_ip, dst_ip]) + [src_port, dst_port, protocol]) if src_ip and dst_ip else None
     if protocol == "TCP" and conn_key:
@@ -721,8 +745,9 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
                               (ip, geo["lat"], geo["lon"], geo["city"], geo["country"], now, org, src_port, dst_port, protocol,
                                incoming_count, outgoing_count, mac, vendor, hostname, os_guess))
                 conn.commit()
-                send_ip_to_clients(geo["ip"], geo["lat"], geo["lon"], geo["city"], geo["country"], geo["region"], org, now,
-                                   protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, 0, hostname, os_guess, threat_level)
+                if broadcast_needed:
+                    send_ip_to_clients(geo["ip"], geo["lat"], geo["lon"], geo["city"], geo["country"], geo["region"], org, now,
+                                       protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, 0, hostname, os_guess, threat_level)
         except sqlite3.Error as e:
             logger.error(f"Error updating IP {ip}: {e}")
 
@@ -736,8 +761,10 @@ def send_network_stats(stats):
                 'total_bytes': stats['total_bytes'],
                 'active_connections': stats['active_connections']
             })
-            if active_clients:
-                socketio.emit('heartbeat', {'timestamp': time.time(), 'active_clients': len(active_clients)})
+            with active_clients_lock:
+                count = len(active_clients)
+            if count > 0:
+                socketio.emit('heartbeat', {'timestamp': time.time(), 'active_clients': count})
             time.sleep(5)
         except Exception as e:
             logger.error(f"Error sending network statistics: {e}")
@@ -754,41 +781,42 @@ def cleanup_expired_ips(stats):
                               (now - EXPIRATION_SECONDS,))
                     conn.commit()
             with cache_lock:
+                # Cleanup geo_cache
                 for ip in list(geo_cache.keys()):
                     if now - geo_cache[ip]["timestamp"] > CACHE_TIMEOUT:
                         del geo_cache[ip]
+                
+                # Enforce max cache size
+                if len(geo_cache) > MAX_CACHE_SIZE:
+                    sorted_cache = sorted(geo_cache.items(), key=lambda x: x[1]['timestamp'])
+                    to_del = sorted_cache[:len(geo_cache) - MAX_CACHE_SIZE]
+                    for key, _ in to_del:
+                        del geo_cache[key]
+
+                # Cleanup tcp_connections
                 for conn_key in list(tcp_connections.keys()):
                     if now - tcp_connections[conn_key]["last_seen"] > EXPIRATION_SECONDS:
                         del tcp_connections[conn_key]
+                
+                # Cleanup rate limit trackers
+                for ip in list(last_ip_updates.keys()):
+                    if now - last_ip_updates[ip] > 60:
+                        del last_ip_updates[ip]
+
                 stats['active_connections'] = len(tcp_connections)
             time.sleep(10)
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
             time.sleep(10)
 
-def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
-    logger.debug(f"Packet captured: {packet.summary()}")
-    if len(packet) < 20 or len(packet) > 1500:
-        return
-    if IP not in packet:
-        return
+def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
+    if len(packet) < 20 or len(packet) > 1500 or IP not in packet:
+        return None
+
     ip_src = packet[IP].src
     ip_dst = packet[IP].dst
-    ttl = packet[IP].ttl
-    protocol = "Unknown"
     src_port = None
     dst_port = None
-    src_mac = None
-    dst_mac = None
-    src_vendor = "Unknown"
-    dst_vendor = "Unknown"
-    packet_size = len(packet)
-
-    if Ether in packet:
-        src_mac = packet[Ether].src
-        dst_mac = packet[Ether].dst
-        src_vendor = get_mac_vendor_with_cache(src_mac) if not is_private_ip(ip_src) else "Unknown"
-        dst_vendor = get_mac_vendor_with_cache(dst_mac) if not is_private_ip(ip_dst) else "Unknown"
 
     if TCP in packet:
         protocol = "TCP"
@@ -799,16 +827,52 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
         protocol = "UDP"
         src_port = packet[UDP].sport
         dst_port = packet[UDP].dport
-        if not showAllUDPPackets.value and (src_port in [137, 138, 1900, 5353] or dst_port in [137, 138, 1900, 5353]):
-            return
+        if not showAllUDPPackets.value and (src_port in UDP_FILTER_PORTS or dst_port in UDP_FILTER_PORTS):
+            return None
         stats['udp_packets'] += 1
     elif ICMP in packet and packet[ICMP].type == 8:
         protocol = "ICMP"
         stats['icmp_packets'] += 1
     else:
+        return None
+
+    src_mac = None
+    dst_mac = None
+    src_vendor = "Unknown"
+    dst_vendor = "Unknown"
+    if Ether in packet:
+        src_mac = packet[Ether].src
+        dst_mac = packet[Ether].dst
+        if lookup_private_macs or not is_private_ip(ip_src):
+            src_vendor = get_mac_vendor(src_mac)
+        if lookup_private_macs or not is_private_ip(ip_dst):
+            dst_vendor = get_mac_vendor(dst_mac)
+
+    stats['total_bytes'] += len(packet)
+    return {
+        "ip_src": ip_src,
+        "ip_dst": ip_dst,
+        "ttl": packet[IP].ttl,
+        "protocol": protocol,
+        "src_port": src_port,
+        "dst_port": dst_port,
+        "src_mac": src_mac,
+        "dst_mac": dst_mac,
+        "src_vendor": src_vendor,
+        "dst_vendor": dst_vendor
+    }
+
+def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
+    logger.debug(f"Packet captured: {packet.summary()}")
+    parsed = parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=False)
+    if not parsed:
         return
 
-    stats['total_bytes'] += packet_size
+    ip_src = parsed["ip_src"]
+    ip_dst = parsed["ip_dst"]
+    protocol = parsed["protocol"]
+    src_port = parsed["src_port"]
+    dst_port = parsed["dst_port"]
     direction = "other"
     if ip_dst in (my_local_ip, my_public_ip):
         direction = "incoming"
@@ -829,12 +893,12 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
         "protocol": protocol,
         "src_port": src_port,
         "dst_port": dst_port,
-        "src_mac": src_mac,
-        "dst_mac": dst_mac,
-        "src_vendor": src_vendor,
-        "dst_vendor": dst_vendor,
+        "src_mac": parsed["src_mac"],
+        "dst_mac": parsed["dst_mac"],
+        "src_vendor": parsed["src_vendor"],
+        "dst_vendor": parsed["dst_vendor"],
         "direction": direction,
-        "ttl": ttl,
+        "ttl": parsed["ttl"],
         "hostname_src": hostname_src,
         "hostname_dst": hostname_dst
     }
@@ -846,63 +910,28 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
 
 def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets):
     logger.debug(f"Internal packet captured: {packet.summary()}")
-    if len(packet) < 20 or len(packet) > 1500:
-        return
     if not is_internal_search_active.value:
         return
-    if IP not in packet:
-        return
-    ip_src = packet[IP].src
-    ip_dst = packet[IP].dst
-    ttl = packet[IP].ttl
-    protocol = "Unknown"
-    src_port = None
-    dst_port = None
-    src_mac = None
-    dst_mac = None
-    src_vendor = "Unknown"
-    dst_vendor = "Unknown"
-    packet_size = len(packet)
-
-    if Ether in packet:
-        src_mac = packet[Ether].src
-        dst_mac = packet[Ether].dst
-        src_vendor = get_mac_vendor_with_cache(src_mac)
-        dst_vendor = get_mac_vendor_with_cache(dst_mac)
-
-    if TCP in packet:
-        protocol = "TCP"
-        src_port = packet[TCP].sport
-        dst_port = packet[TCP].dport
-        stats['tcp_packets'] += 1
-    elif UDP in packet:
-        protocol = "UDP"
-        src_port = packet[UDP].sport
-        dst_port = packet[UDP].dport
-        if not showAllUDPPackets.value and (src_port in [137, 138, 1900, 5353] or dst_port in [137, 138, 1900, 5353]):
-            return
-        stats['udp_packets'] += 1
-    elif ICMP in packet and packet[ICMP].type == 8:
-        protocol = "ICMP"
-        stats['icmp_packets'] += 1
-    else:
+    parsed = parse_ip_packet(packet, stats, showAllUDPPackets)
+    if not parsed:
         return
 
-    stats['total_bytes'] += packet_size
+    ip_src = parsed["ip_src"]
+    ip_dst = parsed["ip_dst"]
 
     if ip_src != my_local_ip and ip_src != my_public_ip and is_private_ip(ip_src):
         direction = "incoming" if ip_dst in (my_local_ip, my_public_ip) else "other"
         queue.put({
             "ip": ip_src,
             "direction": direction,
-            "protocol": protocol,
-            "src_port": src_port,
-            "dst_port": dst_port,
-            "mac": src_mac,
-            "vendor": src_vendor,
+            "protocol": parsed["protocol"],
+            "src_port": parsed["src_port"],
+            "dst_port": parsed["dst_port"],
+            "mac": parsed["src_mac"],
+            "vendor": parsed["src_vendor"],
             "src_ip": ip_src,
             "dst_ip": ip_dst,
-            "ttl": ttl,
+            "ttl": parsed["ttl"],
             "hostname": ip_src
         })
     if ip_dst != my_local_ip and ip_dst != my_public_ip and is_private_ip(ip_dst):
@@ -910,14 +939,14 @@ def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
         queue.put({
             "ip": ip_dst,
             "direction": direction,
-            "protocol": protocol,
-            "src_port": src_port,
-            "dst_port": dst_port,
-            "mac": dst_mac,
-            "vendor": dst_vendor,
+            "protocol": parsed["protocol"],
+            "src_port": parsed["src_port"],
+            "dst_port": parsed["dst_port"],
+            "mac": parsed["dst_mac"],
+            "vendor": parsed["dst_vendor"],
             "src_ip": ip_src,
             "dst_ip": ip_dst,
-            "ttl": ttl,
+            "ttl": parsed["ttl"],
             "hostname": ip_dst
         })
 
@@ -1092,16 +1121,6 @@ def load_backend_config():
         logger.error(f"Error loading backend configuration file: {e}")
         return {}
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        token = request.form.get('token')
-        if token == ACCESS_TOKEN:
-            session['authenticated'] = True
-            return redirect(url_for('index'))
-        return render_template('login.html', error="Invalid token")
-    return render_template('login.html')
-
 @app.route('/')
 @login_required
 def index():
@@ -1194,12 +1213,14 @@ if __name__ == "__main__":
                 disconnect()
                 return
             sid = request.sid
-            active_clients.add(sid)
+            with active_clients_lock:
+                active_clients.add(sid)
+                count = len(active_clients)
             settings = load_settings()
             socketio.emit('settings_update', settings, to=sid)
             send_all_ips_to_client(sid)
             send_pinned_ips_to_client(sid)
-            logger.info(f"Client connected, SID: {sid}, Active clients: {len(active_clients)}")
+            logger.info(f"Client connected, SID: {sid}, Active clients: {count}")
         except Exception as e:
             logger.error(f"Error on client connect: {e}")
 
@@ -1207,8 +1228,10 @@ if __name__ == "__main__":
     def handle_disconnect():
         try:
             sid = request.sid
-            active_clients.discard(sid)
-            logger.info(f"Client disconnected, SID: {sid}, Active clients: {len(active_clients)}")
+            with active_clients_lock:
+                active_clients.discard(sid)
+                count = len(active_clients)
+            logger.info(f"Client disconnected, SID: {sid}, Active clients: {count}")
         except Exception as e:
             logger.error(f"Error on client disconnect: {e}")
 
