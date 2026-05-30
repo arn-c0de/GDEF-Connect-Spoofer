@@ -1225,6 +1225,26 @@ def t_fritzdump_end_to_end():
         app.refresh_disabled_devices()
 
 
+@check("FritzDump worker spawn / terminate (process-group kill)")
+def t_fritzdump_worker_lifecycle():
+    # Use a harmless long-lived command in place of run.sh and confirm the worker
+    # is spawned in its own process group and killed cleanly.
+    with patched(app, "FRITZDUMP_WORKER_CMD", ["sleep", "30"]), \
+            patched(app, "FRITZDUMP_WORKER_DIR", TMP_DIR):
+        proc = app._spawn_fritzdump_worker()
+        assert_true(proc is not None and proc.poll() is None, "worker started and running")
+        app._terminate_fritzdump_worker(proc)
+        # After SIGTERM to the group the child must be reaped.
+        for _ in range(50):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        assert_true(proc.poll() is not None, "worker terminated")
+    # No command configured -> spawn is a safe no-op (returns None).
+    with patched(app, "FRITZDUMP_WORKER_CMD", None):
+        assert_true(app._spawn_fritzdump_worker() is None, "no command -> no worker")
+
+
 # =========================================================================== #
 #  Runner
 # =========================================================================== #
@@ -1300,6 +1320,7 @@ ALL_TESTS = [
     t_fritzdump_callback,
     t_device_startstop,
     t_fritzdump_end_to_end,
+    t_fritzdump_worker_lifecycle,
     # zuletzt: startet einen Dauer-Thread, der den ip_write_buffer leert
     t_flush_ip_writes,
 ]
