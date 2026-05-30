@@ -29,12 +29,44 @@ logger = logging.getLogger(__name__)
 ACCESS_TOKEN = secrets.token_urlsafe(16)
 TOKEN_FILE = os.path.join("database", "access_token.txt")
 
+# O_NOFOLLOW only exists on POSIX; degrade to 0 on platforms (Windows) that
+# lack it so the open() call stays portable.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+def write_secret_file(path, data):
+    """Persist a 0600 secret file atomically and without following symlinks.
+
+    Defends against a local attacker who pre-creates a symlink at `path` before
+    the app first runs (the database/ dir is 0700, but this is belt-and-braces):
+    we write to a fresh temp file in the same directory opened O_CREAT|O_EXCL|
+    O_NOFOLLOW (so we neither follow nor reuse anything an attacker planted),
+    then os.replace() it into place. os.replace is atomic, so the destination
+    is never observed half-written, and renaming onto a symlinked path replaces
+    the link itself rather than writing through it to the target.
+    """
+    directory = os.path.dirname(path) or "."
+    tmp = os.path.join(directory, f".{os.path.basename(path)}.{os.getpid()}.tmp")
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.chmod(path, 0o600)
+
 try:
     if not os.path.exists("database"):
         os.makedirs("database")
-    with open(TOKEN_FILE, "w") as f:
-        f.write(ACCESS_TOKEN)
-    os.chmod(TOKEN_FILE, 0o600)
+    write_secret_file(TOKEN_FILE, ACCESS_TOKEN)
 except Exception as e:
     logger.error(f"Could not save access token to file: {e}")
 
@@ -437,6 +469,20 @@ def update_pinned_ips(ip, is_pinned):
 # Flask app and Socket.IO
 app = Flask(__name__)
 
+# Trust-proxy support (opt-in, OFF by default). Behind a reverse proxy
+# (Nginx/HAProxy) request.remote_addr is the proxy's IP, so every client would
+# collapse to one address and defeat the per-IP login lockout and Socket.IO
+# rate limiting. ProxyFix makes those controls read the real client IP from
+# X-Forwarded-For. This is deliberately disabled unless TRUST_PROXY is set:
+# honouring those headers when NOT actually behind a trusted proxy would let
+# any client forge its source IP, which is strictly worse than the default.
+if os.environ.get('TRUST_PROXY', '').lower() in ('1', 'true', 'yes'):
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    _proxy_hops = int(os.environ.get('TRUST_PROXY_HOPS', '1'))
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_proxy_hops, x_proto=_proxy_hops,
+                            x_host=_proxy_hops, x_port=_proxy_hops)
+    logger.info(f"ProxyFix enabled: trusting {_proxy_hops} proxy hop(s) for X-Forwarded-* headers")
+
 SECRET_KEY_FILE = os.path.join("database", "secret_key")
 
 def load_or_create_secret_key():
@@ -450,6 +496,8 @@ def load_or_create_secret_key():
     if env_key:
         return env_key
     try:
+        if os.path.islink(SECRET_KEY_FILE):
+            raise OSError(f"{SECRET_KEY_FILE} is a symlink; refusing to read a secret through it")
         if os.path.exists(SECRET_KEY_FILE):
             with open(SECRET_KEY_FILE, 'r') as f:
                 key = f.read().strip()
@@ -457,9 +505,7 @@ def load_or_create_secret_key():
                 return key
         key = secrets.token_urlsafe(32)
         os.makedirs("database", exist_ok=True)
-        with open(SECRET_KEY_FILE, 'w') as f:
-            f.write(key)
-        os.chmod(SECRET_KEY_FILE, 0o600)
+        write_secret_file(SECRET_KEY_FILE, key)
         return key
     except Exception as e:
         logger.error(f"Could not persist secret key ({e}); falling back to an ephemeral key")
