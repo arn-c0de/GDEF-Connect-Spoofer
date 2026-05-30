@@ -1,5 +1,5 @@
 @echo off
-title ConnectSpoofer - GDEF Suite Network Module (Admin CMD)
+title GDEF-L1NK - GDEF Suite Network Module (Admin CMD)
 
 :: Ensure the script runs with administrator privileges
 net session >nul 2>&1
@@ -86,7 +86,7 @@ echo.
 
 :: Display date and time
 echo ============================================
-echo   ConnectSpoofer - GDEF Suite Network Module
+echo   GDEF-L1NK - GDEF Suite Network Module
 echo   Date: %DATE%   Time: %TIME%
 echo ============================================
 echo.

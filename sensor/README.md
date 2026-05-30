@@ -30,7 +30,7 @@ Copy three files to the sensor host: `sensor.py`, plus `capture_core.py` and
 both locations are searched automatically.)
 
 ```bash
-mkdir -p /opt/connectspoofer-sensor && cd /opt/connectspoofer-sensor
+mkdir -p /opt/gdef-l1nk-sensor && cd /opt/gdef-l1nk-sensor
 # copy sensor.py, capture_core.py, device_crypto.py, requirements.txt here
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -47,11 +47,11 @@ sudo -E .venv/bin/python sensor.py      # capture needs CAP_NET_RAW (root)
 ### As a service (systemd)
 
 ```bash
-sudo cp connectspoofer-sensor.service /etc/systemd/system/
+sudo cp gdef-l1nk-sensor.service /etc/systemd/system/
 # adjust the paths inside the unit if you deployed elsewhere
 sudo systemctl daemon-reload
-sudo systemctl enable --now connectspoofer-sensor
-journalctl -u connectspoofer-sensor -f
+sudo systemctl enable --now gdef-l1nk-sensor
+journalctl -u gdef-l1nk-sensor -f
 ```
 
 The unit grants only `CAP_NET_RAW`/`CAP_NET_ADMIN` instead of full root.
@@ -61,9 +61,9 @@ The unit grants only `CAP_NET_RAW`/`CAP_NET_ADMIN` instead of full root.
 Build from the **repo root** (so the shared modules are in the build context):
 
 ```bash
-docker build -f sensor/Dockerfile -t connectspoofer-sensor .
+docker build -f sensor/Dockerfile -t gdef-l1nk-sensor .
 docker run --rm --network host --cap-add NET_RAW --cap-add NET_ADMIN \
-  --env-file sensor/sensor.env connectspoofer-sensor
+  --env-file sensor/sensor.env gdef-l1nk-sensor
 ```
 
 ## Configuration

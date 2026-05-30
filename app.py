@@ -3244,7 +3244,7 @@ if __name__ == "__main__":
     try:
         host = os.environ.get('APP_HOST', '127.0.0.1')
         port = int(os.environ.get('APP_PORT', '8000'))
-        # allow_unsafe_werkzeug: ConnectSpoofer ships the bundled Werkzeug server
+        # allow_unsafe_werkzeug: GDEF-L1NK ships the bundled Werkzeug server
         # as its runtime (no eventlet/gevent). Newer Werkzeug refuses to start via
         # socketio.run() without this flag. This is a self-hosted monitoring tool
         # bound to localhost by default, not a public production web service.

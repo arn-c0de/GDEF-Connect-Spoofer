@@ -210,7 +210,7 @@ wheels = [
 ]
 
 [[package]]
-name = "connectspoofer"
+name = "gdef-l1nk"
 version = "1.0.3"
 source = { virtual = "." }
 dependencies = [

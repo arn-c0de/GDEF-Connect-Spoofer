@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-# ConnectSpoofer launcher — Docker Compose orchestrator.
+# GDEF-L1NK launcher — Docker Compose orchestrator.
 #
 # Everything runs in containers: the Flask sniffer/web app (host networking +
 # NET_RAW/NET_ADMIN so Scapy sees the real NIC) and PostgreSQL. This sidesteps
@@ -41,7 +41,7 @@ info() { echo "[INFO] $*"; }
 
 usage() {
   printf '%s\n' \
-    "ConnectSpoofer launcher (Docker)" \
+    "GDEF-L1NK launcher (Docker)" \
     "Usage:" \
     "  ./run.sh start      build (if needed) and start the stack (baked image)" \
     "  ./run.sh dev        start with source bind-mounted (live frontend, fast backend reload)" \
@@ -111,7 +111,7 @@ start_stack() {
   # 'start' is the production-like mode: run the baked image, no source mounts.
   rm -f "$DEV_MARKER"
   ensure_env; ensure_directories
-  info "Starting ConnectSpoofer stack (building if needed)..."
+  info "Starting GDEF-L1NK stack (building if needed)..."
   compose up -d --build
   info "Up. Dashboard: http://$(env_get APP_HOST 127.0.0.1):$(env_get APP_PORT 8000)"
   info "Token: ./run.sh token    Logs: ./run.sh logs    Stop: ./run.sh stop"
@@ -121,7 +121,7 @@ dev_stack() {
   # Dev mode: bind-mount the source so edits don't need an image rebuild.
   ensure_env; ensure_directories
   : > "$DEV_MARKER"
-  info "Starting ConnectSpoofer in DEV mode (source bind-mounted)..."
+  info "Starting GDEF-L1NK in DEV mode (source bind-mounted)..."
   compose up -d --build
   info "Up (dev). Dashboard: http://$(env_get APP_HOST 127.0.0.1):$(env_get APP_PORT 8000)"
   info "Frontend edits (static/, templates/): just refresh the browser — no restart."
@@ -138,7 +138,7 @@ rebuild_stack() {
 
 stop_stack() {
   ensure_env
-  info "Stopping ConnectSpoofer stack..."
+  info "Stopping GDEF-L1NK stack..."
   compose down
   rm -f "$DEV_MARKER"
 }
@@ -155,7 +155,7 @@ restart_stack() {
     # Prod mode: rebuild changed layers (frontend/backend source) and recreate
     # the app container so code edits are picked up. The Docker layer cache keeps
     # this near-instant when only app.py / static / templates changed.
-    info "Rebuilding changed parts and restarting ConnectSpoofer stack..."
+    info "Rebuilding changed parts and restarting GDEF-L1NK stack..."
     compose up -d --build
   fi
 }

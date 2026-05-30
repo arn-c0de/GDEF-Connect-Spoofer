@@ -1,14 +1,14 @@
 [Unit]
-Description=ConnectSpoofer sensor worker
+Description=GDEF-L1NK sensor worker
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 # Adjust these paths to wherever you deployed the sensor.
-WorkingDirectory=/opt/connectspoofer-sensor
-EnvironmentFile=/opt/connectspoofer-sensor/sensor.env
-ExecStart=/opt/connectspoofer-sensor/.venv/bin/python /opt/connectspoofer-sensor/sensor.py
+WorkingDirectory=/opt/gdef-l1nk-sensor
+EnvironmentFile=/opt/gdef-l1nk-sensor/sensor.env
+ExecStart=/opt/gdef-l1nk-sensor/.venv/bin/python /opt/gdef-l1nk-sensor/sensor.py
 
 # Least privilege: grant only raw-socket capture instead of full root.
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
