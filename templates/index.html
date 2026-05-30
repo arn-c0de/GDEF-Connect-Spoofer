@@ -12,9 +12,19 @@
             font-src 'self';
         ">
         <title>OrbDef-L1nk</title>
-        <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-        <script src="https://unpkg.com/globe.gl@2.30.0/dist/globe.gl.min.js"></script>
-        <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+        <!-- Subresource Integrity: the browser refuses to run these CDN bundles if
+             their bytes don't match the pinned sha384 hash, so a compromised CDN
+             can't inject code. Hashes are tied to the exact versions in the URLs;
+             bump both together when upgrading. -->
+        <script src="https://unpkg.com/three@0.160.0/build/three.min.js"
+                integrity="sha384-qOkzR5Ke/XkQxuGVJ9hpFEpDlcoLtWwVYhnJf06cLIZa2vaIptSqaubivErzmD5O"
+                crossorigin="anonymous"></script>
+        <script src="https://unpkg.com/globe.gl@2.30.0/dist/globe.gl.min.js"
+                integrity="sha384-9QrV9vb4hlTYDljdb5r1QVdDd+x5D9w9KOv3OsSwy07Ryn0FLvWRUKK9JuTUdvUE"
+                crossorigin="anonymous"></script>
+        <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"
+                integrity="sha384-7EyYLQZgWBi67fBtVxw60/OWl1kjsfrPFcaU0pp0nAh+i8FD068QogUvg85Ewy1k"
+                crossorigin="anonymous"></script>
         <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     </head>
     <body data-lat="{{ lat|default(0, true)|float }}" data-lng="{{ lng|default(0, true)|float }}">
