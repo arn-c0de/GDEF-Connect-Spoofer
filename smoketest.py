@@ -530,10 +530,7 @@ def t_locked():
 @check("init_db")
 def t_init_db():
     app.init_db()
-    import sqlite3
-    with sqlite3.connect(app.DATABASE_PATH) as conn:
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    tables = app.db.list_tables()
     for t in ("ip_data", "pinned_ips", "settings", "mac_cache", "threat_list"):
         assert_true(t in tables, f"Tabelle {t} fehlt")
 
@@ -552,8 +549,7 @@ def t_settings():
 def t_update_threat_list():
     with patched(requests, "get", routing_fake_get):
         app.update_threat_list()
-    import sqlite3
-    with sqlite3.connect(app.DATABASE_PATH) as conn:
+    with app.db.get_connection() as conn:
         n = conn.execute("SELECT COUNT(*) FROM threat_list").fetchone()[0]
     assert_true(n > 0, "threat_list sollte befuellt sein")
 
@@ -693,11 +689,12 @@ def t_queue_geo_enrichment():
 
 @check("geo_enrichment_worker (1 Iteration)")
 def t_geo_enrichment_worker():
-    import sqlite3
     # Eintrag anlegen, den der Worker aktualisiert
-    with sqlite3.connect(app.DATABASE_PATH) as conn:
-        conn.execute("INSERT OR REPLACE INTO ip_data (ip, last_seen, incoming_count, outgoing_count) "
-                     "VALUES (?, ?, 0, 0)", ("77.77.77.77", time.time()))
+    with app.db.get_connection() as conn:
+        conn.execute("INSERT INTO ip_data (ip, last_seen, incoming_count, outgoing_count) "
+                     "VALUES (%s, %s, 0, 0) ON CONFLICT (ip) DO UPDATE SET "
+                     "last_seen = EXCLUDED.last_seen, incoming_count = 0, outgoing_count = 0",
+                     ("77.77.77.77", time.time()))
         conn.commit()
     rec = EmitRecorder()
     app.geo_enrich_inflight.clear()
@@ -757,12 +754,12 @@ def t_send_network_stats():
 
 @check("cleanup_expired_ips (1 Iteration)")
 def t_cleanup_expired_ips():
-    import sqlite3
     s = app.SharedStats()
     # abgelaufene IP einfuegen
     old = time.time() - app.EXPIRATION_SECONDS - 100
-    with sqlite3.connect(app.DATABASE_PATH) as conn:
-        conn.execute("INSERT OR REPLACE INTO ip_data (ip, last_seen) VALUES (?, ?)",
+    with app.db.get_connection() as conn:
+        conn.execute("INSERT INTO ip_data (ip, last_seen) VALUES (%s, %s) "
+                     "ON CONFLICT (ip) DO UPDATE SET last_seen = EXCLUDED.last_seen",
                      ("66.66.66.66", old))
         conn.commit()
     # alten geo_cache-Eintrag setzen
@@ -773,8 +770,8 @@ def t_cleanup_expired_ips():
     deadline = time.time() + 3
     removed = False
     while time.time() < deadline and not removed:
-        with sqlite3.connect(app.DATABASE_PATH) as conn:
-            row = conn.execute("SELECT 1 FROM ip_data WHERE ip=?",
+        with app.db.get_connection() as conn:
+            row = conn.execute("SELECT 1 FROM ip_data WHERE ip=%s",
                                ("66.66.66.66",)).fetchone()
         removed = row is None
         time.sleep(0.05)
@@ -848,7 +845,6 @@ def t_buffer_ip_write():
 
 @check("flush_ip_writes (1 Flush -> DB-Insert + ip_update_batch)")
 def t_flush_ip_writes():
-    import sqlite3
     with app.locked(app.ip_write_buffer_lock):
         app.ip_write_buffer.clear()
     rec = EmitRecorder()
@@ -858,13 +854,15 @@ def t_flush_ip_writes():
             patched(app.socketio, "emit", rec):
         th = threading.Thread(target=app.flush_ip_writes, daemon=True)
         th.start()
+        # Wait on the broadcast, which the flusher emits AFTER committing the row.
+        # Polling only the DB row races: the row becomes visible a moment before
+        # the emit, so waiting for the event is the reliable completion signal.
         deadline = time.time() + 4
-        found = False
-        while time.time() < deadline and not found:
-            with sqlite3.connect(app.DATABASE_PATH) as conn:
-                found = conn.execute("SELECT 1 FROM ip_data WHERE ip=?",
-                                     ("88.88.88.88",)).fetchone() is not None
-            time.sleep(0.1)
+        while time.time() < deadline and "ip_update_batch" not in rec.events():
+            time.sleep(0.05)
+    with app.db.get_connection() as conn:
+        found = conn.execute("SELECT 1 FROM ip_data WHERE ip=%s",
+                             ("88.88.88.88",)).fetchone() is not None
     assert_true(found, "flush sollte die IP in die DB schreiben")
     assert_true("ip_update_batch" in rec.events(), "flush sollte ip_update_batch broadcasten")
 
@@ -896,12 +894,17 @@ def t_send_ip_to_clients():
 
 @check("send_all_ips_to_client")
 def t_send_all_ips():
-    import sqlite3
-    with sqlite3.connect(app.DATABASE_PATH) as conn:
-        conn.execute("INSERT OR REPLACE INTO ip_data "
+    with app.db.get_connection() as conn:
+        conn.execute("INSERT INTO ip_data "
                      "(ip, lat, lon, city, country, org, last_seen, protocol, "
                      " incoming_count, outgoing_count) "
-                     "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                     "ON CONFLICT (ip) DO UPDATE SET "
+                     "lat=EXCLUDED.lat, lon=EXCLUDED.lon, city=EXCLUDED.city, "
+                     "country=EXCLUDED.country, org=EXCLUDED.org, "
+                     "last_seen=EXCLUDED.last_seen, protocol=EXCLUDED.protocol, "
+                     "incoming_count=EXCLUDED.incoming_count, "
+                     "outgoing_count=EXCLUDED.outgoing_count",
                      ("55.55.55.55", 1.0, 2.0, "C", "CO", "Org",
                       time.time(), "TCP", 1, 1))
         conn.commit()
@@ -909,7 +912,8 @@ def t_send_all_ips():
     with patched(app.socketio, "emit", rec), \
             patched(app, "get_geo_data", lambda ip, mg=None: dict(FAKE_GEO, ip=ip)):
         app.send_all_ips_to_client(sid="sid-x")
-    assert_true("ip_update" in rec.events())
+    # send_all_ips_to_client coalesces the whole table into ONE batched message.
+    assert_true("ip_update_batch" in rec.events())
 
 
 @check("send_pinned_ips_to_client")

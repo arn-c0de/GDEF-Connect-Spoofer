@@ -32,6 +32,20 @@ UV="${UV:-uv}"
 BACKEND_CONF="$PROJECT_DIR/database/backend_conf.json"
 LOG_FILE="$PROJECT_DIR/app.log"
 PID_FILE="$PROJECT_DIR/app.pid"
+
+# Load local environment overrides (DB connection, capture interface, etc.) from
+# .env if present. Read inside the script so the values survive `sudo` stripping
+# the caller's environment. `set -a` exports them so the backgrounded app
+# inherits DATABASE_URL / PG* / NETWORK_INTERFACE without extra plumbing.
+ENV_FILE="$PROJECT_DIR/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  echo "[INFO] Loading environment from .env"
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
 APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-8000}"
 SOCKETIO_CORS_ORIGINS="${SOCKETIO_CORS_ORIGINS:-}"
@@ -39,6 +53,31 @@ SOCKETIO_CORS_ORIGINS="${SOCKETIO_CORS_ORIGINS:-}"
 # (ip-api.com) unless the operator explicitly opts back in. Exported so the
 # config-forwarding loop below picks it up like any other set variable.
 export ALLOW_INSECURE_GEO_API="${ALLOW_INSECURE_GEO_API:-0}"
+
+# --- Local PostgreSQL management (opt-in) ------------------------------------
+# When MANAGE_LOCAL_DB=1, run.sh starts a private PostgreSQL cluster on `start`
+# and shuts it down on `stop`, so the database lifecycle follows the tool. This
+# is for the bare-metal dev path only; Docker users and anyone pointing at an
+# external/remote PostgreSQL should leave it at 0 (the default) and just set
+# DATABASE_URL. PostgreSQL cannot run as root, so DB management only happens when
+# run.sh is invoked as a normal user (least-privilege mode).
+MANAGE_LOCAL_DB="${MANAGE_LOCAL_DB:-0}"
+# PostgreSQL refuses to run as root, so the local cluster always runs as an
+# unprivileged user. Under sudo that is the invoking user ($SUDO_USER) and its
+# home, so `sudo ./run.sh start|stop` still manages the database.
+DB_OWNER="$(id -un)"
+DB_OWNER_HOME="$HOME"
+if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  DB_OWNER="$SUDO_USER"
+  DB_OWNER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+fi
+PGDATA_LOCAL="${PGDATA_LOCAL:-$DB_OWNER_HOME/.local/share/connectspoofer-pg}"
+DB_PORT="${DB_PORT:-54329}"
+DB_NAME="${DB_NAME:-connectspoofer}"
+DB_USER="${DB_USER:-connectspoofer}"
+DB_PASSWORD="${DB_PASSWORD:-connectspoofer}"
+PG_CTL="${PG_CTL:-}"  # optional explicit path to pg_ctl
+
 COMMAND="${1:-start}"
 
 die() {
@@ -98,6 +137,103 @@ require_capture_privileges() {
   die "Packet capture needs root or CAP_NET_RAW. Either run: sudo $0 ${COMMAND}
   or grant the capability once to run as a non-root user (least privilege):
     sudo setcap cap_net_raw,cap_net_admin=eip \$(readlink -f \"$VENV/bin/python\")"
+}
+
+# --- Local PostgreSQL helpers ----------------------------------------------- #
+# Locate the PostgreSQL bin directory (pg_ctl/initdb/psql). Honours $PG_CTL, then
+# common distro locations, then $PATH.
+find_pg_bin() {
+  if [[ -n "$PG_CTL" && -x "$PG_CTL" ]]; then
+    dirname "$PG_CTL"
+    return 0
+  fi
+  local d
+  for d in /usr/lib/postgresql/*/bin /usr/pgsql-*/bin \
+           /opt/homebrew/opt/postgresql*/bin /usr/local/opt/postgresql*/bin; do
+    if [[ -x "$d/pg_ctl" ]]; then
+      echo "$d"
+      return 0
+    fi
+  done
+  if command -v pg_ctl >/dev/null 2>&1; then
+    dirname "$(command -v pg_ctl)"
+    return 0
+  fi
+  return 1
+}
+
+# Run a command as the unprivileged DB owner. When run.sh is root (sudo), drop
+# to $DB_OWNER via runuser so PostgreSQL never runs as root; otherwise run as-is.
+as_db_owner() {
+  if [[ "$(id -u)" -eq 0 && "$DB_OWNER" != "root" ]]; then
+    runuser -u "$DB_OWNER" -- "$@"
+  else
+    "$@"
+  fi
+}
+
+local_db_running() {
+  local bin
+  bin="$(find_pg_bin)" || return 1
+  as_db_owner "$bin/pg_ctl" -D "$PGDATA_LOCAL" status >/dev/null 2>&1
+}
+
+# Start (and, on first run, initialize) the tool's private PostgreSQL cluster.
+local_db_start() {
+  [[ "$MANAGE_LOCAL_DB" == "1" ]] || return 0
+  if [[ "$(id -u)" -eq 0 && "$DB_OWNER" == "root" ]]; then
+    info "MANAGE_LOCAL_DB is set but no unprivileged user is available (running as real root)."
+    info "Run as a normal user (or via sudo so \$SUDO_USER is set), or use Docker. Skipping DB management."
+    return 0
+  fi
+  local bin sock
+  bin="$(find_pg_bin)" || { info "PostgreSQL binaries not found (set PG_CTL=/path/to/pg_ctl); skipping local DB management."; return 0; }
+  sock="$PGDATA_LOCAL/sockets"
+
+  if [[ ! -s "$PGDATA_LOCAL/PG_VERSION" ]]; then
+    info "Initializing private PostgreSQL cluster at $PGDATA_LOCAL (owner: $DB_OWNER)"
+    as_db_owner mkdir -p "$PGDATA_LOCAL"
+    as_db_owner chmod 700 "$PGDATA_LOCAL"
+    as_db_owner "$bin/initdb" -D "$PGDATA_LOCAL" -U postgres --auth-local=trust --auth-host=scram-sha-256 -E UTF8 >/dev/null
+    as_db_owner mkdir -p "$sock"
+    printf '\n# ConnectSpoofer local dev instance\nlisten_addresses = %s\nport = %s\nunix_socket_directories = %s\n' \
+      "'127.0.0.1'" "$DB_PORT" "'$sock'" | as_db_owner tee -a "$PGDATA_LOCAL/postgresql.conf" >/dev/null
+    printf 'host all all 127.0.0.1/32 scram-sha-256\n' | as_db_owner tee -a "$PGDATA_LOCAL/pg_hba.conf" >/dev/null
+  fi
+  as_db_owner mkdir -p "$sock"
+
+  if local_db_running; then
+    info "Local PostgreSQL already running (127.0.0.1:$DB_PORT)."
+  else
+    info "Starting local PostgreSQL (127.0.0.1:$DB_PORT, owner: $DB_OWNER)..."
+    as_db_owner "$bin/pg_ctl" -D "$PGDATA_LOCAL" -w -l "$PGDATA_LOCAL/server.log" start >/dev/null \
+      || { info "Warning: could not start local PostgreSQL. See $PGDATA_LOCAL/server.log"; return 0; }
+  fi
+
+  # Ensure role + database exist (idempotent). Admin via the local socket (trust).
+  as_db_owner "$bin/psql" -h "$sock" -p "$DB_PORT" -U postgres -tc \
+    "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null | grep -q 1 \
+    || as_db_owner "$bin/psql" -h "$sock" -p "$DB_PORT" -U postgres -c \
+       "CREATE ROLE \"$DB_USER\" LOGIN PASSWORD '$DB_PASSWORD'" >/dev/null
+  as_db_owner "$bin/psql" -h "$sock" -p "$DB_PORT" -U postgres -tc \
+    "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null | grep -q 1 \
+    || as_db_owner "$bin/psql" -h "$sock" -p "$DB_PORT" -U postgres -c \
+       "CREATE DATABASE \"$DB_NAME\" OWNER \"$DB_USER\"" >/dev/null
+}
+
+# Stop the tool's private PostgreSQL cluster (only the one run.sh manages).
+local_db_stop() {
+  [[ "$MANAGE_LOCAL_DB" == "1" ]] || return 0
+  [[ "$(id -u)" -eq 0 && "$DB_OWNER" == "root" ]] && return 0
+  local bin
+  bin="$(find_pg_bin)" || return 0
+  if local_db_running; then
+    info "Stopping local PostgreSQL (127.0.0.1:$DB_PORT)..."
+    as_db_owner "$bin/pg_ctl" -D "$PGDATA_LOCAL" -w -m fast stop >/dev/null \
+      || info "Warning: could not stop local PostgreSQL."
+  else
+    info "Local PostgreSQL is not running."
+  fi
 }
 
 detect_package_manager() {
@@ -180,6 +316,20 @@ ensure_venv() {
       UV_PROJECT_ENVIRONMENT="$VENV" "$UV" "${sync_args[@]}"
     )
     # Harden venv permissions
+    chmod -R go-rwx "$VENV" || true
+    return
+  fi
+
+  # If the venv already has every runtime dependency (e.g. it was created with
+  # uv earlier), don't fail just because uv isn't on PATH (common under `sudo`)
+  # and the venv has no pip — use it as-is.
+  if [[ -x "$VENV/bin/python" ]] && "$VENV/bin/python" - <<'PY' 2>/dev/null
+import importlib.util as u, sys
+mods = ["scapy", "flask", "flask_socketio", "psycopg", "requests", "zeroconf", "maxminddb"]
+sys.exit(0 if all(u.find_spec(m) for m in mods) else 1)
+PY
+  then
+    info "Dependencies already present in $VENV; skipping dependency sync."
     chmod -R go-rwx "$VENV" || true
     return
   fi
@@ -285,6 +435,7 @@ is_running() {
 start_app() {
   ensure_directories
   ensure_venv
+  local_db_start
   require_capture_privileges
   configure_interface
 
@@ -365,12 +516,21 @@ restart_app() {
 }
 
 status_app() {
+  local app_state=0
   if is_running; then
-    echo "running PID=$(current_pid) URL=http://$APP_HOST:$APP_PORT"
+    echo "app: running PID=$(current_pid) URL=http://$APP_HOST:$APP_PORT"
   else
-    echo "stopped"
-    return 1
+    echo "app: stopped"
+    app_state=1
   fi
+  if [[ "$MANAGE_LOCAL_DB" == "1" ]]; then
+    if local_db_running; then
+      echo "db:  running 127.0.0.1:$DB_PORT ($PGDATA_LOCAL)"
+    else
+      echo "db:  stopped"
+    fi
+  fi
+  return "$app_state"
 }
 
 show_logs() {
@@ -389,6 +549,10 @@ case "$COMMAND" in
     ;;
   stop)
     stop_app "$@"
+    # Bring the tool's private database down with it (no-op unless
+    # MANAGE_LOCAL_DB=1). restart_app intentionally does NOT call this, so a
+    # restart keeps the database up.
+    local_db_stop
     ;;
   restart)
     restart_app "$@"

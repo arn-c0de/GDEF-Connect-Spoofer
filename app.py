@@ -1,4 +1,4 @@
-import sqlite3
+import db
 import threading
 import time
 import re
@@ -145,7 +145,11 @@ def login_register_success(ip):
 BACKEND_CONF_PATH = os.path.join("database", "backend_conf.json")
 
 def load_network_interface():
-    """Loads the network interface from the JSON configuration file."""
+    """Loads the network interface from the NETWORK_INTERFACE env var (preferred
+    for containerized runs) or the JSON configuration file."""
+    env_iface = os.environ.get("NETWORK_INTERFACE")
+    if env_iface:
+        return env_iface
     try:
         if os.path.exists(BACKEND_CONF_PATH):
             with open(BACKEND_CONF_PATH, "r") as f:
@@ -311,13 +315,13 @@ def get_mac_vendor(mac):
         return "Unknown"
     with locked(db_lock):
         try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
+            with db.get_connection() as conn:
                 c = conn.cursor()
-                c.execute("SELECT vendor FROM mac_cache WHERE mac = ?", (mac,))
+                c.execute("SELECT vendor FROM mac_cache WHERE mac = %s", (mac,))
                 result = c.fetchone()
                 if result:
                     return result[0]
-        except sqlite3.Error as e:
+        except db.DBError as e:
             logger.error(f"Error accessing mac_cache for MAC {mac}: {e}")
             return "Unknown"
     try:
@@ -326,11 +330,12 @@ def get_mac_vendor(mac):
             vendor = response.text.strip() or "Unknown"
             with locked(db_lock):
                 try:
-                    with sqlite3.connect(DATABASE_PATH) as conn:
+                    with db.get_connection() as conn:
                         c = conn.cursor()
-                        c.execute("INSERT OR REPLACE INTO mac_cache (mac, vendor) VALUES (?, ?)", (mac, vendor))
+                        c.execute("INSERT INTO mac_cache (mac, vendor) VALUES (%s, %s) "
+                                  "ON CONFLICT (mac) DO UPDATE SET vendor = EXCLUDED.vendor", (mac, vendor))
                         conn.commit()
-                except sqlite3.Error as e:
+                except db.DBError as e:
                     logger.error(f"Error saving MAC {mac} to cache: {e}")
             return vendor
         elif response.status_code == 429:
@@ -344,11 +349,12 @@ def get_mac_vendor(mac):
             vendor = response.json().get("company", "Unknown").strip() or "Unknown"
             with locked(db_lock):
                 try:
-                    with sqlite3.connect(DATABASE_PATH) as conn:
+                    with db.get_connection() as conn:
                         c = conn.cursor()
-                        c.execute("INSERT OR REPLACE INTO mac_cache (mac, vendor) VALUES (?, ?)", (mac, vendor))
+                        c.execute("INSERT INTO mac_cache (mac, vendor) VALUES (%s, %s) "
+                                  "ON CONFLICT (mac) DO UPDATE SET vendor = EXCLUDED.vendor", (mac, vendor))
                         conn.commit()
-                except sqlite3.Error as e:
+                except db.DBError as e:
                     logger.error(f"Error saving MAC {mac} to cache: {e}")
             return vendor
     except requests.RequestException as e:
@@ -363,16 +369,18 @@ def get_mac_vendor_cached(mac):
     enrichment worker (see mac_enrichment_worker)."""
     if not mac:
         return None
-    with locked(db_lock):
-        try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT vendor FROM mac_cache WHERE mac = ?", (mac,))
-                result = c.fetchone()
-                return result[0] if result else None
-        except sqlite3.Error as e:
-            logger.error(f"Error reading mac_cache for MAC {mac}: {e}")
-            return None
+    # Read-only and on the capture path (also the forked sniffer process): use a
+    # lock-free connection. WAL serves a consistent snapshot without blocking on
+    # the writer.
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT vendor FROM mac_cache WHERE mac = %s", (mac,))
+            result = c.fetchone()
+            return result[0] if result else None
+    except db.DBError as e:
+        logger.error(f"Error reading mac_cache for MAC {mac}: {e}")
+        return None
 
 # Background MAC-vendor enrichment. The capture path emits packets immediately
 # with a "Unknown" vendor on a cache miss; this worker resolves the vendor in
@@ -419,13 +427,13 @@ def mac_enrichment_worker():
             if vendor and vendor != "Unknown":
                 with locked(db_lock):
                     try:
-                        with sqlite3.connect(DATABASE_PATH) as conn:
+                        with db.get_connection() as conn:
                             conn.execute(
-                                "UPDATE ip_data SET vendor = ? WHERE mac = ? AND (vendor IS NULL OR vendor = 'Unknown')",
+                                "UPDATE ip_data SET vendor = %s WHERE mac = %s AND (vendor IS NULL OR vendor = 'Unknown')",
                                 (vendor, mac),
                             )
                             conn.commit()
-                    except sqlite3.Error as e:
+                    except db.DBError as e:
                         logger.error(f"Error updating vendor for MAC {mac}: {e}")
                 socketio.emit('mac_vendor_update', {'mac': mac, 'vendor': vendor})
             else:
@@ -441,29 +449,30 @@ def mac_enrichment_worker():
 
 def load_pinned_ips():
     global pinned_ips_cache
-    with locked(db_lock):
-        try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT ip, packet_count FROM pinned_ips")
-                pinned_ips_cache = {row[0]: row[1] for row in c.fetchall()}
-        except sqlite3.Error as e:
-            logger.error(f"Error loading pinned IPs: {e}")
+    # Read-only: lock-free connection.
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT ip, packet_count FROM pinned_ips")
+            pinned_ips_cache = {row[0]: row[1] for row in c.fetchall()}
+    except db.DBError as e:
+        logger.error(f"Error loading pinned IPs: {e}")
 
 def update_pinned_ips(ip, is_pinned):
     global pinned_ips_cache
     with locked(db_lock):
         try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
+            with db.get_connection() as conn:
                 c = conn.cursor()
                 if is_pinned:
-                    c.execute("INSERT OR IGNORE INTO pinned_ips (ip, packet_count) VALUES (?, 0)", (ip,))
+                    c.execute("INSERT INTO pinned_ips (ip, packet_count) VALUES (%s, 0) "
+                              "ON CONFLICT (ip) DO NOTHING", (ip,))
                     pinned_ips_cache[ip] = 0
                 else:
-                    c.execute("DELETE FROM pinned_ips WHERE ip = ?", (ip,))
+                    c.execute("DELETE FROM pinned_ips WHERE ip = %s", (ip,))
                     pinned_ips_cache.pop(ip, None)
                 conn.commit()
-        except sqlite3.Error as e:
+        except db.DBError as e:
             logger.error(f"Error updating pinned IPs for {ip}: {e}")
 
 # Flask app and Socket.IO
@@ -786,27 +795,36 @@ def locked(lock):
     finally:
         lock.release()
 
+def db_connect():
+    """Borrow a pooled PostgreSQL connection for a READ.
+
+    Reads run WITHOUT db_lock: PostgreSQL serves every reader a consistent MVCC
+    snapshot concurrently with writers, so a client's initial load
+    (send_all_ips_to_client) and the hot-path pinned-IP check never wait on the
+    1s write-flush transaction. Writers still take db_lock so the read-modify-
+    write sequences (counter accumulation in flush_ip_writes) stay serialized
+    within the process that performs every write."""
+    return db.get_connection()
+
 def init_db():
     if not os.path.exists(DATABASE_DIR):
         os.makedirs(DATABASE_DIR)
         logger.info(f"Database directory created: {DATABASE_DIR}")
     init_trusted_organisations()
+    # Block until the database container is accepting connections.
+    db.wait_until_ready()
     with locked(db_lock):
         try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
+            with db.get_connection() as conn:
                 c = conn.cursor()
-                # Optimize SQLite settings
-                c.execute("PRAGMA synchronous = NORMAL")
-                c.execute("PRAGMA journal_mode = WAL")
-                c.execute("PRAGMA cache_size = -20000")  # 20MB cache
-
                 # Create tables
                 c.execute('''CREATE TABLE IF NOT EXISTS ip_data
-                             (ip TEXT PRIMARY KEY, lat REAL, lon REAL, city TEXT, country TEXT, last_seen REAL, org TEXT, 
-                              src_port INTEGER, dst_port INTEGER, protocol TEXT, incoming_count INTEGER DEFAULT 0, 
-                              outgoing_count INTEGER DEFAULT 0, mac TEXT, vendor TEXT, hostname TEXT, os TEXT)''')
+                             (ip TEXT PRIMARY KEY, lat DOUBLE PRECISION, lon DOUBLE PRECISION, city TEXT,
+                              country TEXT, last_seen DOUBLE PRECISION, org TEXT,
+                              src_port INTEGER, dst_port INTEGER, protocol TEXT, incoming_count BIGINT DEFAULT 0,
+                              outgoing_count BIGINT DEFAULT 0, mac TEXT, vendor TEXT, hostname TEXT, os TEXT)''')
                 c.execute('''CREATE TABLE IF NOT EXISTS pinned_ips
-                             (ip TEXT PRIMARY KEY, packet_count INTEGER DEFAULT 0)''')
+                             (ip TEXT PRIMARY KEY, packet_count BIGINT DEFAULT 0)''')
                 c.execute('''CREATE TABLE IF NOT EXISTS settings
                              (key TEXT PRIMARY KEY, value TEXT)''')
                 c.execute('''CREATE TABLE IF NOT EXISTS mac_cache
@@ -815,25 +833,22 @@ def init_db():
                              (ip TEXT PRIMARY KEY, threat_level TEXT, source TEXT)''')
 
                 # Create indexes
-                c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_ip ON ip_data(ip)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_last_seen ON ip_data(last_seen)")
-                c.execute("CREATE INDEX IF NOT EXISTS idx_pinned_ips_ip ON pinned_ips(ip)")
-                c.execute("CREATE INDEX IF NOT EXISTS idx_mac_cache_mac ON mac_cache(mac)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_threat_list_ip ON threat_list(ip)")
 
                 # Initialize settings
-                c.execute('''INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)''',
-                          ('is_internal_search_active', '0'))
-                c.execute('''INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)''',
-                          ('show_all_udp_packets', '1'))
-                c.execute('''INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)''',
-                          ('show_local_network', '1'))
-                c.execute('''INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)''',
-                          ('show_external_network', '1'))
-                c.execute('''INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)''',
-                          ('show_tcp_only', '0'))
+                c.executemany(
+                    "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                    [
+                        ('is_internal_search_active', '0'),
+                        ('show_all_udp_packets', '1'),
+                        ('show_local_network', '1'),
+                        ('show_external_network', '1'),
+                        ('show_tcp_only', '0'),
+                    ],
+                )
                 conn.commit()
-        except sqlite3.Error as e:
+        except db.DBError as e:
             logger.error(f"Error initializing database: {e}")
 
 def load_settings():
@@ -844,18 +859,18 @@ def load_settings():
         'show_external_network': True,
         'show_tcp_only': False
     }
-    with locked(db_lock):
-        try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute('SELECT key, value FROM settings')
-                for key, value in c.fetchall():
-                    settings[key] = value == '1' if key in settings else value
-            logger.debug(f"Loaded settings: {settings}")
-            return settings
-        except sqlite3.Error as e:
-            logger.error(f"Error loading settings: {e}")
-            return settings
+    # Read-only (called on every client connect): lock-free connection.
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute('SELECT key, value FROM settings')
+            for key, value in c.fetchall():
+                settings[key] = value == '1' if key in settings else value
+        logger.debug(f"Loaded settings: {settings}")
+        return settings
+    except db.DBError as e:
+        logger.error(f"Error loading settings: {e}")
+        return settings
 
 def schedule_threat_list_updates():
     while True:
@@ -906,17 +921,18 @@ def update_threat_list():
     # Only now take the lock, and only to clear and re-populate the table.
     with locked(db_lock):
         try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
+            with db.get_connection() as conn:
                 c = conn.cursor()
                 c.execute("DELETE FROM threat_list")
                 for i in range(0, len(collected), batch_size):
                     c.executemany(
-                        "INSERT OR IGNORE INTO threat_list (ip, threat_level, source) VALUES (?, ?, ?)",
+                        "INSERT INTO threat_list (ip, threat_level, source) VALUES (%s, %s, %s) "
+                        "ON CONFLICT (ip) DO NOTHING",
                         collected[i:i + batch_size],
                     )
                 conn.commit()
             logger.info(f"Threat list updated: {len(collected)} entries from {len(threat_sources)} sources")
-        except sqlite3.Error as e:
+        except db.DBError as e:
             logger.error(f"Error updating threat list: {e}")
 
 # Start the thread
@@ -970,12 +986,13 @@ def handle_set_tcp_only(data):
 def save_setting(key, value):
     with locked(db_lock):
         try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
+            with db.get_connection() as conn:
                 c = conn.cursor()
                 db_value = '1' if value else '0' if key in ['is_internal_search_active', 'show_all_udp_packets', 'show_local_network', 'show_external_network', 'show_tcp_only'] else value
-                c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, db_value))
+                c.execute('INSERT INTO settings (key, value) VALUES (%s, %s) '
+                          'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', (key, db_value))
                 conn.commit()
-        except sqlite3.Error as e:
+        except db.DBError as e:
             logger.error(f"Error saving setting {key}: {e}")
 
 def is_private_ip(ip):
@@ -1007,6 +1024,71 @@ UDP_FILTER_PORTS = {137, 138, 1900, 5353}
 # ALLOW_INSECURE_GEO_API=0 to disable the unencrypted HTTP fallback entirely.
 IPINFO_TOKEN = os.environ.get('IPINFO_TOKEN', '').strip()
 ALLOW_INSECURE_GEO_API = os.environ.get('ALLOW_INSECURE_GEO_API', '1').lower() in ('1', 'true', 'yes')
+
+# Local MaxMind GeoLite2 databases (offline geo + ASN lookups). Resolving from
+# local .mmdb files removes per-IP network latency AND the external rate limit
+# (the HTTP path is gated by API_CALL_INTERVAL to ~10 IPs/s), so enriching a flood
+# of new IPs no longer trickles at the API rate. These are read-only mmap files,
+# safe to share across threads and the forked sniffer process. If the library or
+# the files are missing we transparently fall back to the HTTP providers below.
+MMDB_DIR = os.path.join(DATABASE_DIR, "datasets")
+MMDB_CITY_PATH = os.path.join(MMDB_DIR, "2.mmdb")  # GeoLite2-City
+MMDB_ASN_PATH = os.path.join(MMDB_DIR, "1.mmdb")   # GeoLite2-ASN
+_mmdb_city = None
+_mmdb_asn = None
+try:
+    import maxminddb
+    if os.path.exists(MMDB_CITY_PATH):
+        _mmdb_city = maxminddb.open_database(MMDB_CITY_PATH)
+        logger.info(f"Loaded local GeoLite2 City DB: {MMDB_CITY_PATH}")
+    else:
+        logger.info(f"GeoLite2 City DB not found at {MMDB_CITY_PATH}; using HTTP geolocation")
+    if os.path.exists(MMDB_ASN_PATH):
+        _mmdb_asn = maxminddb.open_database(MMDB_ASN_PATH)
+        logger.info(f"Loaded local GeoLite2 ASN DB: {MMDB_ASN_PATH}")
+except Exception as e:
+    logger.warning(f"Local MaxMind DBs unavailable ({e}); falling back to HTTP geolocation")
+
+def mmdb_lookup(ip):
+    """Resolve `ip` to geo data from the local GeoLite2 mmdb files.
+
+    Returns a geo dict in the same shape as get_geo_data(), or None if the local
+    DBs are not loaded or hold no usable coordinates for this IP (the caller then
+    falls back to the HTTP providers). Pure local reads: no network, no rate
+    limit, microsecond latency."""
+    if _mmdb_city is None:
+        return None
+    try:
+        rec = _mmdb_city.get(ip)
+    except Exception:
+        return None  # invalid IP / lookup error -> let HTTP providers try
+    if not rec:
+        return None
+    loc = rec.get("location") or {}
+    lat = loc.get("latitude")
+    lon = loc.get("longitude")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None  # record without coordinates -> defer to HTTP providers
+    subs = rec.get("subdivisions") or []
+    region = (subs[0].get("names", {}).get("en", "Unknown") if subs else "Unknown")
+    org = "Not available"
+    if _mmdb_asn is not None:
+        try:
+            arec = _mmdb_asn.get(ip) or {}
+            asn_org = arec.get("autonomous_system_organization")
+            if asn_org:
+                org = asn_org
+        except Exception:
+            pass
+    return {
+        "ip": ip,
+        "lat": float(lat),
+        "lon": float(lon),
+        "city": rec.get("city", {}).get("names", {}).get("en", "Unknown"),
+        "country": rec.get("country", {}).get("iso_code", "Unknown"),
+        "region": region,
+        "org": org,
+    }
 
 def get_geo_data(ip, my_geo_data=None):
     global last_api_call
@@ -1044,6 +1126,14 @@ def get_geo_data(ip, my_geo_data=None):
         with cache_lock:
             geo_cache[ip] = {"data": geo_data, "timestamp": now}
         return geo_data
+
+    # Primary: offline MaxMind lookup. No network, no rate limit; only falls
+    # through to the HTTP providers when the local DBs are absent or lack this IP.
+    local = mmdb_lookup(ip)
+    if local is not None:
+        with cache_lock:
+            geo_cache[ip] = {"data": local, "timestamp": now}
+        return local
 
     with api_call_lock:
         time_since_last_call = now - last_api_call
@@ -1140,16 +1230,16 @@ def compute_org_threat(ip, org):
     tl = classify_org_threat(org, load_org_lists())
     if tl is not None:
         return tl
-    with locked(db_lock):
-        try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT threat_level FROM threat_list WHERE ip = ?", (ip,))
-                threat = c.fetchone()
-                return threat[0] if threat else "No Threat"
-        except sqlite3.Error as e:
-            logger.error(f"Error fetching threat level for IP {ip}: {e}")
-            return "No Threat"
+    # Read-only: lock-free connection (runs in the background geo worker).
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT threat_level FROM threat_list WHERE ip = %s", (ip,))
+            threat = c.fetchone()
+            return threat[0] if threat else "No Threat"
+    except db.DBError as e:
+        logger.error(f"Error fetching threat level for IP {ip}: {e}")
+        return "No Threat"
 
 def get_geo_data_cached(ip, my_geo_data=None):
     """Non-blocking geo lookup for the packet-processing hot path.
@@ -1223,18 +1313,18 @@ def geo_enrichment_worker(my_geo_data):
             row = None
             with locked(db_lock):
                 try:
-                    with sqlite3.connect(DATABASE_PATH) as conn:
+                    with db.get_connection() as conn:
                         c = conn.cursor()
                         c.execute('''SELECT incoming_count, outgoing_count, src_port, dst_port, protocol,
                                      mac, vendor, hostname, os,
                                      (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip)
-                                     FROM ip_data WHERE ip = ?''', (ip,))
+                                     FROM ip_data WHERE ip = %s''', (ip,))
                         row = c.fetchone()
                         if row:
-                            c.execute("UPDATE ip_data SET lat = ?, lon = ?, city = ?, country = ?, org = ? WHERE ip = ?",
+                            c.execute("UPDATE ip_data SET lat = %s, lon = %s, city = %s, country = %s, org = %s WHERE ip = %s",
                                       (geo["lat"], geo["lon"], geo["city"], geo["country"], org, ip))
                             conn.commit()
-                except sqlite3.Error as e:
+                except db.DBError as e:
                     logger.error(f"Error storing geo for {ip}: {e}")
                     row = None
             if row:
@@ -1385,16 +1475,16 @@ def flush_ip_writes():
             broadcasts = []
             with locked(db_lock):
                 try:
-                    with sqlite3.connect(DATABASE_PATH) as conn:
+                    with db.get_connection() as conn:
                         c = conn.cursor()
                         for ip, e in batch.items():
                             org = e.get("org", "Unknown")
                             threat_level = classify_org_threat(org, org_lists)
                             if threat_level is None:
-                                c.execute("SELECT threat_level FROM threat_list WHERE ip = ?", (ip,))
+                                c.execute("SELECT threat_level FROM threat_list WHERE ip = %s", (ip,))
                                 r = c.fetchone()
                                 threat_level = r[0] if r else "No Threat"
-                            c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE ip = ?", (ip,))
+                            c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE ip = %s", (ip,))
                             row = c.fetchone()
                             if row:
                                 inc, out = row[0] + e["in_delta"], row[1] + e["out_delta"]
@@ -1411,15 +1501,15 @@ def flush_ip_writes():
                                 geo_ok = 1 if (e["city"] != "Unknown" or e["country"] != "Unknown") else 0
                                 vendor_ok = 1 if e["vendor"] not in (None, "", "Unknown") else 0
                                 c.execute('''UPDATE ip_data SET
-                                             lat = CASE WHEN ?=1 THEN ? ELSE lat END,
-                                             lon = CASE WHEN ?=1 THEN ? ELSE lon END,
-                                             city = CASE WHEN ?=1 THEN ? ELSE city END,
-                                             country = CASE WHEN ?=1 THEN ? ELSE country END,
-                                             org = CASE WHEN ?=1 THEN ? ELSE org END,
-                                             last_seen = ?, src_port = ?, dst_port = ?, protocol = ?,
-                                             incoming_count = ?, outgoing_count = ?, mac = ?,
-                                             vendor = CASE WHEN ?=1 THEN ? ELSE vendor END,
-                                             hostname = ?, os = ? WHERE ip = ?''',
+                                             lat = CASE WHEN %s=1 THEN %s ELSE lat END,
+                                             lon = CASE WHEN %s=1 THEN %s ELSE lon END,
+                                             city = CASE WHEN %s=1 THEN %s ELSE city END,
+                                             country = CASE WHEN %s=1 THEN %s ELSE country END,
+                                             org = CASE WHEN %s=1 THEN %s ELSE org END,
+                                             last_seen = %s, src_port = %s, dst_port = %s, protocol = %s,
+                                             incoming_count = %s, outgoing_count = %s, mac = %s,
+                                             vendor = CASE WHEN %s=1 THEN %s ELSE vendor END,
+                                             hostname = %s, os = %s WHERE ip = %s''',
                                           (geo_ok, e["lat"], geo_ok, e["lon"], geo_ok, e["city"],
                                            geo_ok, e["country"], geo_ok, org,
                                            e["last_seen"], e["src_port"], e["dst_port"], e["protocol"],
@@ -1429,13 +1519,13 @@ def flush_ip_writes():
                                 inc, out = e["in_delta"], e["out_delta"]
                                 c.execute('''INSERT INTO ip_data (ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
                                              protocol, incoming_count, outgoing_count, mac, vendor, hostname, os)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                                           (ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
                                            e["src_port"], e["dst_port"], e["protocol"], inc, out,
                                            e["mac"], e["vendor"], e["hostname"], e["os"]))
                             broadcasts.append((e, inc, out, threat_level))
                         conn.commit()
-                except sqlite3.Error as ex:
+                except db.DBError as ex:
                     logger.error(f"Error flushing IP writes: {ex}")
                     continue
             # Broadcast after releasing db_lock so emit never blocks the writer.
@@ -1473,9 +1563,9 @@ def cleanup_expired_ips(stats):
         try:
             now = time.time()
             with locked(db_lock):
-                with sqlite3.connect(DATABASE_PATH) as conn:
+                with db.get_connection() as conn:
                     c = conn.cursor()
-                    c.execute('''DELETE FROM ip_data WHERE last_seen < ? AND ip NOT IN (SELECT ip FROM pinned_ips)''',
+                    c.execute('''DELETE FROM ip_data WHERE last_seen < %s AND ip NOT IN (SELECT ip FROM pinned_ips)''',
                               (now - EXPIRATION_SECONDS,))
                     conn.commit()
             with cache_lock:
@@ -1708,55 +1798,81 @@ def send_ip_to_clients(*args, **kwargs):
     if message is not None:
         socketio.emit('ip_update', message)
 
+def resolve_region_nonblocking(ip):
+    """Return an IP's region WITHOUT ever making a network call.
+
+    Tries the in-memory geo cache first, then the offline mmdb; returns "" on a
+    miss. Used by the initial client load so a fresh connection never blocks on an
+    external geo lookup just to fill in the 'region' field."""
+    with cache_lock:
+        entry = geo_cache.get(ip)
+    if entry:
+        return entry["data"].get("region", "") or ""
+    local = mmdb_lookup(ip)
+    if local:
+        return local.get("region", "") or ""
+    return ""
+
 def send_all_ips_to_client(sid=None):
-    with locked(db_lock):
-        try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute('''SELECT ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, 
-                             incoming_count, outgoing_count, mac, vendor, hostname, os, 
-                             (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip) as packet_count
-                             FROM ip_data WHERE last_seen > ?''', (time.time() - EXPIRATION_SECONDS,))
-                for row in c.fetchall():
-                    ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, packet_count = row
-                    display_hostname = ip if is_private_ip(ip) else hostname
-                    message = {
-                        "ip": ip,
-                        "lat": lat,
-                        "lon": lon,
-                        "city": city,
-                        "country": country,
-                        "region": get_geo_data(ip).get("region", ""),
-                        "org": org,
-                        "last_seen": last_seen,
-                        "protocol": protocol,
-                        "src_port": src_port,
-                        "dst_port": dst_port,
-                        "mac": mac,
-                        "vendor": vendor,
-                        "incoming_count": incoming_count,
-                        "outgoing_count": outgoing_count,
-                        "packet_count": packet_count or 0,
-                        "hostname": display_hostname,
-                        "os": os
-                    }
-                    if sid:
-                        socketio.emit('ip_update', message, to=sid)
-                    else:
-                        socketio.emit('ip_update', message)
-        except sqlite3.Error as e:
-            logger.error(f"Error sending all IPs: {e}")
+    """Send the full current IP table to a client as ONE batched message.
+
+    Previously this emitted a separate 'ip_update' per row AND made a blocking
+    get_geo_data(ip) call per row (an external HTTP lookup on a cache miss) just to
+    fill in 'region'. With 1000+ rows that produced a long, blocking emit storm on
+    every connect. Now it is a single read (no db_lock, so it never waits on the
+    write flush), resolves 'region' non-blocking, and pushes one 'ip_update_batch'
+    — matching the live-update path (A5)."""
+    messages = []
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute('''SELECT ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol,
+                         incoming_count, outgoing_count, mac, vendor, hostname, os,
+                         (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip) as packet_count
+                         FROM ip_data WHERE last_seen > %s''', (time.time() - EXPIRATION_SECONDS,))
+            rows = c.fetchall()
+    except db.DBError as e:
+        logger.error(f"Error sending all IPs: {e}")
+        return
+    for row in rows:
+        ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, packet_count = row
+        display_hostname = ip if is_private_ip(ip) else hostname
+        messages.append({
+            "ip": ip,
+            "lat": lat,
+            "lon": lon,
+            "city": city,
+            "country": country,
+            "region": resolve_region_nonblocking(ip),
+            "org": org,
+            "last_seen": last_seen,
+            "protocol": protocol,
+            "src_port": src_port,
+            "dst_port": dst_port,
+            "mac": mac,
+            "vendor": vendor,
+            "incoming_count": incoming_count,
+            "outgoing_count": outgoing_count,
+            "packet_count": packet_count or 0,
+            "hostname": display_hostname,
+            "os": os
+        })
+    if messages:
+        if sid:
+            socketio.emit('ip_update_batch', messages, to=sid)
+        else:
+            socketio.emit('ip_update_batch', messages)
 
 def send_pinned_ips_to_client(sid):
-    with locked(db_lock):
-        try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT ip, packet_count FROM pinned_ips")
-                pinned_ips = {row[0]: {'isPinned': True, 'packet_count': row[1]} for row in c.fetchall()}
-                socketio.emit('pinned_ips_update', pinned_ips, to=sid)
-        except sqlite3.Error as e:
-            logger.error(f"Error sending pinned IPs: {e}")
+    # Read-only: use a lock-free connection so this never waits on the write flush.
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT ip, packet_count FROM pinned_ips")
+            pinned_ips = {row[0]: {'isPinned': True, 'packet_count': row[1]} for row in c.fetchall()}
+        socketio.emit('pinned_ips_update', pinned_ips, to=sid)
+    except db.DBError as e:
+        logger.error(f"Error sending pinned IPs: {e}")
 
 def internal_scanner_process(my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets):
     while True:
@@ -1778,12 +1894,13 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
                     if not packet_data.get("vendor") or packet_data.get("vendor") == "Unknown":
                         queue_mac_enrichment(packet_data.get("mac"))
                     if is_private_ip(ip) and not is_internal_search_active.value:
-                        with locked(db_lock):
-                            with sqlite3.connect(DATABASE_PATH) as conn:
-                                c = conn.cursor()
-                                c.execute("SELECT ip FROM pinned_ips WHERE ip = ?", (ip,))
-                                if not c.fetchone():
-                                    continue
+                        # Hot-path read: lock-free so a packet flood's pinned-check
+                        # never serializes behind the 1s write flush.
+                        with db_connect() as conn:
+                            c = conn.cursor()
+                            c.execute("SELECT ip FROM pinned_ips WHERE ip = %s", (ip,))
+                            if not c.fetchone():
+                                continue
                     update_ip(
                         ip,
                         packet_data["direction"],
@@ -1913,6 +2030,11 @@ if __name__ == "__main__":
     # Shared-memory counters (created before fork so the child sniffer shares the
     # same cells); replaces a Manager().dict() to avoid per-packet IPC overhead.
     stats = SharedStats()
+    # Wait for PostgreSQL and create the schema before the first read, so a fresh
+    # database doesn't make load_settings log "relation settings does not exist".
+    # init_db waits for the DB internally and is idempotent (it runs again in the
+    # sniffing thread).
+    init_db()
     settings = load_settings()
     is_internal_search_active = manager.Value('b', settings.get('is_internal_search_active', True))
     showAllUDPPackets = manager.Value('b', settings.get('show_all_udp_packets', True))
@@ -2039,10 +2161,10 @@ if __name__ == "__main__":
                 logger.error("IP address missing in reset_packet_count")
                 return
             with locked(db_lock):
-                with sqlite3.connect(DATABASE_PATH) as conn:
+                with db.get_connection() as conn:
                     c = conn.cursor()
-                    c.execute("UPDATE ip_data SET incoming_count = 0, outgoing_count = 0 WHERE ip = ?", (ip,))
-                    c.execute("UPDATE pinned_ips SET packet_count = 0 WHERE ip = ?", (ip,))
+                    c.execute("UPDATE ip_data SET incoming_count = 0, outgoing_count = 0 WHERE ip = %s", (ip,))
+                    c.execute("UPDATE pinned_ips SET packet_count = 0 WHERE ip = %s", (ip,))
                     conn.commit()
             logger.info(f"Packet count for IP {ip} reset")
             socketio.emit('packet_count_reset', {'ip': ip})
@@ -2052,6 +2174,10 @@ if __name__ == "__main__":
     try:
         host = os.environ.get('APP_HOST', '127.0.0.1')
         port = int(os.environ.get('APP_PORT', '8000'))
-        socketio.run(app, host=host, port=port, debug=False)
+        # allow_unsafe_werkzeug: ConnectSpoofer ships the bundled Werkzeug server
+        # as its runtime (no eventlet/gevent). Newer Werkzeug refuses to start via
+        # socketio.run() without this flag. This is a self-hosted monitoring tool
+        # bound to localhost by default, not a public production web service.
+        socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         logger.info("Program terminated")
