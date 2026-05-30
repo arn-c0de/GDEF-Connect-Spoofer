@@ -12,6 +12,10 @@ images
 .agents
 .codex
 .claude
+# FritzDump module: optional, its own repo + credentials + pcaps. Never bake it
+# into the image — it is bind-mounted at runtime by docker-compose.fritzdump.yml
+# only when you opt in (./run.sh fritzdump on).
+modules
 # Keep database/ (geo .mmdb datasets are needed); the legacy SQLite file is not.
 database/geo_data.db
 database/geo_data.db-shm

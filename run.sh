@@ -29,6 +29,8 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
 DEV_COMPOSE_FILE="$PROJECT_DIR/docker-compose.dev.yml"
 DEV_MARKER="$PROJECT_DIR/.dev-mode"
+FRITZDUMP_COMPOSE_FILE="$PROJECT_DIR/docker-compose.fritzdump.yml"
+FRITZDUMP_MARKER="$PROJECT_DIR/.fritzdump"
 ENV_FILE="$PROJECT_DIR/.env"
 TOKEN_FILE="$PROJECT_DIR/database/access_token.txt"
 DOCKER="${DOCKER:-docker}"
@@ -50,6 +52,7 @@ usage() {
     "  ./run.sh build      (re)build the app image" \
     "  ./run.sh rebuild    rebuild from scratch and start" \
     "  ./run.sh token      print the dashboard access token" \
+    "  ./run.sh fritzdump on|off   enable/disable the optional FritzDump module (then restart)" \
     "" \
     "Requires Docker Engine + Compose plugin. Configure via .env (see .env.example)."
 }
@@ -75,11 +78,12 @@ require_docker() {
   detect_compose
 }
 
-# While the .dev-mode marker exists, layer the dev override on top so the source
-# is bind-mounted into the app container (see docker-compose.dev.yml).
+# Layer override files: the dev override while .dev-mode exists (source bind-mount),
+# and the FritzDump override while .fritzdump exists (module bind-mount + enable).
 compose() {
   local files=(-f "$COMPOSE_FILE")
-  [[ -f "$DEV_MARKER" ]] && files+=(-f "$DEV_COMPOSE_FILE")
+  [[ -f "$DEV_MARKER" ]]       && files+=(-f "$DEV_COMPOSE_FILE")
+  [[ -f "$FRITZDUMP_MARKER" ]] && files+=(-f "$FRITZDUMP_COMPOSE_FILE")
   "${COMPOSE[@]}" --project-directory "$PROJECT_DIR" "${files[@]}" "$@"
 }
 
@@ -171,6 +175,30 @@ show_token() {
   fi
 }
 
+# Toggle the optional FritzDump module on/off via the .fritzdump marker. The
+# module is OFF by default; turning it on layers docker-compose.fritzdump.yml
+# (module bind-mount + FRITZDUMP_ENABLED=1) on the next start/restart.
+fritzdump_toggle() {
+  case "${1:-}" in
+    on)
+      [[ -d "$PROJECT_DIR/modules/FritzDump" ]] \
+        || die "modules/FritzDump not found — add the FritzDump module there first (see README)."
+      [[ -f "$PROJECT_DIR/modules/FritzDump/.env" ]] \
+        || info "Note: modules/FritzDump/.env is missing — set the FRITZ!Box login before pressing Start."
+      touch "$FRITZDUMP_MARKER"
+      info "FritzDump module ENABLED. Apply it now with: ./run.sh restart"
+      ;;
+    off)
+      rm -f "$FRITZDUMP_MARKER"
+      info "FritzDump module DISABLED. Apply it now with: ./run.sh restart"
+      ;;
+    *)
+      [[ -f "$FRITZDUMP_MARKER" ]] && info "FritzDump module is currently ON." || info "FritzDump module is currently OFF."
+      echo "Usage: ./run.sh fritzdump on|off"
+      ;;
+  esac
+}
+
 case "$COMMAND" in
   start|up)    require_docker; start_stack ;;
   dev)         require_docker; dev_stack ;;
@@ -181,6 +209,7 @@ case "$COMMAND" in
   build)       require_docker; build_stack ;;
   rebuild)     require_docker; rebuild_stack ;;
   token)       show_token ;;
+  fritzdump)   fritzdump_toggle "${2:-}" ;;
   help|-h|--help) usage ;;
   *)           usage; die "Unknown command: $COMMAND" ;;
 esac

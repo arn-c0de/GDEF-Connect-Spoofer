@@ -237,6 +237,11 @@ DEVICE_KEYS_DIR = os.path.join(DATABASE_DIR, "devices")
 # up in the device list like any device, with its own Start/Stop (the per-device
 # `enabled` flag): while disabled it captures nothing at all.
 FRITZDUMP_DEVICE_ID = 'fritzdump'
+# Master switch for the whole FritzDump module. OFF by default so a deployment
+# that doesn't use it never sees the device, the reader thread, or the worker.
+# Turn it on with FRITZDUMP_ENABLED=1 (the docker-compose.fritzdump.yml override
+# sets this and bind-mounts the module).
+FRITZDUMP_ENABLED = os.environ.get('FRITZDUMP_ENABLED', '0').strip().lower() not in ('0', 'false', 'no', '')
 FRITZDUMP_DEVICE_NAME = os.environ.get('FRITZDUMP_DEVICE_NAME', '').strip() or 'FritzBox'
 FRITZDUMP_DEVICE_COLOR = '#29B6F6'
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -282,6 +287,10 @@ def refresh_disabled_devices():
             c = conn.cursor()
             c.execute("SELECT device_id FROM devices WHERE enabled = FALSE")
             ids = {r[0] for r in c.fetchall()}
+        # When the FritzDump module is switched off entirely, force it stopped
+        # regardless of its stored flag so none of its traffic is ever processed.
+        if not FRITZDUMP_ENABLED:
+            ids.add(FRITZDUMP_DEVICE_ID)
         with locked(disabled_devices_lock):
             disabled_devices = ids
     except db.DBError as e:
@@ -1945,12 +1954,14 @@ def list_devices():
 
 
 def public_device_list():
-    """Device list for the UI: identity + colour + liveness, never secrets."""
+    """Device list for the UI: identity + colour + liveness, never secrets.
+    The FritzDump module is omitted entirely while the feature is switched off."""
     return [{
         "device_id": d["device_id"], "name": d["name"], "color": d["color"],
         "kind": d["kind"], "lat": d["lat"], "lon": d["lon"],
         "enabled": d["enabled"], "last_seen": d["last_seen"],
-    } for d in list_devices()]
+    } for d in list_devices()
+        if FRITZDUMP_ENABLED or d["device_id"] != FRITZDUMP_DEVICE_ID]
 
 
 def emit_devices_update():
@@ -2906,7 +2917,11 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
     threading.Thread(target=mac_enrichment_worker, daemon=True).start()
     threading.Thread(target=geo_enrichment_worker, args=(my_geo_data,), daemon=True).start()
     threading.Thread(target=flush_ip_writes, daemon=True).start()
-    threading.Thread(target=fritzdump_reader, args=(queue, mdns_listener, showAllUDPPackets), daemon=True).start()
+    # The FritzDump reader/worker only runs when the module is switched on.
+    if FRITZDUMP_ENABLED:
+        threading.Thread(target=fritzdump_reader, args=(queue, mdns_listener, showAllUDPPackets), daemon=True).start()
+    else:
+        logger.info("FritzDump module disabled (set FRITZDUMP_ENABLED=1 to use it)")
     if not is_admin():
         if sys.platform == 'win32':
             logger.error("Live packet capture requires administrator privileges; "
