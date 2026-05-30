@@ -155,22 +155,24 @@ active_clients_lock = threading.Lock()
 db_lock = threading.Lock()
 pinned_ips_cache = {}
 
-# Per-SID Socket.IO rate limiting (sliding window). Caps how often a single
+# Per-client Socket.IO rate limiting (sliding window). Caps how often a single
 # client may invoke state-changing events such as pin_ip / reset_packet_count,
-# preventing a connected client from flooding the server with DB writes.
+# preventing a flood of server-side DB writes. Keyed on the client IP (not the
+# SID) so a client cannot bypass the limit by disconnecting and immediately
+# reconnecting under a fresh SID (SID churn).
 SOCKET_RATE_LIMIT = int(os.environ.get('SOCKET_RATE_LIMIT', '5'))        # events per window
 SOCKET_RATE_WINDOW = float(os.environ.get('SOCKET_RATE_WINDOW', '1.0'))  # window length (seconds)
-_socket_event_times = {}   # (sid, event_name) -> [timestamps]
+_socket_event_times = {}   # (client_ip, event_name) -> [timestamps]
 _socket_rate_lock = threading.Lock()
 
 def socket_rate_limited(event_name):
-    """Return True if `request.sid` has exceeded the rate for `event_name`."""
+    """Return True if the client IP has exceeded the rate for `event_name`."""
     try:
-        sid = request.sid
+        client = request.remote_addr or request.sid
     except Exception:
         return False
     now = time.time()
-    key = (sid, event_name)
+    key = (client, event_name)
     with locked(_socket_rate_lock):
         times = [t for t in _socket_event_times.get(key, []) if now - t < SOCKET_RATE_WINDOW]
         if len(times) >= SOCKET_RATE_LIMIT:
@@ -180,16 +182,36 @@ def socket_rate_limited(event_name):
         _socket_event_times[key] = times
         return False
 
-def socket_rate_forget(sid):
-    """Drop all rate-limit bookkeeping for a disconnected SID."""
+def socket_rate_prune():
+    """Drop fully-expired rate-limit windows (called on disconnect to bound
+    memory). Intentionally IP-keyed entries are NOT cleared on disconnect so the
+    limit persists across reconnects."""
+    now = time.time()
     with locked(_socket_rate_lock):
-        for key in [k for k in _socket_event_times if k[0] == sid]:
+        for key in [k for k, v in _socket_event_times.items()
+                    if all(now - t >= SOCKET_RATE_WINDOW for t in v)]:
             del _socket_event_times[key]
 
 # Constants for DoS protection
 MAX_KNOWN_IPS = 10000
 MAX_CACHE_SIZE = 5000
 IP_UPDATE_INTERVAL = 1.0  # Min seconds between updates for the same IP
+# Upper bound for captured frame size. Standard Ethernet is 1500, but jumbo
+# frames (up to ~9000), VLAN tagging and tunneling produce larger valid frames;
+# a hard 1500 cap let an attacker evade capture with oversized packets. Override
+# with MAX_PACKET_LEN.
+MAX_PACKET_LEN = int(os.environ.get('MAX_PACKET_LEN', '9000'))
+# Kernel-level capture filter (BPF). Restrict to IP/ICMP and drop the dashboard's
+# own TCP traffic (APP_PORT) so the web UI is neither visualized nor adds Python
+# parsing/CPU load under heavy traffic. APP_PORT is validated to a safe integer
+# before interpolation to avoid BPF-expression injection.
+try:
+    _app_port_int = int(os.environ.get('APP_PORT', '8000'))
+    if not 0 < _app_port_int < 65536:
+        raise ValueError("port out of range")
+    CAPTURE_BPF_FILTER = f"(ip or icmp) and not (tcp port {_app_port_int})"
+except (ValueError, TypeError):
+    CAPTURE_BPF_FILTER = "ip or icmp"
 last_ip_updates = {}
 
 # Packet Queue
@@ -298,14 +320,25 @@ def get_mac_vendor_cached(mac):
 mac_enrich_queue = ThreadQueue(maxsize=10000)
 mac_enrich_inflight = set()
 mac_enrich_lock = threading.Lock()
+# Negative cache: MACs that recently resolved to "Unknown" (API miss/timeout) are
+# parked here with an expiry so a flood of packets from the same (possibly spoofed)
+# MAC cannot hammer the external vendor APIs. TTL is refreshed on each miss.
+MAC_NEGATIVE_TTL = int(os.environ.get('MAC_NEGATIVE_TTL', str(24 * 3600)))
+mac_negative_cache = {}  # mac -> expiry timestamp
 
 def queue_mac_enrichment(mac):
     """Schedule a background vendor lookup for `mac` (deduplicated, non-blocking)."""
-    if not mac:
+    if not is_valid_mac(mac):
         return
+    now = time.time()
     with locked(mac_enrich_lock):
         if mac in mac_enrich_inflight:
             return
+        exp = mac_negative_cache.get(mac)
+        if exp:
+            if exp > now:
+                return  # recently failed; don't re-query yet
+            del mac_negative_cache[mac]  # expired -> allow a retry
         mac_enrich_inflight.add(mac)
     try:
         mac_enrich_queue.put_nowait(mac)
@@ -335,6 +368,11 @@ def mac_enrichment_worker():
                     except sqlite3.Error as e:
                         logger.error(f"Error updating vendor for MAC {mac}: {e}")
                 socketio.emit('mac_vendor_update', {'mac': mac, 'vendor': vendor})
+            else:
+                # Unresolved: park in the negative cache so repeated packets from
+                # this MAC don't keep re-querying the external APIs.
+                with locked(mac_enrich_lock):
+                    mac_negative_cache[mac] = time.time() + MAC_NEGATIVE_TTL
         except Exception as e:
             logger.error(f"Error enriching MAC {mac}: {e}")
         finally:
@@ -958,6 +996,127 @@ def get_geo_data(ip, my_geo_data=None):
             geo_cache[ip] = {"data": geo_data, "timestamp": now}
         return geo_data
 
+def compute_org_threat(ip, org):
+    """Classify an IP's threat level from its org (trusted/suspicious/dangerous
+    lists) falling back to the threat_list table. Shared by update_ip and the
+    background geo worker."""
+    try:
+        with open(TRUSTED_ORGS_PATH, 'r') as f:
+            org_data = json.load(f)
+            trusted_orgs = org_data.get("trusted_organisations", [])
+            suspicious_orgs = org_data.get("suspicious_organisations", [])
+            dangerous_orgs = org_data.get("dangerous_organisations", [])
+    except Exception as e:
+        logger.error(f"Error loading trusted_organisations.json: {e}")
+        trusted_orgs, suspicious_orgs, dangerous_orgs = [], [], []
+
+    if org in dangerous_orgs:
+        return "High"
+    if org in suspicious_orgs:
+        return "Medium"
+    if org in trusted_orgs:
+        return "No Threat"
+    with locked(db_lock):
+        try:
+            with sqlite3.connect(DATABASE_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT threat_level FROM threat_list WHERE ip = ?", (ip,))
+                threat = c.fetchone()
+                return threat[0] if threat else "No Threat"
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching threat level for IP {ip}: {e}")
+            return "No Threat"
+
+def get_geo_data_cached(ip, my_geo_data=None):
+    """Non-blocking geo lookup for the packet-processing hot path.
+
+    Returns geo data for cached or private IPs; returns None for an uncached
+    PUBLIC IP, signalling the caller to render a placeholder now and defer the
+    network lookup to geo_enrichment_worker. This prevents an attacker who spoofs
+    many unique source IPs from blocking process_packets on outbound HTTP and
+    backing up the packet queue (DoS)."""
+    now = time.time()
+    with cache_lock:
+        entry = geo_cache.get(ip)
+        if entry and now - entry["timestamp"] < CACHE_TIMEOUT:
+            return entry["data"]
+    if is_private_ip(ip):
+        geo_data = {
+            "ip": ip,
+            "lat": my_geo_data.get("lat", DEFAULT_COORDS[0]) if my_geo_data else DEFAULT_COORDS[0],
+            "lon": my_geo_data.get("lon", DEFAULT_COORDS[1]) if my_geo_data else DEFAULT_COORDS[1],
+            "city": my_geo_data.get("city", "Unknown") if my_geo_data else "Unknown",
+            "country": my_geo_data.get("country", "Unknown") if my_geo_data else "Unknown",
+            "region": my_geo_data.get("region", "Unknown") if my_geo_data else "Unknown",
+            "org": "Local Network"
+        }
+        with cache_lock:
+            geo_cache[ip] = {"data": geo_data, "timestamp": now}
+        return geo_data
+    return None  # uncached public IP -> resolve in the background
+
+# Background geo enrichment: resolves uncached public IPs off the hot path and
+# pushes a fresh ip_update once located. Mirrors the MAC enrichment worker.
+geo_enrich_queue = ThreadQueue(maxsize=10000)
+geo_enrich_inflight = set()
+geo_enrich_lock = threading.Lock()
+
+def queue_geo_enrichment(ip):
+    if not ip:
+        return
+    with locked(geo_enrich_lock):
+        if ip in geo_enrich_inflight:
+            return
+        geo_enrich_inflight.add(ip)
+    try:
+        geo_enrich_queue.put_nowait(ip)
+    except Full:
+        with locked(geo_enrich_lock):
+            geo_enrich_inflight.discard(ip)
+
+def geo_enrichment_worker(my_geo_data):
+    while True:
+        try:
+            ip = geo_enrich_queue.get()
+        except Exception as e:
+            logger.error(f"Error reading geo enrichment queue: {e}")
+            time.sleep(0.1)
+            continue
+        try:
+            geo = get_geo_data(ip, my_geo_data)  # network lookup; fills geo_cache
+            if not geo:
+                continue
+            org = geo.get("org", "Unknown")
+            threat_level = compute_org_threat(ip, org)
+            row = None
+            with locked(db_lock):
+                try:
+                    with sqlite3.connect(DATABASE_PATH) as conn:
+                        c = conn.cursor()
+                        c.execute('''SELECT incoming_count, outgoing_count, src_port, dst_port, protocol,
+                                     mac, vendor, hostname, os,
+                                     (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip)
+                                     FROM ip_data WHERE ip = ?''', (ip,))
+                        row = c.fetchone()
+                        if row:
+                            c.execute("UPDATE ip_data SET lat = ?, lon = ?, city = ?, country = ?, org = ? WHERE ip = ?",
+                                      (geo["lat"], geo["lon"], geo["city"], geo["country"], org, ip))
+                            conn.commit()
+                except sqlite3.Error as e:
+                    logger.error(f"Error storing geo for {ip}: {e}")
+                    row = None
+            if row:
+                incoming_count, outgoing_count, src_port, dst_port, protocol, mac, vendor, hostname, os_guess, packet_count = row
+                display_hostname = ip if is_private_ip(ip) else hostname
+                send_ip_to_clients(ip, geo["lat"], geo["lon"], geo["city"], geo["country"], geo.get("region", ""),
+                                   org, time.time(), protocol, src_port, dst_port, mac, vendor,
+                                   incoming_count, outgoing_count, packet_count or 0, display_hostname, os_guess, threat_level)
+        except Exception as e:
+            logger.error(f"Error enriching geo for {ip}: {e}")
+        finally:
+            with locked(geo_enrich_lock):
+                geo_enrich_inflight.discard(ip)
+
 def get_my_public_ip_coords():
     try:
         response = requests.get("https://api.ipify.org", timeout=2)
@@ -1003,7 +1162,21 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
                 known_ips.discard(old_ip)
         known_ips.add(ip)
         
-    geo = get_geo_data(ip, my_geo_data)
+    # Non-blocking: never wait on an external geo API in the packet loop. Cached
+    # and private IPs resolve instantly; an uncached public IP is rendered with a
+    # placeholder location now and resolved by the background geo worker.
+    geo = get_geo_data_cached(ip, my_geo_data)
+    if geo is None:
+        queue_geo_enrichment(ip)
+        geo = {
+            "ip": ip,
+            "lat": DEFAULT_COORDS[0],
+            "lon": DEFAULT_COORDS[1],
+            "city": "Unknown",
+            "country": "Unknown",
+            "region": "Unknown",
+            "org": "Not available"
+        }
     now = time.time()
     
     # Rate limit updates sent to clients for this specific IP
@@ -1025,36 +1198,8 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
             tcp_connections[conn_key]["packet_count"] += 1
             tcp_connections[conn_key]["last_seen"] = now
 
-    try:
-        with open(TRUSTED_ORGS_PATH, 'r') as f:
-            org_data = json.load(f)
-            trusted_orgs = org_data.get("trusted_organisations", [])
-            suspicious_orgs = org_data.get("suspicious_organisations", [])
-            dangerous_orgs = org_data.get("dangerous_organisations", [])
-    except Exception as e:
-        logger.error(f"Error loading trusted_organisations.json: {e}")
-        trusted_orgs = []
-        suspicious_orgs = []
-        dangerous_orgs = []
-
     org = geo.get("org", "Unknown")
-    if org in dangerous_orgs:
-        threat_level = "High"
-    elif org in suspicious_orgs:
-        threat_level = "Medium"
-    elif org in trusted_orgs:
-        threat_level = "No Threat"
-    else:
-        with locked(db_lock):
-            try:
-                with sqlite3.connect(DATABASE_PATH) as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT threat_level FROM threat_list WHERE ip = ?", (ip,))
-                    threat = c.fetchone()
-                    threat_level = threat[0] if threat else "No Threat"
-            except sqlite3.Error as e:
-                logger.error(f"Error fetching threat level for IP {ip}: {e}")
-                threat_level = "No Threat"
+    threat_level = compute_org_threat(ip, org)
 
     valid_threat_levels = ["High", "Medium", "Low", "No Threat"]
     if threat_level not in valid_threat_levels:
@@ -1151,7 +1296,7 @@ def cleanup_expired_ips(stats):
             time.sleep(10)
 
 def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
-    if len(packet) < 20 or len(packet) > 1500 or IP not in packet:
+    if len(packet) < 20 or len(packet) > MAX_PACKET_LEN or IP not in packet:
         return None
 
     ip_src = packet[IP].src
@@ -1389,7 +1534,7 @@ def internal_scanner_process(my_geo_data, my_local_ip, my_public_ip, queue, is_i
     while True:
         try:
             sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: internal_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets),
-                  filter="ip or icmp", store=0, timeout=SNIFF_TIMEOUT)
+                  filter=CAPTURE_BPF_FILTER, store=0, timeout=SNIFF_TIMEOUT)
         except Exception as e:
             logger.error(f"Error in internal scanner: {e}")
             time.sleep(5)
@@ -1510,10 +1655,11 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
     threading.Thread(target=send_network_stats, args=(stats,), daemon=True).start()
     threading.Thread(target=process_packets, args=(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener), daemon=True).start()
     threading.Thread(target=mac_enrichment_worker, daemon=True).start()
+    threading.Thread(target=geo_enrichment_worker, args=(my_geo_data,), daemon=True).start()
     while True:
         try:
             sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: external_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets),
-                  filter="ip or icmp", store=0, timeout=SNIFF_TIMEOUT)
+                  filter=CAPTURE_BPF_FILTER, store=0, timeout=SNIFF_TIMEOUT)
         except Exception as e:
             logger.error(f"Error during sniffing: {e}")
             time.sleep(5)
@@ -1586,7 +1732,7 @@ if __name__ == "__main__":
             with active_clients_lock:
                 active_clients.discard(sid)
                 count = len(active_clients)
-            socket_rate_forget(sid)
+            socket_rate_prune()
             logger.info(f"Client disconnected, SID: {sid}, Active clients: {count}")
         except Exception as e:
             logger.error(f"Error on client disconnect: {e}")
