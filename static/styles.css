@@ -819,3 +819,105 @@ body {
 }
 .stat-cfg-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 0.8rem; }
 .stat-cfg-row span { flex: 1 1 auto; }
+
+/* ── Tabbed Statistics / Connections overlay ───────────────────────────── */
+#statsOpenBtn {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 1400;
+    background: var(--bg-secondary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 7px 10px;
+    cursor: pointer;
+}
+#statsOpenBtn:hover { background: var(--bg-hover); }
+
+#statsOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.6);
+}
+.ov-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(960px, 94vw);
+    height: min(720px, 90vh);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+.ov-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.ov-tabs { display: flex; gap: 6px; flex: 1 1 auto; }
+.ov-tab {
+    background: var(--bg-secondary);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+.ov-tab.active { background: var(--accent); color: #fff; border-color: var(--accent-light); }
+.ov-body { flex: 1 1 auto; overflow: auto; padding: 14px; }
+
+.kpi-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.kpi {
+    flex: 1 1 110px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    text-align: center;
+}
+.kpi-val { display: block; font-size: 1.4rem; font-weight: 700; color: var(--text); }
+.kpi small { color: var(--text-dim); font-size: 0.72rem; }
+
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.chart-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+}
+.chart-card.wide { grid-column: 1 / -1; text-align: left; }
+.chart-card h5 { margin: 0 0 8px; color: var(--text-dim); font-weight: 600; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px; font-size: 0.75rem; color: var(--text-dim); }
+.chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+.bar-chart { display: flex; flex-direction: column; gap: 5px; }
+.bar-row { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; }
+.bar-label { flex: 0 0 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.bar-track { flex: 1 1 auto; height: 12px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; }
+.bar-val { flex: 0 0 36px; text-align: right; color: var(--text); }
+
+.conn-count { color: var(--text-dim); font-size: 0.8rem; margin-bottom: 8px; }
+.conn-table-wrap { overflow: auto; }
+.conn-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.conn-table th, .conn-table td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.conn-table th { position: sticky; top: 0; background: var(--bg-secondary); cursor: pointer; user-select: none; }
+.conn-table td.ell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.conn-table tbody tr:hover { background: var(--bg-hover); }
+.muted { color: var(--text-dim); }
+
+@media (max-width: 640px) {
+    .chart-grid { grid-template-columns: 1fr; }
+}
