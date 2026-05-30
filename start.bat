@@ -1,5 +1,5 @@
 @echo off
-title OrbDef-L1nk - Visualization Software (Admin CMD)
+title ConnectSpoofer - GDEF Suite Network Module (Admin CMD)
 
 :: Ensure the script runs with administrator privileges
 net session >nul 2>&1
@@ -17,7 +17,7 @@ cls
 set "PROJECT_PATH=%~dp0"
 set "PROJECT_PATH=%PROJECT_PATH:~0,-1%"
 set "PYTHON_SCRIPT=app.py"
-set "VENV_PATH=%PROJECT_PATH%\venv"
+set "VENV_PATH=%PROJECT_PATH%\.venv"
 set "VENV_PYTHON=%VENV_PATH%\Scripts\python.exe"
 set "VENV_ACTIVATE=%VENV_PATH%\Scripts\activate.bat"
 
@@ -28,33 +28,51 @@ cd /d "%PROJECT_PATH%" || (
     exit /b
 )
 
-:: Check if venv exists
-if not exist "%VENV_PATH%" (
-    echo [INFO] Virtual environment not found. Creating venv...
-    python -m venv venv || (
-        echo [ERROR] Could not create venv. Make sure Python is installed.
+:: Prefer uv when available; fall back to pip for older environments.
+where uv >nul 2>&1
+if %ERRORLEVEL%==0 (
+    echo [INFO] Synchronizing Python environment with uv...
+    set "UV_PROJECT_ENVIRONMENT=%VENV_PATH%"
+    if exist "%PROJECT_PATH%\uv.lock" (
+        uv sync --no-dev --locked
+    ) else (
+        uv sync --no-dev
+    )
+    if %ERRORLEVEL% neq 0 (
+        echo [ERROR] uv sync failed.
         pause
         exit /b
     )
-    echo [INFO] venv created successfully.
+    echo [INFO] Dependencies synchronized successfully.
     echo.
-    echo [INFO] Installing dependencies from requirements.txt...
-    "%VENV_PYTHON%" -m pip install --upgrade pip
-    "%VENV_PYTHON%" -m pip install -r requirements.txt || (
-        echo [ERROR] Could not install dependencies.
-        pause
-        exit /b
-    )
-    echo [INFO] Dependencies installed successfully.
-    echo.
-) else (
-    echo [INFO] Virtual environment found: %VENV_PATH%
-    echo.
+    goto deps_ready
 )
+
+echo [INFO] uv was not found; using the venv/pip fallback.
+if not exist "%VENV_PATH%" (
+    echo [INFO] Virtual environment not found. Creating .venv...
+    python -m venv "%VENV_PATH%" || (
+        echo [ERROR] Could not create .venv. Make sure Python 3.11+ is installed.
+        pause
+        exit /b
+    )
+)
+
+echo [INFO] Installing dependencies from requirements.txt...
+"%VENV_PYTHON%" -m pip install --upgrade pip
+"%VENV_PYTHON%" -m pip install -r requirements.txt || (
+    echo [ERROR] Could not install dependencies.
+    pause
+    exit /b
+)
+echo [INFO] Dependencies installed successfully.
+echo.
+
+:deps_ready
 
 :: Display date and time
 echo ============================================
-echo   ConnectSpoofer Launcher (Admin Mode)
+echo   ConnectSpoofer - GDEF Suite Network Module
 echo   Date: %DATE%   Time: %TIME%
 echo ============================================
 echo.

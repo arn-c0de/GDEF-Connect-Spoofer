@@ -1,0 +1,63 @@
+[project]
+name = "connectspoofer"
+version = "1.0.3"
+description = "Modular GDEF Suite network intelligence component for packet visibility, enrichment, and interactive globe visualization."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "arn-c0de" },
+]
+keywords = [
+  "gdef",
+  "network-monitoring",
+  "packet-sniffing",
+  "security",
+  "visualization",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Web Environment",
+  "Framework :: Flask",
+  "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+  "Topic :: System :: Networking :: Monitoring",
+]
+dependencies = [
+  "flask>=3.1.2",
+  "flask-socketio>=5.6.0",
+  "python-socketio>=5.16.0",
+  "requests>=2.32.5",
+  "scapy>=2.7.0",
+  "zeroconf>=0.148.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/arn-c0de/GDEF-Connect-Spoofer"
+Repository = "https://github.com/arn-c0de/GDEF-Connect-Spoofer"
+
+[dependency-groups]
+dev = [
+  "ruff>=0.14.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "UP",
+  "B",
+  "SIM",
+]
