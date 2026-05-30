@@ -78,6 +78,32 @@ To select a different network interface:
 sudo RESELECT_INTERFACE=1 ./run.sh start
 ```
 
+### Running without root (least privilege)
+
+Packet capture only needs the `CAP_NET_RAW` capability, not full root. Grant it
+once to the virtualenv interpreter, then start/stop as your normal user:
+
+```bash
+sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f .venv/bin/python)"
+./run.sh start
+```
+
+`install` still requires `sudo` because it installs system packages.
+
+### Security-relevant environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FLASK_SECRET_KEY` | random per start | Stable session signing key |
+| `SESSION_COOKIE_SECURE` | off | Set to `1`/`true` when served over HTTPS |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Failed logins per IP before lockout |
+| `LOGIN_LOCKOUT_SECONDS` | `300` | Lockout duration after too many failures |
+| `IPINFO_TOKEN` | unset | Token for the HTTPS ipinfo.io geolocation provider |
+| `ALLOW_INSECURE_GEO_API` | `1` | Set to `0` to disable the HTTP ip-api.com fallback |
+
+The access token is written only to `database/access_token.txt` (mode `0600`);
+retrieve it with `cat database/access_token.txt`.
+
 ## Python Workflow
 
 This repository follows current Python packaging practice with `pyproject.toml`, `.python-version`, and `uv.lock`.
@@ -123,7 +149,7 @@ ConnectSpoofer/
 ConnectSpoofer is intended only for authorized defensive use:
 
 - Monitor only networks and systems you own or are explicitly authorized to assess.
-- Run with administrator/root privileges only because packet capture requires it.
+- Prefer the least-privilege capability setup over full root; only packet capture (`CAP_NET_RAW`) is required.
 - Keep the default localhost bind unless you deliberately expose the UI on a trusted network.
 - Follow local laws and organizational policy for packet capture and network monitoring.
 
@@ -145,7 +171,8 @@ python debug_interfaces.py
 
 ### Missing privileges
 
-Use `sudo ./run.sh start` on Linux/macOS. On Windows, run `start.bat` as administrator.
+Use `sudo ./run.sh start` on Linux/macOS, or grant `CAP_NET_RAW` to run without
+root (see "Running without root" above). On Windows, run `start.bat` as administrator.
 
 ## License
 
