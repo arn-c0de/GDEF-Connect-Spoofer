@@ -9,9 +9,10 @@ umask 077
 # host-level capture-capability issues entirely.
 #
 # Usage:
-#   ./run.sh start      build (if needed) and start the stack
+#   ./run.sh start      build (if needed) and start the stack (baked image)
+#   ./run.sh dev        start with source bind-mounted (live frontend, fast backend reload)
 #   ./run.sh stop       stop and remove the containers
-#   ./run.sh restart    restart the containers
+#   ./run.sh restart    rebuild changed parts and restart (picks up code edits)
 #   ./run.sh status     show container status
 #   ./run.sh logs       follow the app logs
 #   ./run.sh build      (re)build the app image
@@ -26,6 +27,8 @@ umask 077
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
+DEV_COMPOSE_FILE="$PROJECT_DIR/docker-compose.dev.yml"
+DEV_MARKER="$PROJECT_DIR/.dev-mode"
 ENV_FILE="$PROJECT_DIR/.env"
 TOKEN_FILE="$PROJECT_DIR/database/access_token.txt"
 DOCKER="${DOCKER:-docker}"
@@ -38,9 +41,10 @@ usage() {
   printf '%s\n' \
     "ConnectSpoofer launcher (Docker)" \
     "Usage:" \
-    "  ./run.sh start      build (if needed) and start the stack" \
+    "  ./run.sh start      build (if needed) and start the stack (baked image)" \
+    "  ./run.sh dev        start with source bind-mounted (live frontend, fast backend reload)" \
     "  ./run.sh stop       stop and remove the containers" \
-    "  ./run.sh restart    restart the containers" \
+    "  ./run.sh restart    rebuild changed parts and restart (picks up code edits)" \
     "  ./run.sh status     show container status" \
     "  ./run.sh logs       follow the app logs" \
     "  ./run.sh build      (re)build the app image" \
@@ -71,8 +75,12 @@ require_docker() {
   detect_compose
 }
 
+# While the .dev-mode marker exists, layer the dev override on top so the source
+# is bind-mounted into the app container (see docker-compose.dev.yml).
 compose() {
-  "${COMPOSE[@]}" --project-directory "$PROJECT_DIR" -f "$COMPOSE_FILE" "$@"
+  local files=(-f "$COMPOSE_FILE")
+  [[ -f "$DEV_MARKER" ]] && files+=(-f "$DEV_COMPOSE_FILE")
+  "${COMPOSE[@]}" --project-directory "$PROJECT_DIR" "${files[@]}" "$@"
 }
 
 # Read a KEY=VALUE from .env without sourcing it (returns $2 if unset).
@@ -96,11 +104,25 @@ ensure_directories() {
 }
 
 start_stack() {
+  # 'start' is the production-like mode: run the baked image, no source mounts.
+  rm -f "$DEV_MARKER"
   ensure_env; ensure_directories
   info "Starting ConnectSpoofer stack (building if needed)..."
   compose up -d --build
   info "Up. Dashboard: http://$(env_get APP_HOST 127.0.0.1):$(env_get APP_PORT 8000)"
   info "Token: ./run.sh token    Logs: ./run.sh logs    Stop: ./run.sh stop"
+}
+
+dev_stack() {
+  # Dev mode: bind-mount the source so edits don't need an image rebuild.
+  ensure_env; ensure_directories
+  : > "$DEV_MARKER"
+  info "Starting ConnectSpoofer in DEV mode (source bind-mounted)..."
+  compose up -d --build
+  info "Up (dev). Dashboard: http://$(env_get APP_HOST 127.0.0.1):$(env_get APP_PORT 8000)"
+  info "Frontend edits (static/, templates/): just refresh the browser — no restart."
+  info "Backend edits  (app.py, db.py): ./run.sh restart   (fast process restart, no image build)."
+  info "Leave dev mode: ./run.sh start (back to baked image) or ./run.sh stop."
 }
 
 rebuild_stack() {
@@ -110,8 +132,29 @@ rebuild_stack() {
   compose up -d
 }
 
-stop_stack()    { ensure_env; info "Stopping ConnectSpoofer stack..."; compose down; }
-restart_stack() { ensure_env; info "Restarting ConnectSpoofer stack...";  compose restart; }
+stop_stack() {
+  ensure_env
+  info "Stopping ConnectSpoofer stack..."
+  compose down
+  rm -f "$DEV_MARKER"
+}
+
+restart_stack() {
+  ensure_env; ensure_directories
+  if [[ -f "$DEV_MARKER" ]]; then
+    # Dev mode: source is bind-mounted, so just restart the app process to pick
+    # up backend edits — no image rebuild needed (fast). Frontend needs no
+    # restart at all (served live from the mount on the next request).
+    info "Dev mode: restarting app process to pick up mounted code..."
+    compose restart app
+  else
+    # Prod mode: rebuild changed layers (frontend/backend source) and recreate
+    # the app container so code edits are picked up. The Docker layer cache keeps
+    # this near-instant when only app.py / static / templates changed.
+    info "Rebuilding changed parts and restarting ConnectSpoofer stack..."
+    compose up -d --build
+  fi
+}
 status_stack()  { ensure_env; compose ps; }
 logs_stack()    { ensure_env; compose logs -f --tail=200 app; }
 build_stack()   { ensure_env; ensure_directories; compose build; }
@@ -130,6 +173,7 @@ show_token() {
 
 case "$COMMAND" in
   start|up)    require_docker; start_stack ;;
+  dev)         require_docker; dev_stack ;;
   stop|down)   require_docker; stop_stack ;;
   restart)     require_docker; restart_stack ;;
   status|ps)   require_docker; status_stack ;;

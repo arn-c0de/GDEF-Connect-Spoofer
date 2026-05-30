@@ -64,15 +64,29 @@ cp .env.example .env
 `run.sh` drives the Docker Compose stack:
 
 ```bash
-./run.sh start      # build (if needed) + start app + PostgreSQL
+./run.sh start      # build (if needed) + start app + PostgreSQL (baked image)
+./run.sh dev        # start with source bind-mounted (live frontend, fast backend reload)
 ./run.sh stop       # stop and remove the containers
-./run.sh restart    # restart the containers
+./run.sh restart    # rebuild changed parts (frontend/backend) + restart — picks up code edits
 ./run.sh status     # container status (docker compose ps)
 ./run.sh logs       # follow the app logs
 ./run.sh build      # (re)build the app image
 ./run.sh rebuild    # rebuild from scratch and start
 ./run.sh token      # print the dashboard access token
 ```
+
+### Development (live code reload)
+
+`./run.sh dev` starts the same stack but bind-mounts the source (`app.py`, `db.py`,
+`static/`, `templates/`) into the app container via `docker-compose.dev.yml`, so
+edits don't need an image rebuild:
+
+- **Frontend** (`static/`, `templates/`): visible immediately on a browser refresh — no restart.
+- **Backend** (`app.py`, `db.py`): run `./run.sh restart` for a fast process restart (no image build).
+
+Dev mode is remembered via a `.dev-mode` marker file, so `restart`/`logs`/`status`
+keep the mounts. Switch back to the production-like baked image with `./run.sh start`
+(or leave dev mode entirely with `./run.sh stop`).
 
 Prefix with `sudo` if your user isn't in the `docker` group. Capture works via the container's `NET_RAW`/`NET_ADMIN` capabilities, so no host `setcap` is required (and `setcap` is in any case ignored on `nosuid`/`ecryptfs` mounts).
 
@@ -151,6 +165,7 @@ ConnectSpoofer/
 ├── db.py                            # PostgreSQL connection-pool layer (fork-aware)
 ├── Dockerfile                       # App/sniffer container image
 ├── docker-compose.yml              # App + PostgreSQL stack
+├── docker-compose.dev.yml          # Dev override: bind-mounts source (./run.sh dev)
 ├── .env.example                     # Sample environment for Docker Compose
 ├── run.sh                           # Docker Compose launcher (Linux)
 ├── start.bat                        # Windows launcher

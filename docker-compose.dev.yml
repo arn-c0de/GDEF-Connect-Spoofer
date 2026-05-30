@@ -1,0 +1,19 @@
+# ConnectSpoofer — DEV override (applied by `./run.sh dev`).
+#
+# Bind-mounts the source into the running app container so code edits are picked
+# up without rebuilding the image:
+#   - Frontend (static/, templates/): visible immediately on a browser refresh.
+#   - Backend  (app.py, db.py):       restart the app process to reload —
+#                                      `./run.sh restart` does a fast process
+#                                      restart in dev mode (no image build).
+#
+# This override is NOT auto-loaded; run.sh adds it via -f only while the
+# .dev-mode marker exists. `./run.sh start` switches back to the baked image.
+services:
+  app:
+    volumes:
+      # Live source — edits on the host are seen inside the container instantly.
+      - ./app.py:/app/app.py
+      - ./db.py:/app/db.py
+      - ./static:/app/static
+      - ./templates:/app/templates
