@@ -122,27 +122,28 @@ install_system_packages() {
     apt)
       info "Installing system packages with apt..."
       apt-get update
-      DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip python3-dev libpcap-dev tcpdump
+      # libcap2-bin is required for setcap (least privilege capture)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip python3-dev libpcap-dev tcpdump libcap2-bin sqlite3 curl
       ;;
     dnf)
       info "Installing system packages with dnf..."
-      dnf install -y python3 python3-pip python3-devel libpcap-devel tcpdump
+      dnf install -y python3 python3-pip python3-devel libpcap-devel tcpdump libcap sqlite3 curl
       ;;
     yum)
       info "Installing system packages with yum..."
-      yum install -y python3 python3-pip python3-devel libpcap-devel tcpdump
+      yum install -y python3 python3-pip python3-devel libpcap-devel tcpdump libcap sqlite3 curl
       ;;
     pacman)
       info "Installing system packages with pacman..."
-      pacman -Sy --needed --noconfirm python python-pip libpcap tcpdump
+      pacman -Sy --needed --noconfirm python python-pip libpcap tcpdump libcap sqlite3 curl
       ;;
     zypper)
       info "Installing system packages with zypper..."
-      zypper --non-interactive install python3 python3-pip python3-devel libpcap-devel tcpdump
+      zypper --non-interactive install python3 python3-pip python3-devel libpcap-devel tcpdump libcap-progs sqlite3 curl
       ;;
     brew)
       info "Installing system packages with brew..."
-      brew install python libpcap
+      brew install python libpcap sqlite curl
       ;;
     none)
       info "No supported package manager found; checking existing tools."
@@ -174,6 +175,8 @@ ensure_venv() {
       fi
       UV_PROJECT_ENVIRONMENT="$VENV" "$UV" "${sync_args[@]}"
     )
+    # Harden venv permissions
+    chmod -R go-rwx "$VENV" || true
     return
   fi
 
@@ -186,6 +189,9 @@ ensure_venv() {
     info "Using virtual environment: $VENV"
   fi
 
+  # Harden venv permissions immediately after creation/use
+  chmod -R go-rwx "$VENV" || true
+
   "$VENV/bin/python" -m pip install --upgrade pip setuptools wheel
 
   if [[ -f "$REQ" ]]; then
@@ -194,8 +200,20 @@ ensure_venv() {
 }
 
 ensure_directories() {
+  info "Hardening project directories..."
+  # Ensure the data directory is private
   mkdir -p "$PROJECT_DIR/database"
   chmod 700 "$PROJECT_DIR/database" || true
+  
+  # Ensure the entire project isn't world-readable/writable by default
+  # (only if we are the owner or have root)
+  if [[ -O "$PROJECT_DIR" ]] || [[ "$(id -u)" -eq 0 ]]; then
+    chmod go-w "$PROJECT_DIR" || true
+  fi
+
+  # Touch log and pid files with restricted permissions
+  touch "$LOG_FILE" "$PID_FILE" 2>/dev/null || true
+  chmod 600 "$LOG_FILE" "$PID_FILE" 2>/dev/null || true
 }
 
 configure_interface() {
@@ -217,8 +235,19 @@ install_all() {
   install_system_packages
   ensure_directories
   ensure_venv
+  
+  # Automatically apply least-privilege capabilities if setcap is available.
+  # This allows starting the app later without sudo.
+  if command -v setcap >/dev/null 2>&1; then
+    local py_path
+    py_path="$(readlink -f "$VENV/bin/python")"
+    info "Granting packet capture capabilities to $py_path..."
+    setcap cap_net_raw,cap_net_admin=eip "$py_path" || info "Warning: Could not apply setcap."
+  fi
+
   configure_interface
   info "Installation and setup completed."
+  info "You can now start the app as a normal user: ./run.sh start"
 }
 
 pid_is_running() {
@@ -265,7 +294,22 @@ start_app() {
   chmod 600 "$LOG_FILE"
 
   info "Starting ConnectSpoofer in the background on http://$APP_HOST:$APP_PORT"
-  nohup env APP_HOST="$APP_HOST" APP_PORT="$APP_PORT" SOCKETIO_CORS_ORIGINS="$SOCKETIO_CORS_ORIGINS" "$VENV/bin/python" "$PROJECT_DIR/app.py" >> "$LOG_FILE" 2>&1 &
+  # Forward security-relevant configuration to the background process. Only
+  # variables that are actually set are passed, so an unset variable keeps the
+  # in-app default instead of being overridden with an empty string (which would
+  # e.g. break int() parsing of the numeric limits). Robust to sudo stripping
+  # the environment, since we read whatever reached this script.
+  local extra_env=()
+  local v
+  for v in FLASK_SECRET_KEY IPINFO_TOKEN ALLOW_INSECURE_GEO_API SESSION_COOKIE_SECURE \
+           LOGIN_MAX_ATTEMPTS LOGIN_LOCKOUT_SECONDS SOCKET_RATE_LIMIT SOCKET_RATE_WINDOW \
+           MAX_PACKET_LEN MAC_NEGATIVE_TTL; do
+    if [[ -n "${!v:-}" ]]; then
+      extra_env+=("$v=${!v}")
+    fi
+  done
+  nohup env APP_HOST="$APP_HOST" APP_PORT="$APP_PORT" SOCKETIO_CORS_ORIGINS="$SOCKETIO_CORS_ORIGINS" \
+    "${extra_env[@]+"${extra_env[@]}"}" "$VENV/bin/python" "$PROJECT_DIR/app.py" >> "$LOG_FILE" 2>&1 &
   local pid="$!"
   echo "$pid" > "$PID_FILE"
   chmod 600 "$PID_FILE"
