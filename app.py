@@ -243,7 +243,7 @@ class SharedStats:
     hard IPC bottleneck at high packet rates and makes the sniffer drop frames at
     the kernel. Value uses a shared-memory cell with a tiny lock, which is orders
     of magnitude cheaper. Created before fork so children share the same cells."""
-    _FIELDS = ('tcp_packets', 'udp_packets', 'icmp_packets', 'total_bytes', 'active_connections')
+    _FIELDS = ('tcp_packets', 'udp_packets', 'icmp_packets', 'total_bytes', 'active_connections', 'fragmented_packets')
 
     def __init__(self):
         # 'q' = signed 64-bit, so total_bytes cannot overflow under sustained load.
@@ -551,9 +551,45 @@ def get_trusted_organisations():
         return jsonify({"trusted_organisations": [], "suspicious_organisations": [], "dangerous_organisations": []}), 500
 
 # mDNS Listener
+#
+# mDNS announcements are unauthenticated broadcasts from the local segment, so
+# every field here is attacker-controllable. Two concrete risks are addressed:
+#  * Resource exhaustion: a host can broadcast thousands of spoofed service
+#    announcements. Without a bound, MDNSListener.devices grows linearly until
+#    OOM. We cap it (MDNS_MAX_DEVICES) and expire stale entries (MDNS_DEVICE_TTL).
+#  * Spoofing/injection: a crafted service name can impersonate a gateway and
+#    carry markup or control characters into the DB and the browser UI. mDNS
+#    hostnames are therefore sanitized to a short, safe charset before storage.
+MDNS_MAX_DEVICES = int(os.environ.get('MDNS_MAX_DEVICES', '4096'))
+MDNS_DEVICE_TTL = int(os.environ.get('MDNS_DEVICE_TTL', str(2 * 3600)))  # 2 hours
+_MDNS_HOSTNAME_RE = re.compile(r'[^A-Za-z0-9._-]')
+
+def sanitize_mdns_hostname(name):
+    """mDNS names are untrusted input. Strip to a DNS-safe charset and cap the
+    length so a spoofed service name cannot smuggle markup, control characters,
+    or unbounded text into the DB / UI."""
+    if not name:
+        return "Unknown"
+    cleaned = _MDNS_HOSTNAME_RE.sub('', name)[:63]
+    return cleaned or "Unknown"
+
 class MDNSListener:
     def __init__(self):
-        self.devices = {}
+        self.devices = {}        # ip -> sanitized hostname
+        self._seen = {}          # ip -> last-announcement timestamp
+        self._lock = threading.Lock()
+
+    def _prune(self, now):
+        # Drop entries older than the TTL; if still over the cap, evict oldest.
+        expired = [ip for ip, ts in self._seen.items() if now - ts > MDNS_DEVICE_TTL]
+        for ip in expired:
+            self.devices.pop(ip, None)
+            self._seen.pop(ip, None)
+        overflow = len(self._seen) - MDNS_MAX_DEVICES
+        if overflow > 0:
+            for ip, _ in sorted(self._seen.items(), key=lambda kv: kv[1])[:overflow]:
+                self.devices.pop(ip, None)
+                self._seen.pop(ip, None)
 
     def remove_service(self, zeroconf, type, name):
         logger.info(f"mDNS service removed: {name}")
@@ -563,8 +599,12 @@ class MDNSListener:
             info = zeroconf.get_service_info(type, name)
             if info and info.addresses:
                 ip = socket.inet_ntoa(info.addresses[0])
-                hostname = name.split('.')[0]
-                self.devices[ip] = hostname
+                hostname = sanitize_mdns_hostname(name.split('.')[0])
+                now = time.time()
+                with self._lock:
+                    self.devices[ip] = hostname
+                    self._seen[ip] = now
+                    self._prune(now)
                 logger.info(f"mDNS service added: {ip} -> {hostname}")
         except Exception as e:
             logger.error(f"Error adding mDNS service {name}: {e}")
@@ -1312,12 +1352,33 @@ def flush_ip_writes():
                             row = c.fetchone()
                             if row:
                                 inc, out = row[0] + e["in_delta"], row[1] + e["out_delta"]
-                                c.execute('''UPDATE ip_data SET lat = ?, lon = ?, city = ?, country = ?, last_seen = ?, org = ?,
-                                             src_port = ?, dst_port = ?, protocol = ?, incoming_count = ?, outgoing_count = ?,
-                                             mac = ?, vendor = ?, hostname = ?, os = ? WHERE ip = ?''',
-                                          (e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
-                                           e["src_port"], e["dst_port"], e["protocol"], inc, out,
-                                           e["mac"], e["vendor"], e["hostname"], e["os"], ip))
+                                # Don't let a buffered placeholder clobber a value
+                                # an async enrichment worker may have already
+                                # resolved into the row. geo_enrichment_worker owns
+                                # lat/lon/city/country/org; mac_enrichment_worker
+                                # owns vendor. Both write fine-grained UPDATEs on
+                                # disjoint columns, but this full-row flush could
+                                # still overwrite them with the placeholder that was
+                                # buffered before resolution (last-writer-wins). Gate
+                                # those columns on a resolved-flag so we only write
+                                # them when the buffer actually carries real data.
+                                geo_ok = 1 if (e["city"] != "Unknown" or e["country"] != "Unknown") else 0
+                                vendor_ok = 1 if e["vendor"] not in (None, "", "Unknown") else 0
+                                c.execute('''UPDATE ip_data SET
+                                             lat = CASE WHEN ?=1 THEN ? ELSE lat END,
+                                             lon = CASE WHEN ?=1 THEN ? ELSE lon END,
+                                             city = CASE WHEN ?=1 THEN ? ELSE city END,
+                                             country = CASE WHEN ?=1 THEN ? ELSE country END,
+                                             org = CASE WHEN ?=1 THEN ? ELSE org END,
+                                             last_seen = ?, src_port = ?, dst_port = ?, protocol = ?,
+                                             incoming_count = ?, outgoing_count = ?, mac = ?,
+                                             vendor = CASE WHEN ?=1 THEN ? ELSE vendor END,
+                                             hostname = ?, os = ? WHERE ip = ?''',
+                                          (geo_ok, e["lat"], geo_ok, e["lon"], geo_ok, e["city"],
+                                           geo_ok, e["country"], geo_ok, org,
+                                           e["last_seen"], e["src_port"], e["dst_port"], e["protocol"],
+                                           inc, out, e["mac"], vendor_ok, e["vendor"],
+                                           e["hostname"], e["os"], ip))
                             else:
                                 inc, out = e["in_delta"], e["out_delta"]
                                 c.execute('''INSERT INTO ip_data (ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
@@ -1403,6 +1464,18 @@ def cleanup_expired_ips(stats):
 def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
     if len(packet) < 20 or len(packet) > MAX_PACKET_LEN or IP not in packet:
         return None
+
+    # IP-fragmentation evasion: a non-initial fragment (frag offset > 0) carries
+    # no L4 header, so it can't be classified by port and would fall through to
+    # "return None" below — silently. An attacker can split traffic into tiny
+    # fragments that the destination OS reassembles while the monitor records
+    # nothing. We deliberately do NOT do stateful reassembly here (the reassembly
+    # buffers are themselves a memory-exhaustion vector and belong in the kernel),
+    # but we count every fragment so the activity is observable in the stats feed
+    # instead of vanishing.
+    ip_layer = packet[IP]
+    if ip_layer.frag > 0 or (int(ip_layer.flags) & 0x1):  # MF bit set or offset > 0
+        stats.incr('fragmented_packets')
 
     ip_src = packet[IP].src
     ip_dst = packet[IP].dst
