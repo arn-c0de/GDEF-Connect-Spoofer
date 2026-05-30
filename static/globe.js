@@ -108,6 +108,36 @@ function isValidCoord(lat, lng) {
            lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
 }
 
+// ── Packet-rate tracking (drives globe point size) ─────────
+// A point grows with how many packets arrived in the last RATE_WINDOW_SECONDS,
+// not with its cumulative total — so a momentarily busy connection swells and
+// then shrinks again once the burst passes.
+const RATE_WINDOW_SECONDS = 12;
+
+// Record the packet delta since the last update on a point's rolling sample list.
+function recordPacketRate(pt, total, nowSec) {
+    if (pt._lastTotal === undefined) {
+        // First sighting: establish a baseline so we only count traffic from here on.
+        pt._lastTotal   = total;
+        pt._rateSamples = [];
+        return;
+    }
+    const delta = total - pt._lastTotal;
+    pt._lastTotal = total;
+    if (delta > 0) pt._rateSamples.push([nowSec, delta]);
+    const cutoff = nowSec - RATE_WINDOW_SECONDS;
+    pt._rateSamples = pt._rateSamples.filter(s => s[0] >= cutoff);
+}
+
+// Sum of packets seen on a point within the trailing rate window.
+function recentPacketCount(pt, nowSec) {
+    if (!pt._rateSamples || !pt._rateSamples.length) return 0;
+    const cutoff = nowSec - RATE_WINDOW_SECONDS;
+    let sum = 0;
+    for (const [t, d] of pt._rateSamples) if (t >= cutoff) sum += d;
+    return sum;
+}
+
 function isLocalNetwork(ip, org) {
     const parts = ip.split('.');
     if (parts.length !== 4) return false;
@@ -149,10 +179,13 @@ async function initializeGlobe(myIpCoords) {
     }
 
     // ── Globe point radius ────────────────────────────────
+    // Size reflects the *recent* packet rate (packets in the last
+    // RATE_WINDOW_SECONDS), so a connection pushing lots of data swells up and
+    // shrinks back down once the traffic dies off.
     function getMarkerRadius(point) {
-        const total = (point.incoming_count || 0) + (point.outgoing_count || 0);
-        if (total === 0) return 0.3;
-        return Math.min(0.3 + Math.log10(total + 1) * 0.2, 2.0);
+        const recent = recentPacketCount(point, Date.now() / 1000);
+        if (recent <= 0) return 0.3;
+        return Math.min(0.3 + Math.log10(recent + 1) * 0.6, 3.0);
     }
 
     // ── Socket.IO ─────────────────────────────────────────
@@ -486,7 +519,7 @@ async function initializeGlobe(myIpCoords) {
     const arcs             = {};
     const internalPackets  = {};
     const pinnedIPs        = {};
-    const EXPIRATION_SECONDS           = 60;
+    const EXPIRATION_SECONDS           = 300;
     const INTERNAL_EXPIRATION_SECONDS  = 600;
     const MAX_POINTS           = 1000;
     const MAX_INTERNAL_PACKETS = 500;
@@ -785,76 +818,82 @@ async function initializeGlobe(myIpCoords) {
 
             const ip      = data.ip;
             const isNewIP = !points[ip];
+            const total   = (data.incoming_count || 0) + (data.outgoing_count || 0);
+            const nowSec  = Date.now() / 1000;
 
-            points[ip] = {
-                ip:             data.ip,
-                lat:            data.lat,
-                lng:            data.lon,
-                label:          `${data.hostname || data.ip} (${data.os || 'Unknown'})`,
-                city:           data.city,
-                country:        data.country,
-                region:         data.region,
-                org:            data.org,
-                protocol:       data.protocol,
-                src_port:       data.src_port,
-                dst_port:       data.dst_port,
-                incoming_count: data.incoming_count  || 0,
-                outgoing_count: data.outgoing_count  || 0,
-                color:          getCircleColor(data.threat_level, data.org),
-                last_seen:      data.last_seen,
-                mac:            data.mac,
-                vendor:         data.vendor,
-                packet_count:   data.packet_count    || 0,
-                hostname:       data.hostname        || 'Unknown',
-                os:             data.os              || 'Unknown',
-                threat_level:   data.threat_level    || 'No Threat',
-                expired:        false,
-            };
+            // Mutate the existing point object in place (instead of replacing it with
+            // a fresh object) so the globe keeps the same reference and does NOT
+            // remove + re-add the marker on every packet — that re-add was the
+            // visible "flash" on busy connections.
+            const pt = points[ip] || (points[ip] = {});
+            pt.ip             = data.ip;
+            pt.lat            = data.lat;
+            pt.lng            = data.lon;
+            pt.label          = `${data.hostname || data.ip} (${data.os || 'Unknown'})`;
+            pt.city           = data.city;
+            pt.country        = data.country;
+            pt.region         = data.region;
+            pt.org            = data.org;
+            pt.protocol       = data.protocol;
+            pt.src_port       = data.src_port;
+            pt.dst_port       = data.dst_port;
+            pt.incoming_count = data.incoming_count || 0;
+            pt.outgoing_count = data.outgoing_count || 0;
+            pt.color          = getCircleColor(data.threat_level, data.org);
+            pt.last_seen      = data.last_seen;
+            pt.mac            = data.mac;
+            pt.vendor         = data.vendor;
+            pt.packet_count   = data.packet_count || 0;
+            pt.hostname       = data.hostname     || 'Unknown';
+            pt.os             = data.os           || 'Unknown';
+            pt.threat_level   = data.threat_level || 'No Threat';
+            pt.expired        = false;
+            recordPacketRate(pt, total, nowSec);
 
-            arcs[ip] = {
-                startLat:       data.lat,
-                startLng:       data.lon,
-                endLat:         myIpCoords.lat,
-                endLng:         myIpCoords.lng,
-                ip:             data.ip,
-                city:           data.city,
-                country:        data.country,
-                org:            data.org,
-                protocol:       data.protocol,
-                incoming_count: data.incoming_count || 0,
-                outgoing_count: data.outgoing_count || 0,
-                color:          (data.city === 'Unknown' || data.country === 'Unknown' ||
-                                 data.org === 'Not available') ? '#FFFFFF' : '#FF0000',
-                last_seen:      data.last_seen,
-                packet_count:   data.packet_count || 0,
-                hostname:       data.hostname || 'Unknown',
-                os:             data.os       || 'Unknown',
-                expired:        false,
-            };
+            // Same in-place treatment for the arc so its dash animation isn't
+            // restarted on every packet.
+            const arc = arcs[ip] || (arcs[ip] = {});
+            arc.startLat       = data.lat;
+            arc.startLng       = data.lon;
+            arc.endLat         = myIpCoords.lat;
+            arc.endLng         = myIpCoords.lng;
+            arc.ip             = data.ip;
+            arc.city           = data.city;
+            arc.country        = data.country;
+            arc.org            = data.org;
+            arc.protocol       = data.protocol;
+            arc.incoming_count = data.incoming_count || 0;
+            arc.outgoing_count = data.outgoing_count || 0;
+            arc.color          = (data.city === 'Unknown' || data.country === 'Unknown' ||
+                                  data.org === 'Not available') ? '#FFFFFF' : '#FF0000';
+            arc.last_seen      = data.last_seen;
+            arc.packet_count   = data.packet_count || 0;
+            arc.hostname       = data.hostname || 'Unknown';
+            arc.os             = data.os       || 'Unknown';
+            arc.expired        = false;
 
             if (isLocalNetwork(data.ip, data.org) && (isInternalSearchActive || pinnedIPs[ip])) {
-                internalPackets[ip] = {
-                    ip:             data.ip,
-                    lat:            data.lat,
-                    lng:            data.lon,
-                    city:           data.city,
-                    country:        data.country,
-                    region:         data.region,
-                    org:            data.org,
-                    protocol:       data.protocol,
-                    src_port:       data.src_port,
-                    dst_port:       data.dst_port,
-                    incoming_count: data.incoming_count || 0,
-                    outgoing_count: data.outgoing_count || 0,
-                    last_seen:      data.last_seen,
-                    mac:            data.mac,
-                    vendor:         data.vendor,
-                    packet_count:   data.packet_count   || 0,
-                    hostname:       data.hostname       || 'Unknown',
-                    os:             data.os             || 'Unknown',
-                    threat_level:   data.threat_level   || 'No Threat',
-                    expired:        false,
-                };
+                const ipkt = internalPackets[ip] || (internalPackets[ip] = {});
+                ipkt.ip             = data.ip;
+                ipkt.lat            = data.lat;
+                ipkt.lng            = data.lon;
+                ipkt.city           = data.city;
+                ipkt.country        = data.country;
+                ipkt.region         = data.region;
+                ipkt.org            = data.org;
+                ipkt.protocol       = data.protocol;
+                ipkt.src_port       = data.src_port;
+                ipkt.dst_port       = data.dst_port;
+                ipkt.incoming_count = data.incoming_count || 0;
+                ipkt.outgoing_count = data.outgoing_count || 0;
+                ipkt.last_seen      = data.last_seen;
+                ipkt.mac            = data.mac;
+                ipkt.vendor         = data.vendor;
+                ipkt.packet_count   = data.packet_count   || 0;
+                ipkt.hostname       = data.hostname       || 'Unknown';
+                ipkt.os             = data.os             || 'Unknown';
+                ipkt.threat_level   = data.threat_level   || 'No Threat';
+                ipkt.expired        = false;
             }
 
             // Evict oldest non-pinned entries when limits are exceeded.
@@ -980,5 +1019,10 @@ async function initializeGlobe(myIpCoords) {
             }
         }
         if (changed) refreshViews();
+
+        // Re-render the globe each tick so point sizes decay as their packet-rate
+        // window empties (and expired points drop off promptly), even when no new
+        // packets are arriving to trigger refreshViews().
+        updateGlobeData();
     }, 1000);
 }
