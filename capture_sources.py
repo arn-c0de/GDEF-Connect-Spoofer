@@ -33,7 +33,6 @@ PCAP_EXTENSIONS = {".pcap", ".pcapng", ".eth", ".cap", ".dmp"}
 
 # classic-pcap framing
 _GLOBAL_HDR_LEN = 24
-_REC_HDR_LEN = 16
 # Reject an incl_len larger than this as corruption rather than trying to buffer
 # a multi-GB "record" (a desynced offset would otherwise read garbage lengths).
 _MAX_SNAPLEN = 262_144
@@ -45,13 +44,24 @@ _LINKTYPE_DECODERS = {
     113: CookedLinux,  # LINKTYPE_LINUX_SLL
 }
 
-# global-header magic -> (struct endian prefix). Nanosecond variants decode the
-# same for our purposes (we ignore timestamps).
+# Standard per-record header: ts_sec, ts_usec, incl_len, orig_len (4x uint32).
+_STD_REC_HDR_LEN = 16
+# "Modified"/patched libpcap (magic 0xa1b2cd34) — used by the FRITZ!Box capture —
+# appends ifindex(4) + protocol(2) + pkt_type(1) + pad(1) = 8 bytes to every
+# record header, so the header is 24 bytes. The first 16 bytes are identical to
+# the standard header (incl_len is still the 3rd uint32), so we read those and
+# skip the 8 extra bytes before the packet data.
+_MODIFIED_REC_HDR_LEN = 24
+
+# global-header magic -> (struct endian prefix, per-record header length).
+# Nanosecond variants decode the same for our purposes (we ignore timestamps).
 _MAGICS = {
-    b"\xd4\xc3\xb2\xa1": "<",  # us, little-endian
-    b"\xa1\xb2\xc3\xd4": ">",  # us, big-endian
-    b"\x4d\x3c\xb2\xa1": "<",  # ns, little-endian
-    b"\xa1\xb2\x3c\x4d": ">",  # ns, big-endian
+    b"\xd4\xc3\xb2\xa1": ("<", _STD_REC_HDR_LEN),       # us, little-endian
+    b"\xa1\xb2\xc3\xd4": (">", _STD_REC_HDR_LEN),       # us, big-endian
+    b"\x4d\x3c\xb2\xa1": ("<", _STD_REC_HDR_LEN),       # ns, little-endian
+    b"\xa1\xb2\x3c\x4d": (">", _STD_REC_HDR_LEN),       # ns, big-endian
+    b"\x34\xcd\xb2\xa1": ("<", _MODIFIED_REC_HDR_LEN),  # modified, little-endian
+    b"\xa1\xb2\xcd\x34": (">", _MODIFIED_REC_HDR_LEN),  # modified, big-endian
 }
 
 
@@ -63,16 +73,19 @@ class PcapTailReader:
         self.offset = 0          # next unread byte
         self.endian = None       # set once the global header is parsed
         self.rec_fmt = None
+        self.rec_hdr_len = _STD_REC_HDR_LEN
         self.decoder = Ether
         self._header_ok = False
 
     def _parse_global_header(self, hdr):
-        endian = _MAGICS.get(hdr[:4])
-        if endian is None:
+        info = _MAGICS.get(hdr[:4])
+        if info is None:
             return False
+        endian, rec_hdr_len = info
         linktype = struct.unpack(endian + "I", hdr[20:24])[0]
         self.endian = endian
         self.rec_fmt = endian + "IIII"
+        self.rec_hdr_len = rec_hdr_len
         self.decoder = _LINKTYPE_DECODERS.get(linktype, Ether)
         self._header_ok = True
         return True
@@ -111,17 +124,20 @@ class PcapTailReader:
 
         pos = 0
         n = len(data)
-        while n - pos >= _REC_HDR_LEN and len(pkts) < max_packets:
+        hdr_len = self.rec_hdr_len
+        while n - pos >= hdr_len and len(pkts) < max_packets:
+            # incl_len is the 3rd uint32 in both standard and modified headers;
+            # the modified format just has 8 extra bytes after the first 16.
             _ts_sec, _ts_usec, incl_len, _orig_len = struct.unpack(
-                self.rec_fmt, data[pos:pos + _REC_HDR_LEN])
+                self.rec_fmt, data[pos:pos + _STD_REC_HDR_LEN])
             if incl_len > _MAX_SNAPLEN:
                 # Desynced/corrupt; stop and let the next poll retry from here so
                 # we never advance the offset into garbage.
                 break
-            if n - pos - _REC_HDR_LEN < incl_len:
+            if n - pos - hdr_len < incl_len:
                 break                                     # record still being written
-            raw = data[pos + _REC_HDR_LEN:pos + _REC_HDR_LEN + incl_len]
-            pos += _REC_HDR_LEN + incl_len
+            raw = data[pos + hdr_len:pos + hdr_len + incl_len]
+            pos += hdr_len + incl_len
             pkt = self._decode(raw)
             if pkt is not None:
                 pkts.append(pkt)

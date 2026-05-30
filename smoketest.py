@@ -1144,6 +1144,41 @@ def t_capture_sources_fritzdump():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _modified_pcap_bytes(frames, endian="<"):
+    """Build a 'modified'/patched libpcap (magic 0xa1b2cd34) — the format the
+    FRITZ!Box capture emits: 8 extra bytes per record header."""
+    import struct
+    magic = b"\x34\xcd\xb2\xa1" if endian == "<" else b"\xa1\xb2\xcd\x34"
+    out = magic + struct.pack(endian + "HHIIII", 2, 4, 0, 0, 262144, 1)  # ethernet
+    for fr in frames:
+        raw = bytes(fr)
+        out += struct.pack(endian + "IIII", 0, 0, len(raw), len(raw))    # std 16-byte head
+        out += struct.pack(endian + "IHBB", 3, 0x0800, 0, 0)             # +8 modified bytes
+        out += raw
+    return out
+
+
+@check("capture_sources parses FRITZ!Box 'modified' pcap (magic 0xa1b2cd34)")
+def t_capture_sources_modified_pcap():
+    import capture_sources
+    d = tempfile.mkdtemp()
+    try:
+        frames = [pkt_tcp("192.168.178.40", "8.8.8.8", dport=443),
+                  pkt_tcp("1.1.1.1", "192.168.178.41", sport=443)]
+        for name, endian in (("lan_1-lan.pcap", "<"), ("be.pcap", ">")):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write(_modified_pcap_bytes(frames, endian))
+        got = capture_sources.FritzDumpSource(d).poll()
+        # Both files, both packets each -> 4 parsed (proves the 24-byte record
+        # header + 8 extra bytes are handled, LE and BE).
+        assert_eq(len(got), 4, "parses modified-pcap records (both endiannesses)")
+        from scapy.all import IP
+        ips = {g[IP].src for g in got if IP in g}
+        assert_true("192.168.178.40" in ips and "1.1.1.1" in ips, ips)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 @check("fritzdump_packet_callback (device-tagged queue item)")
 def t_fritzdump_callback():
     q = app.PacketQueue()
@@ -1334,6 +1369,7 @@ ALL_TESTS = [
     t_api_ingest,
     t_network_stats_by_device,
     t_capture_sources_fritzdump,
+    t_capture_sources_modified_pcap,
     t_fritzdump_callback,
     t_device_startstop,
     t_fritzdump_end_to_end,
