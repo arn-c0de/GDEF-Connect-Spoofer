@@ -165,6 +165,14 @@ ConnectSpoofer is built with a **Security-First** approach:
 | `TRUST_PROXY_HOPS` | `1` | Exact number of trusted proxies in front of the app (only with `TRUST_PROXY=1`) |
 | `HUB_DEVICE_NAME` | hostname | Display name for the hub's built-in `local` capture device |
 | `INGEST_RATE_LIMIT` | `20` | Max sensor ingest batches per second per device |
+| `INGEST_MAX_AGE` | `300` | Reject sensor batches older than this many seconds (replay window) |
+| `INGEST_MAX_EVENTS` | `5000` | Max connection events accepted per ingest batch |
+| `INGEST_MAX_BODY` | `8388608` | Max encrypted ingest body size in bytes |
+
+Sensor-side configuration (`CENTRAL_URL`, `DEVICE_ID`, `DEVICE_KEY`,
+`NETWORK_INTERFACE`, and tuning knobs) is documented in
+[`sensor/sensor.env.example`](sensor/sensor.env.example) and
+[`sensor/README.md`](sensor/README.md).
 
 ## Python Workflow
 
