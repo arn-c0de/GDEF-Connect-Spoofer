@@ -231,8 +231,8 @@ DEVICE_KEYS_DIR = os.path.join(DATABASE_DIR, "devices")
 # --- FritzDump pcap source ---------------------------------------------------
 # A built-in capture *device* whose packets come from tailing the pcap files the
 # FritzDump module writes (a FRITZ!Box capture), instead of a live NIC. It shows
-# up in the device list like any sensor (own name/colour, on/off toggle) and is
-# switched on from the dashboard via the 'capture_source' setting.
+# up in the device list like any device, with its own Start/Stop (the per-device
+# `enabled` flag): while disabled it captures nothing at all.
 FRITZDUMP_DEVICE_ID = 'fritzdump'
 FRITZDUMP_DEVICE_NAME = os.environ.get('FRITZDUMP_DEVICE_NAME', '').strip() or 'FritzBox'
 FRITZDUMP_DEVICE_COLOR = '#29B6F6'
@@ -241,23 +241,33 @@ FRITZDUMP_DIR = os.environ.get('FRITZDUMP_DIR') or os.path.join(
     _APP_DIR, 'modules', 'FritzDump', 'dumps')
 FRITZDUMP_POLL_INTERVAL = float(os.environ.get('FRITZDUMP_POLL_INTERVAL', '1.0'))
 
-# Capture-source switch. Shared across the forked internal scanner and the main
-# process (sniffer thread + FritzDump reader) as an int code so a dashboard
-# toggle takes effect everywhere without a restart.
-CAPTURE_MODE_LIVE = 0
-CAPTURE_MODE_FRITZDUMP = 1
-CAPTURE_MODE_BOTH = 2
-CAPTURE_MODE_NAMES = {CAPTURE_MODE_LIVE: 'live', CAPTURE_MODE_FRITZDUMP: 'fritzdump',
-                      CAPTURE_MODE_BOTH: 'both'}
-CAPTURE_MODE_CODES = {v: k for k, v in CAPTURE_MODE_NAMES.items()}
+# --- Per-device Start/Stop ---------------------------------------------------
+# A device's `enabled` flag is its Start/Stop. While a device is stopped, NONE of
+# its traffic may be processed — not even in the background. The single chokepoint
+# is process_packets (every captured packet, from every source process, flows
+# through it in the main process), so a fast in-memory set of stopped device ids
+# is consulted there. It is refreshed from the DB on startup and on every change.
+disabled_devices = set()
+disabled_devices_lock = threading.Lock()
 
 
-def _live_capture_active(mode_value):
-    return mode_value in (CAPTURE_MODE_LIVE, CAPTURE_MODE_BOTH)
+def refresh_disabled_devices():
+    """Reload the set of stopped (disabled) device ids from the DB."""
+    global disabled_devices
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT device_id FROM devices WHERE enabled = FALSE")
+            ids = {r[0] for r in c.fetchall()}
+        with locked(disabled_devices_lock):
+            disabled_devices = ids
+    except db.DBError as e:
+        logger.error(f"Error refreshing disabled devices: {e}")
 
 
-def _fritzdump_capture_active(mode_value):
-    return mode_value in (CAPTURE_MODE_FRITZDUMP, CAPTURE_MODE_BOTH)
+def device_is_disabled(device_id):
+    with locked(disabled_devices_lock):
+        return device_id in disabled_devices
 
 
 API_TIMEOUT = CONFIG["api_timeout"]
@@ -1065,10 +1075,10 @@ def init_db():
                           (LOCAL_DEVICE_ID, HUB_DEVICE_NAME, LOCAL_DEVICE_COLOR, time.time()))
 
                 # Seed the built-in FritzDump pcap-source device (kind='pcap').
-                # It is enabled by default but only actually captures when the
-                # 'capture_source' setting selects fritzdump/both.
+                # It starts STOPPED (enabled=FALSE): the user presses Start in the
+                # dashboard once FritzDump is producing pcaps.
                 c.execute('''INSERT INTO devices (device_id, name, color, kind, enabled, seq, created_at)
-                             VALUES (%s, %s, %s, 'pcap', TRUE, 0, %s)
+                             VALUES (%s, %s, %s, 'pcap', FALSE, 0, %s)
                              ON CONFLICT (device_id) DO NOTHING''',
                           (FRITZDUMP_DEVICE_ID, FRITZDUMP_DEVICE_NAME, FRITZDUMP_DEVICE_COLOR, time.time()))
 
@@ -1076,7 +1086,6 @@ def init_db():
                 c.executemany(
                     "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
                     [
-                        ('capture_source', 'live'),
                         ('is_internal_search_active', '0'),
                         ('show_all_udp_packets', '1'),
                         ('show_local_network', '1'),
@@ -1087,6 +1096,8 @@ def init_db():
                 conn.commit()
         except db.DBError as e:
             logger.error(f"Error initializing database: {e}")
+    # Prime the in-memory Start/Stop set from the persisted enabled flags.
+    refresh_disabled_devices()
 
 _BOOL_SETTINGS = {
     'is_internal_search_active', 'show_all_udp_packets',
@@ -1096,7 +1107,6 @@ _BOOL_SETTINGS = {
 
 def load_settings():
     settings = {
-        'capture_source': 'live',
         'is_internal_search_active': True,
         'show_all_udp_packets': True,
         'show_local_network': True,
@@ -2115,6 +2125,7 @@ def api_device(device_id):
         delete_device_key(device_id)
         with locked(device_stats_lock):
             device_stats.pop(device_id, None)
+        refresh_disabled_devices()
         emit_devices_update()
         return jsonify({"ok": True})
     # PATCH: name / color / enabled. Column names are hardcoded literals (no
@@ -2133,11 +2144,13 @@ def api_device(device_id):
             return jsonify({"error": "invalid color"}), 400
         fields.append("color = %s")
         params.append(col)
+    enabling = None
     if 'enabled' in data:
-        if dev["kind"] == 'local':
-            return jsonify({"error": "cannot disable the local device"}), 400
+        # Every device (including 'local' and the FritzDump 'pcap' module) has a
+        # Start/Stop. Stopping it halts all processing of its traffic.
+        enabling = bool(data.get('enabled'))
         fields.append("enabled = %s")
-        params.append(bool(data.get('enabled')))
+        params.append(enabling)
     if not fields:
         return jsonify({"error": "nothing to update"}), 400
     params.append(device_id)
@@ -2150,7 +2163,14 @@ def api_device(device_id):
     except db.DBError as e:
         logger.error(f"Error updating device {device_id}: {e}")
         return jsonify({"error": "could not update"}), 500
+    if enabling is not None:
+        refresh_disabled_devices()
+        logger.info(f"Device {device_id} {'started' if enabling else 'stopped'}")
     emit_devices_update()
+    # On (re)start, push the full IP set again so every client immediately
+    # redraws this device's points/arcs without waiting for new packets.
+    if enabling:
+        send_all_ips_to_client()
     return jsonify({"ok": True})
 
 
@@ -2371,10 +2391,10 @@ def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
         "dst_vendor": dst_vendor
     }
 
-def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets, capture_mode=None):
-    # Honour the dashboard capture-source switch: when set to fritzdump-only, the
-    # live NIC keeps sniffing but we drop its packets instead of restarting it.
-    if capture_mode is not None and not _live_capture_active(capture_mode.value):
+def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
+    # Start/Stop: if the hub's own (local) device is stopped, don't even queue its
+    # live traffic. (process_packets also drops it, covering the forked scanner.)
+    if LOCAL_DEVICE_ID in disabled_devices:
         return
     logger.debug(f"Packet captured: {packet.summary()}")
     parsed = parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=False)
@@ -2463,10 +2483,8 @@ def fritzdump_packet_callback(packet, queue, mdns_listener, show_all_udp):
     except Exception as e:
         logger.error(f"Error adding FritzDump packet to queue: {e}")
 
-def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets, capture_mode=None):
+def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets):
     logger.debug(f"Internal packet captured: {packet.summary()}")
-    if capture_mode is not None and not _live_capture_active(capture_mode.value):
-        return
     if not is_internal_search_active.value:
         return
     parsed = parse_ip_packet(packet, stats, showAllUDPPackets)
@@ -2591,6 +2609,10 @@ def send_all_ips_to_client(sid=None):
         return
     for row in rows:
         device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, packet_count = row
+        # Stopped devices contribute no data to any client (initial load or
+        # rebroadcast), matching the "no traffic while stopped" guarantee.
+        if device_id in disabled_devices:
+            continue
         display_hostname = ip if is_private_ip(ip) else hostname
         messages.append({
             "device_id": device_id,
@@ -2630,30 +2652,26 @@ def send_pinned_ips_to_client(sid):
     except db.DBError as e:
         logger.error(f"Error sending pinned IPs: {e}")
 
-def internal_scanner_process(my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets, capture_mode=None):
+def internal_scanner_process(my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets):
     while True:
         try:
-            sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: internal_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets, capture_mode),
+            sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: internal_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets),
                   filter=CAPTURE_BPF_FILTER, store=0, timeout=SNIFF_TIMEOUT)
         except Exception as e:
             logger.error(f"Error in internal scanner: {e}")
             time.sleep(5)
 
 
-def fritzdump_reader(queue, mdns_listener, showAllUDPPackets, capture_mode):
+def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
     """Tail the FritzDump pcap directory and feed packets into the same queue as
-    live capture, tagged with the FritzDump device id. Only runs while the
-    capture-source switch includes fritzdump AND the device is enabled, so it can
-    be turned on/off from the dashboard with no restart."""
+    live capture, tagged with the FritzDump device id. Runs only while the
+    FritzDump device is started (its `enabled` flag), so the dashboard Start/Stop
+    turns it on/off with no restart."""
     source = FritzDumpSource(FRITZDUMP_DIR)
     logged_missing = False
     while True:
         try:
-            if not _fritzdump_capture_active(capture_mode.value):
-                time.sleep(FRITZDUMP_POLL_INTERVAL)
-                continue
-            dev = get_device(FRITZDUMP_DEVICE_ID)
-            if dev is not None and not dev["enabled"]:
+            if device_is_disabled(FRITZDUMP_DEVICE_ID):
                 time.sleep(FRITZDUMP_POLL_INTERVAL)
                 continue
             if not os.path.isdir(FRITZDUMP_DIR):
@@ -2682,6 +2700,11 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
                 # Which device this packet belongs to (live capture omits it ->
                 # the hub's own 'local' device; the FritzDump reader tags its own).
                 device_id = packet_data.get("device_id", LOCAL_DEVICE_ID)
+                # Start/Stop chokepoint: a stopped device's traffic is dropped here
+                # so nothing of it is processed, stored or broadcast — not even in
+                # the background — regardless of which process captured it.
+                if device_id in disabled_devices:
+                    continue
                 # Non-local sources keep their own protocol/byte counters; the
                 # 'local' device is counted by SharedStats on the capture path.
                 if device_id != LOCAL_DEVICE_ID:
@@ -2782,7 +2805,7 @@ def index():
         backend_config=backend_config
     )
 
-def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets, capture_mode=None):
+def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
     validate_interface()
     init_db()
     # Worker threads + the FritzDump reader need no raw-socket privileges, so they
@@ -2794,7 +2817,7 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
     threading.Thread(target=mac_enrichment_worker, daemon=True).start()
     threading.Thread(target=geo_enrichment_worker, args=(my_geo_data,), daemon=True).start()
     threading.Thread(target=flush_ip_writes, daemon=True).start()
-    threading.Thread(target=fritzdump_reader, args=(queue, mdns_listener, showAllUDPPackets, capture_mode), daemon=True).start()
+    threading.Thread(target=fritzdump_reader, args=(queue, mdns_listener, showAllUDPPackets), daemon=True).start()
     if not is_admin():
         if sys.platform == 'win32':
             logger.error("Live packet capture requires administrator privileges; "
@@ -2809,7 +2832,7 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
         return
     while True:
         try:
-            sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: external_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets, capture_mode),
+            sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: external_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets),
                   filter=CAPTURE_BPF_FILTER, store=0, timeout=SNIFF_TIMEOUT)
         except Exception as e:
             logger.error(f"Error during sniffing: {e}")
@@ -2843,10 +2866,6 @@ if __name__ == "__main__":
     settings = load_settings()
     is_internal_search_active = manager.Value('b', settings.get('is_internal_search_active', True))
     showAllUDPPackets = manager.Value('b', settings.get('show_all_udp_packets', True))
-    # Capture-source switch, shared with the forked internal scanner. Stored as an
-    # int code so the dashboard toggle reaches every capture path live.
-    capture_mode = manager.Value('i', CAPTURE_MODE_CODES.get(
-        settings.get('capture_source', 'live'), CAPTURE_MODE_LIVE))
     packet_queue = PacketQueue()
     # Validate/auto-detect the capture interface BEFORE forking the internal
     # scanner. The child inherits NETWORK_INTERFACE as it is at fork time, so a
@@ -2857,7 +2876,7 @@ if __name__ == "__main__":
     zeroconf, mdns_listener = start_mdns_listener()
     internal_process = Process(
         target=internal_scanner_process,
-        args=(my_geo_data, my_local_ip, my_public_ip, packet_queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets, capture_mode),
+        args=(my_geo_data, my_local_ip, my_public_ip, packet_queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets),
         daemon=True
     )
     internal_process.start()
@@ -2865,7 +2884,7 @@ if __name__ == "__main__":
     atexit.register(cleanup, internal_process, zeroconf)
     threading.Thread(
         target=start_sniffing,
-        args=(my_geo_data, my_local_ip, my_public_ip, packet_queue, stats, mdns_listener, showAllUDPPackets, capture_mode),
+        args=(my_geo_data, my_local_ip, my_public_ip, packet_queue, stats, mdns_listener, showAllUDPPackets),
         daemon=True
     ).start()
 
@@ -2953,25 +2972,6 @@ if __name__ == "__main__":
             logger.info(f"UDP filter {'all packets' if show_all_udp else 'filtered'}")
         except Exception as e:
             logger.error(f"Error in set_udp_filter: {e}")
-
-    @socketio.on('set_capture_source')
-    def handle_set_capture_source(data):
-        if not session.get('authenticated'):
-            return
-        if socket_rate_limited('set_capture_source'):
-            logger.warning(f"Rate limit exceeded for set_capture_source from SID {request.sid}")
-            return
-        try:
-            source = data.get('captureSource')
-            if source not in CAPTURE_MODE_CODES:
-                logger.error(f"Invalid capture source: {source}")
-                return
-            capture_mode.value = CAPTURE_MODE_CODES[source]
-            save_setting('capture_source', source)
-            socketio.emit('settings_update', {'capture_source': source})
-            logger.info(f"Capture source set to '{source}'")
-        except Exception as e:
-            logger.error(f"Error in set_capture_source: {e}")
 
     @socketio.on('pin_ip')
     def handle_pin_ip(data):
