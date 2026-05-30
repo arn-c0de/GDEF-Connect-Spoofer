@@ -1024,26 +1024,36 @@ def get_geo_data(ip, my_geo_data=None):
             geo_cache[ip] = {"data": geo_data, "timestamp": now}
         return geo_data
 
-def compute_org_threat(ip, org):
-    """Classify an IP's threat level from its org (trusted/suspicious/dangerous
-    lists) falling back to the threat_list table. Shared by update_ip and the
-    background geo worker."""
+def load_org_lists():
+    """Load the trusted/suspicious/dangerous org classification lists."""
     try:
         with open(TRUSTED_ORGS_PATH, 'r') as f:
-            org_data = json.load(f)
-            trusted_orgs = org_data.get("trusted_organisations", [])
-            suspicious_orgs = org_data.get("suspicious_organisations", [])
-            dangerous_orgs = org_data.get("dangerous_organisations", [])
+            d = json.load(f)
+        return (d.get("trusted_organisations", []),
+                d.get("suspicious_organisations", []),
+                d.get("dangerous_organisations", []))
     except Exception as e:
         logger.error(f"Error loading trusted_organisations.json: {e}")
-        trusted_orgs, suspicious_orgs, dangerous_orgs = [], [], []
+        return ([], [], [])
 
-    if org in dangerous_orgs:
+def classify_org_threat(org, org_lists):
+    """Map an org to a threat level from the lists, or None if unclassified
+    (caller should then consult the threat_list table)."""
+    trusted, suspicious, dangerous = org_lists
+    if org in dangerous:
         return "High"
-    if org in suspicious_orgs:
+    if org in suspicious:
         return "Medium"
-    if org in trusted_orgs:
+    if org in trusted:
         return "No Threat"
+    return None
+
+def compute_org_threat(ip, org):
+    """Classify an IP's threat level from its org, falling back to the
+    threat_list table. Used by the background geo worker."""
+    tl = classify_org_threat(org, load_org_lists())
+    if tl is not None:
+        return tl
     with locked(db_lock):
         try:
             with sqlite3.connect(DATABASE_PATH) as conn:
@@ -1116,6 +1126,14 @@ def geo_enrichment_worker(my_geo_data):
                 continue
             org = geo.get("org", "Unknown")
             threat_level = compute_org_threat(ip, org)
+            # If a write for this IP is still buffered (geo resolved before the
+            # first flush), patch it so the flush persists the resolved location
+            # instead of the placeholder.
+            with locked(ip_write_buffer_lock):
+                be = ip_write_buffer.get(ip)
+                if be is not None:
+                    be.update({"lat": geo["lat"], "lon": geo["lon"], "city": geo["city"],
+                               "country": geo["country"], "region": geo.get("region", ""), "org": org})
             row = None
             with locked(db_lock):
                 try:
@@ -1206,16 +1224,6 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
             "org": "Not available"
         }
     now = time.time()
-    
-    # Rate limit updates sent to clients for this specific IP
-    with cache_lock:
-        last_update = last_ip_updates.get(ip, 0)
-        if now - last_update < IP_UPDATE_INTERVAL:
-            # Still update internal counts but skip socket.io broadcast to save bandwidth/client CPU
-            broadcast_needed = False
-        else:
-            last_ip_updates[ip] = now
-            broadcast_needed = True
 
     os_guess = estimate_os(ttl)
     conn_key = tuple(sorted([src_ip, dst_ip]) + [src_port, dst_port, protocol]) if src_ip and dst_ip else None
@@ -1226,44 +1234,111 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
             tcp_connections[conn_key]["packet_count"] += 1
             tcp_connections[conn_key]["last_seen"] = now
 
-    org = geo.get("org", "Unknown")
-    threat_level = compute_org_threat(ip, org)
+    # Buffer the write instead of touching SQLite on the hot path. The flusher
+    # thread coalesces repeated packets for the same IP and commits the whole
+    # batch in a single transaction every IP_WRITE_FLUSH_INTERVAL, so a packet
+    # flood can no longer hold db_lock and starve the UI (DoS). Threat level and
+    # cumulative counts are resolved at flush time, not per packet.
+    buffer_ip_write(ip, direction, {
+        "geo_ip": geo.get("ip", ip),
+        "lat": geo["lat"], "lon": geo["lon"], "city": geo["city"], "country": geo["country"],
+        "region": geo.get("region", ""), "org": geo.get("org", "Unknown"),
+        "protocol": protocol, "src_port": src_port, "dst_port": dst_port,
+        "mac": mac, "vendor": vendor, "hostname": hostname, "os": os_guess,
+        "last_seen": now,
+    })
 
-    valid_threat_levels = ["High", "Medium", "Low", "No Threat"]
-    if threat_level not in valid_threat_levels:
-        logger.warning(f"Invalid threat level for IP {ip}: {threat_level}. Setting to 'No Threat'.")
-        threat_level = "No Threat"
+# --- Buffered IP writes (DoS protection: coalesce + batch DB writes) ----------
+IP_WRITE_FLUSH_INTERVAL = float(os.environ.get('IP_WRITE_FLUSH_INTERVAL', '1.0'))
+# Cap how many distinct IPs we buffer between flushes. Beyond this, new IPs are
+# dropped (logged, never silently) so a unique-IP flood can't exhaust memory.
+IP_WRITE_BUFFER_MAX = int(os.environ.get('IP_WRITE_BUFFER_MAX', '20000'))
+ip_write_buffer = {}
+ip_write_buffer_lock = threading.Lock()
+_ip_write_buffer_dropped = 0
 
-    with locked(db_lock):
+def buffer_ip_write(ip, direction, data):
+    """Accumulate a pending write for `ip`: latest field values win, packet
+    counts accumulate as deltas (only for non-private IPs, matching the original
+    semantics)."""
+    global _ip_write_buffer_dropped
+    with locked(ip_write_buffer_lock):
+        e = ip_write_buffer.get(ip)
+        if e is None:
+            if len(ip_write_buffer) >= IP_WRITE_BUFFER_MAX:
+                _ip_write_buffer_dropped += 1
+                return
+            e = {"in_delta": 0, "out_delta": 0, "is_private": is_private_ip(ip)}
+            ip_write_buffer[ip] = e
+        e.update(data)
+        if not e["is_private"]:
+            if direction == "incoming":
+                e["in_delta"] += 1
+            elif direction == "outgoing":
+                e["out_delta"] += 1
+
+def flush_ip_writes():
+    global ip_write_buffer, _ip_write_buffer_dropped
+    while True:
         try:
-            with sqlite3.connect(DATABASE_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE ip = ?", (ip,))
-                existing = c.fetchone()
-                if existing:
-                    incoming_count, outgoing_count = existing
-                    if not is_private_ip(ip):
-                        incoming_count += 1 if direction == "incoming" else 0
-                        outgoing_count += 1 if direction == "outgoing" else 0
-                    c.execute('''UPDATE ip_data SET lat = ?, lon = ?, city = ?, country = ?, last_seen = ?, org = ?, 
-                                 src_port = ?, dst_port = ?, protocol = ?, incoming_count = ?, outgoing_count = ?, mac = ?, 
-                                 vendor = ?, hostname = ?, os = ? WHERE ip = ?''',
-                              (geo["lat"], geo["lon"], geo["city"], geo["country"], now, org, src_port, dst_port, protocol,
-                               incoming_count, outgoing_count, mac, vendor, hostname, os_guess, ip))
-                else:
-                    incoming_count = 1 if direction == "incoming" else 0
-                    outgoing_count = 1 if direction == "outgoing" else 0
-                    c.execute('''INSERT INTO ip_data (ip, lat, lon, city, country, last_seen, org, src_port, dst_port, protocol, 
-                                 incoming_count, outgoing_count, mac, vendor, hostname, os)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                              (ip, geo["lat"], geo["lon"], geo["city"], geo["country"], now, org, src_port, dst_port, protocol,
-                               incoming_count, outgoing_count, mac, vendor, hostname, os_guess))
-                conn.commit()
-                if broadcast_needed:
-                    send_ip_to_clients(geo["ip"], geo["lat"], geo["lon"], geo["city"], geo["country"], geo["region"], org, now,
-                                       protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, 0, hostname, os_guess, threat_level)
-        except sqlite3.Error as e:
-            logger.error(f"Error updating IP {ip}: {e}")
+            time.sleep(IP_WRITE_FLUSH_INTERVAL)
+            with locked(ip_write_buffer_lock):
+                if not ip_write_buffer:
+                    if _ip_write_buffer_dropped:
+                        logger.warning(f"IP write buffer full: dropped {_ip_write_buffer_dropped} new IPs since last flush")
+                        _ip_write_buffer_dropped = 0
+                    continue
+                batch = ip_write_buffer
+                ip_write_buffer = {}
+                dropped = _ip_write_buffer_dropped
+                _ip_write_buffer_dropped = 0
+            if dropped:
+                logger.warning(f"IP write buffer full: dropped {dropped} new IPs since last flush")
+
+            org_lists = load_org_lists()  # loaded once per flush, not per packet
+            broadcasts = []
+            with locked(db_lock):
+                try:
+                    with sqlite3.connect(DATABASE_PATH) as conn:
+                        c = conn.cursor()
+                        for ip, e in batch.items():
+                            org = e.get("org", "Unknown")
+                            threat_level = classify_org_threat(org, org_lists)
+                            if threat_level is None:
+                                c.execute("SELECT threat_level FROM threat_list WHERE ip = ?", (ip,))
+                                r = c.fetchone()
+                                threat_level = r[0] if r else "No Threat"
+                            c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE ip = ?", (ip,))
+                            row = c.fetchone()
+                            if row:
+                                inc, out = row[0] + e["in_delta"], row[1] + e["out_delta"]
+                                c.execute('''UPDATE ip_data SET lat = ?, lon = ?, city = ?, country = ?, last_seen = ?, org = ?,
+                                             src_port = ?, dst_port = ?, protocol = ?, incoming_count = ?, outgoing_count = ?,
+                                             mac = ?, vendor = ?, hostname = ?, os = ? WHERE ip = ?''',
+                                          (e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
+                                           e["src_port"], e["dst_port"], e["protocol"], inc, out,
+                                           e["mac"], e["vendor"], e["hostname"], e["os"], ip))
+                            else:
+                                inc, out = e["in_delta"], e["out_delta"]
+                                c.execute('''INSERT INTO ip_data (ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
+                                             protocol, incoming_count, outgoing_count, mac, vendor, hostname, os)
+                                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                          (ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
+                                           e["src_port"], e["dst_port"], e["protocol"], inc, out,
+                                           e["mac"], e["vendor"], e["hostname"], e["os"]))
+                            broadcasts.append((e, inc, out, threat_level))
+                        conn.commit()
+                except sqlite3.Error as ex:
+                    logger.error(f"Error flushing IP writes: {ex}")
+                    continue
+            # Broadcast after releasing db_lock so emit never blocks the writer.
+            for e, inc, out, threat_level in broadcasts:
+                send_ip_to_clients(e["geo_ip"], e["lat"], e["lon"], e["city"], e["country"], e["region"],
+                                   e.get("org", "Unknown"), e["last_seen"], e["protocol"], e["src_port"], e["dst_port"],
+                                   e["mac"], e["vendor"], inc, out, 0, e["hostname"], e["os"], threat_level)
+        except Exception as ex:
+            logger.error(f"Error in flush_ip_writes: {ex}")
+            time.sleep(IP_WRITE_FLUSH_INTERVAL)
 
 def send_network_stats(stats):
     while True:
@@ -1678,6 +1753,7 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
     threading.Thread(target=process_packets, args=(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener), daemon=True).start()
     threading.Thread(target=mac_enrichment_worker, daemon=True).start()
     threading.Thread(target=geo_enrichment_worker, args=(my_geo_data,), daemon=True).start()
+    threading.Thread(target=flush_ip_writes, daemon=True).start()
     while True:
         try:
             sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: external_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets),
