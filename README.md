@@ -53,15 +53,32 @@ cd GDEF-Connect-Spoofer
 start.bat
 
 # Linux/macOS:
-sudo ./run.sh
+sudo ./run.sh install
+sudo ./run.sh start
 ```
 
 The launcher script automatically:
+- Installs required system packages where a supported package manager is available
 - Creates a virtual environment (venv)
 - Installs all dependencies from `requirements.txt`
 - Prompts for interface selection on first start
 - Generates all configuration files on first run
-- Starts the application
+- Starts the application in the background
+
+### Linux/macOS service commands
+```bash
+sudo ./run.sh install   # install dependencies and configure the interface
+sudo ./run.sh start     # start in the background
+sudo ./run.sh stop      # stop the running app safely
+sudo ./run.sh restart   # restart
+sudo ./run.sh status    # show running/stopped state
+sudo ./run.sh logs      # follow app.log
+```
+
+By default the web UI binds to `127.0.0.1:8000`. To expose it on a trusted network:
+```bash
+sudo APP_HOST=0.0.0.0 SOCKETIO_CORS_ORIGINS=http://YOUR-LAN-IP:8000 ./run.sh restart
+```
 
 ## Usage
 
@@ -71,7 +88,7 @@ The launcher script automatically:
 4. **Monitor network traffic**: IPs appear on the globe in real-time
 
 ### Re-select interface
-Press `I` within 5 seconds when the launcher script starts.
+Run `sudo RESELECT_INTERFACE=1 ./run.sh start`.
 
 ## Tech Stack
 
