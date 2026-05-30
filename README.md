@@ -148,10 +148,32 @@ and `INGEST_RATE_LIMIT`.
 ### FritzDump module (capture from pcap files)
 
 Besides live capture from a NIC, the hub can use the **FritzDump** module as a
-capture *source*: instead of sniffing an interface, it **tails the pcap files**
-that [`modules/FritzDump`](modules/FritzDump/README.md) writes from a FRITZ!Box
-capture (`modules/FritzDump/dumps/`). This lets a hub with no usable capture
-interface (or no `CAP_NET_RAW`) still see real traffic.
+capture *source*: instead of sniffing an interface, it captures from your
+**FRITZ!Box** and feeds that traffic into the same globe/stats as everything else.
+This lets a hub with no usable capture interface (or no `CAP_NET_RAW`) still see
+real traffic — and gives you full visibility of every device behind the router,
+not just the host the hub runs on.
+
+**How it works:**
+
+```
+FRITZ!Box ──(login + capture)──> modules/FritzDump/run.sh ──> dumps/*.pcap
+                                                                   │ tail
+   dashboard  <── globe/stats <── process_packets <── hub reader ──┘
+```
+
+1. You press **▶ Start** on the FritzBox device in the dashboard.
+2. The hub launches the FritzDump worker (`modules/FritzDump/run.sh`), which logs
+   into the box and streams its capture to pcap files under
+   `modules/FritzDump/dumps/`.
+3. The hub **tails those pcaps** and parses each packet (it understands both
+   standard libpcap and the FRITZ!Box "modified" pcap variant, magic
+   `0xa1b2cd34`), tagging every connection as the FritzBox device.
+4. Geo/threat/vendor enrichment happens centrally, exactly like live capture, and
+   the connections appear on the globe and in the stats.
+
+**Stop** kills the worker and clears its data. The module is just another device,
+so it honours the same per-device colour, visibility, and Start/Stop as any sensor.
 
 **The module is OFF by default** — if you don't use it, you never see the device
 and nothing extra runs. Turn it on (Docker):
