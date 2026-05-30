@@ -1,6 +1,6 @@
 # Security Policy
 
-ConnectSpoofer is a modular component of the GDEF Suite. If you discover a security vulnerability in this repository (https://github.com/arn-c0de/GDEF-Connect-Spoofer/), please report it privately to the maintainers so we can address it promptly.
+GDEF-L1NK is a modular component of the GDEF Suite. If you discover a security vulnerability in this repository (https://github.com/arn-c0de/GDEF-L1NK/), please report it privately to the maintainers so we can address it promptly.
 
 Reporting
 - Preferred method: Open a private security issue on GitHub or contact the repository owner via their GitHub profile: https://github.com/arn-c0de
@@ -21,6 +21,6 @@ Disclosure
 - If you need to send sensitive information, request the maintainer's preferred secure channel or PGP key via their GitHub profile.
 
 Repository
-- https://github.com/arn-c0de/GDEF-Connect-Spoofer/
+- https://github.com/arn-c0de/GDEF-L1NK/
 
 Thank you for helping keep this project secure.
