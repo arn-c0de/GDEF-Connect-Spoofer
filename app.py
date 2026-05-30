@@ -189,6 +189,11 @@ def update_pinned_ips(ip, is_pinned):
 # Flask App und SocketIO
 app = Flask(__name__)
 app.config['SECRET_KEY'] = str(uuid4())
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE=os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax'),
+    SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
+)
 socketio_origins = os.environ.get('SOCKETIO_CORS_ORIGINS')
 if socketio_origins:
     socketio_origins = [origin.strip() for origin in socketio_origins.split(',') if origin.strip()]
@@ -205,6 +210,7 @@ def login():
     if request.method == 'POST':
         submitted_token = request.form.get('token', '')
         if secrets.compare_digest(submitted_token, ACCESS_TOKEN):
+            session.clear()
             session['authenticated'] = True
             return redirect(request.args.get('next') or url_for('index'))
         error = 'Invalid access token'

@@ -187,33 +187,7 @@ async function initializeGlobe(myIpCoords) {
         .labelColor(() => 'white')
         .labelLabel('label')
         .onPointClick((point) => {
-            dataList.style.display = 'block';
-            dataList.innerHTML = `
-                <div style="display: flex; align-items: center;">
-                    <h3>IP: ${escapeHTML(point.ip) || 'N/A'}</h3>
-                    <button id="closeDataList" style="margin-left: 10px; background: #555; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">✖</button>
-                </div>
-                <ul>
-                    <li><strong>Hostname:</strong> ${escapeHTML(point.hostname) || 'Unknown'}</li>
-                    <li><strong>OS:</strong> ${escapeHTML(point.os) || 'Unknown'}</li>
-                    <li><strong>MAC Address:</strong> ${escapeHTML(point.mac) || 'N/A'}</li>
-                    <li><strong>Vendor:</strong> ${escapeHTML(point.vendor) || 'Unknown'}</li>
-                    <li><strong>City:</strong> ${escapeHTML(point.city) || 'N/A'}</li>
-                    <li><strong>Country:</strong> ${escapeHTML(point.country) || 'N/A'}</li>
-                    <li><strong>Region:</strong> ${escapeHTML(point.region) || 'N/A'}</li>
-                    <li><strong>Organization:</strong> ${escapeHTML(point.org) || 'N/A'}</li>
-                    <li><strong>Protocol:</strong> ${escapeHTML(point.protocol) || 'N/A'}</li>
-                    <li><strong>Source Port:</strong> ${escapeHTML(point.src_port) || 'N/A'}</li>
-                    <li><strong>Dest Port:</strong> ${escapeHTML(point.dst_port) || 'N/A'}</li>
-                    <li><strong>Last Seen:</strong> ${point.last_seen ? new Date(point.last_seen * 1000).toLocaleString() : 'N/A'}</li>
-                    <li><strong>Incoming Packets:</strong> ${point.incoming_count || 0}</li>
-                    <li><strong>Outgoing Packets:</strong> ${point.outgoing_count || 0}</li>
-                    <li><strong>Total Packets:</strong> ${point.packet_count || 0}</li>
-                    <li><strong>Threat Level:</strong> ${escapeHTML(point.threat_level) || 'No Threat'}</li>
-                </ul>
-            `;
-            document.getElementById('closeDataList').addEventListener('click', () => {
-                dataList.style.display = 'none';
+            showDataList(point, () => {
                 globe.pointRadius(getMarkerRadius);
                 globe.labelSize(0.5);
             });
@@ -342,6 +316,12 @@ async function initializeGlobe(myIpCoords) {
     let showAllUDPPackets = false;
     let isInternalSearchActive = true;
 
+    function refreshViews() {
+        updateConnectionsList();
+        updateInternalNetworkList();
+        updateGlobeData();
+    }
+
     const toggleInternalNetworkButton = document.getElementById('toggleInternalNetwork');
     toggleInternalNetworkButton.textContent = isInternalNetworkCollapsed ? '▼' : '▲';
     toggleInternalNetworkButton.title = isInternalNetworkCollapsed ? 'Show internal network packets' : 'Hide internal network packets';
@@ -391,9 +371,7 @@ async function initializeGlobe(myIpCoords) {
             toggleLocalNetworkButton.title = showLocalNetwork ? 'Show local network' : 'Hide local network';
             console.log(`Local network ${showLocalNetwork ? 'shown' : 'hidden'}`);
             socket.emit('set_local_network', { showLocalNetwork: showLocalNetwork });
-            updateConnectionsList();
-            updateInternalNetworkList();
-            updateGlobeData();
+            refreshViews();
         }, 300);
     });
 
@@ -407,9 +385,7 @@ async function initializeGlobe(myIpCoords) {
         toggleExternalNetworkButton.title = showExternalNetwork ? 'Show external network' : 'Hide external network';
         console.log(`External network ${showExternalNetwork ? 'shown' : 'hidden'}`);
         socket.emit('set_external_network', { showExternalNetwork: showExternalNetwork });
-        updateConnectionsList();
-        updateInternalNetworkList();
-        updateGlobeData();
+        refreshViews();
     });
 
     const toggleTCPOnlyButton = document.getElementById('toggleTCPOnly');
@@ -422,9 +398,7 @@ async function initializeGlobe(myIpCoords) {
         toggleTCPOnlyButton.title = showTCPOnly ? 'Show TCP connections only' : 'Show all protocols';
         console.log(`TCP-only ${showTCPOnly ? 'enabled' : 'disabled'}`);
         socket.emit('set_tcp_only', { showTCPOnly: showTCPOnly });
-        updateConnectionsList();
-        updateInternalNetworkList();
-        updateGlobeData();
+        refreshViews();
     });
 
     const toggleAllUDPPacketsButton = document.getElementById('toggleAllUDPPackets');
@@ -437,9 +411,7 @@ async function initializeGlobe(myIpCoords) {
         toggleAllUDPPacketsButton.title = showAllUDPPackets ? 'Show all UDP packets' : 'Show filtered UDP packets';
         console.log(`All UDP packets ${showAllUDPPackets ? 'shown' : 'filtered'}`);
         socket.emit('set_udp_filter', { showAllUDPPackets: showAllUDPPackets });
-        updateConnectionsList();
-        updateInternalNetworkList();
-        updateGlobeData();
+        refreshViews();
     });
 
     const searchInternalPacketsCheckbox = document.getElementById('searchInternalPackets');
@@ -449,9 +421,7 @@ async function initializeGlobe(myIpCoords) {
             isInternalSearchActive = searchInternalPacketsCheckbox.checked;
             console.log(`Internal network packet search ${isInternalSearchActive ? 'enabled' : 'disabled'}`);
             socket.emit('set_internal_search', { isInternalSearchActive: isInternalSearchActive });
-            updateConnectionsList();
-            updateInternalNetworkList();
-            updateGlobeData();
+            refreshViews();
         });
     } else {
         console.warn('Checkbox with ID "searchInternalPackets" not found. Internal search remains enabled.');
@@ -465,6 +435,75 @@ async function initializeGlobe(myIpCoords) {
     const INTERNAL_EXPIRATION_SECONDS = 600;
     const MAX_POINTS = 1000;
     const MAX_INTERNAL_PACKETS = 500;
+
+    function createPacketListItem(packet, onReset) {
+        const li = document.createElement('li');
+        li.style.display = 'flex';
+        li.style.justifyContent = 'space-between';
+        li.style.alignItems = 'center';
+        li.style.padding = '5px';
+        li.style.borderBottom = '1px solid #444';
+        li.style.cursor = 'pointer';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'pin-checkbox';
+        checkbox.checked = !!pinnedIPs[packet.ip];
+        checkbox.addEventListener('change', () => {
+            const isPinned = checkbox.checked;
+            socket.emit('pin_ip', { ip: packet.ip, isPinned: isPinned });
+            console.log(`IP ${packet.ip} ${isPinned ? 'pinned' : 'unpinned'}`);
+        });
+
+        const textSpan = document.createElement('span');
+        textSpan.textContent = `${packet.ip || 'N/A'} (${packet.os || 'Unknown'}) - ${packet.country || 'N/A'} - ${packet.org || 'N/A'} (${packet.protocol || 'N/A'}, In: ${packet.incoming_count || 0}, Out: ${packet.outgoing_count || 0})`;
+        textSpan.style.fontSize = '10px';
+        textSpan.style.lineHeight = '1.4';
+
+        const resetButton = document.createElement('button');
+        resetButton.textContent = 'Reset';
+        resetButton.style.marginLeft = '10px';
+        resetButton.style.padding = '5px';
+        resetButton.style.background = '#555';
+        resetButton.style.color = 'white';
+        resetButton.style.border = 'none';
+        resetButton.style.borderRadius = '3px';
+        resetButton.style.cursor = 'pointer';
+        resetButton.addEventListener('click', () => {
+            packet.incoming_count = 0;
+            packet.outgoing_count = 0;
+            packet.packet_count = 0;
+            onReset();
+            console.log(`Packets for IP ${packet.ip} have been reset.`);
+        });
+
+        const circle = document.createElement('div');
+        circle.style.width = '10px';
+        circle.style.height = '10px';
+        circle.style.borderRadius = '50%';
+        circle.style.background = getCircleColor(packet.threat_level);
+        circle.style.marginRight = '10px';
+
+        li.addEventListener('click', (e) => {
+            if (e.target !== checkbox && e.target !== resetButton) {
+                showDataList(packet);
+                if (isValidCoord(packet.lat, packet.lng)) {
+                    globe.pointOfView({
+                        lat: packet.lat,
+                        lng: packet.lng,
+                        altitude: 2.5
+                    }, 1000);
+                    console.log(`Centering on IP: ${packet.ip}, lat: ${packet.lat}, lng: ${packet.lng}`);
+                }
+            }
+        });
+
+        li.appendChild(circle);
+        li.appendChild(checkbox);
+        li.appendChild(textSpan);
+        li.appendChild(resetButton);
+        return li;
+    }
 
     function updateConnectionsList() {
         const connectionsList = document.getElementById('connectionsList');
@@ -491,76 +530,10 @@ async function initializeGlobe(myIpCoords) {
         });
 
         sortedPoints.forEach(point => {
-            const li = document.createElement('li');
-            li.style.display = 'flex';
-            li.style.justifyContent = 'space-between';
-            li.style.alignItems = 'center';
-            li.style.padding = '5px';
-            li.style.borderBottom = '1px solid #444';
-            li.style.cursor = 'pointer';
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.className = 'pin-checkbox';
-            checkbox.checked = !!pinnedIPs[point.ip];
-            checkbox.addEventListener('change', () => {
-                const isPinned = checkbox.checked;
-                socket.emit('pin_ip', { ip: point.ip, isPinned: isPinned });
-                console.log(`IP ${point.ip} ${isPinned ? 'pinned' : 'unpinned'}`);
-            });
-
-            const textSpan = document.createElement('span');
-            textSpan.textContent = `${point.ip || 'N/A'} (${point.os || 'Unknown'}) - ${point.country || 'N/A'} - ${point.org || 'N/A'} (${point.protocol || 'N/A'}, In: ${point.incoming_count || 0}, Out: ${point.outgoing_count || 0})`;
-            textSpan.style.fontSize = '10px';
-            textSpan.style.lineHeight = '1.4';
-
-            const resetButton = document.createElement('button');
-            resetButton.textContent = 'Reset';
-            resetButton.style.marginLeft = '10px';
-            resetButton.style.padding = '5px';
-            resetButton.style.background = '#555';
-            resetButton.style.color = 'white';
-            resetButton.style.border = 'none';
-            resetButton.style.borderRadius = '3px';
-            resetButton.style.cursor = 'pointer';
-            resetButton.addEventListener('click', () => {
-                point.incoming_count = 0;
-                point.outgoing_count = 0;
-                point.packet_count = 0;
-                updateConnectionsList();
-                console.log(`Packets for IP ${point.ip} have been reset.`);
-            });
-
-            const circle = document.createElement('div');
-            circle.style.width = '10px';
-            circle.style.height = '10px';
-            circle.style.borderRadius = '50%';
-            circle.style.background = getCircleColor(point.threat_level);
-            circle.style.marginRight = '10px';
-
-            li.addEventListener('click', (e) => {
-                if (e.target !== checkbox && e.target !== resetButton) {
-                    showDataList(point);
-                    if (isValidCoord(point.lat, point.lng)) {
-                        globe.pointOfView({
-                            lat: point.lat,
-                            lng: point.lng,
-                            altitude: 2.5
-                        }, 1000);
-                        console.log(`Centering on IP: ${point.ip}, lat: ${point.lat}, lng: ${point.lng}`);
-                    }
-                }
-            });
-
-            li.appendChild(circle);
-            li.appendChild(checkbox);
-            li.appendChild(textSpan);
-            li.appendChild(resetButton);
-            fragment.appendChild(li);
+            fragment.appendChild(createPacketListItem(point, updateConnectionsList));
         });
 
-        connectionsList.innerHTML = '';
-        connectionsList.appendChild(fragment);
+        connectionsList.replaceChildren(fragment);
     }
 
     function updateInternalNetworkList() {
@@ -585,107 +558,65 @@ async function initializeGlobe(myIpCoords) {
         });
 
         sortedPackets.forEach(packet => {
-            const li = document.createElement('li');
-            li.style.display = 'flex';
-            li.style.justifyContent = 'space-between';
-            li.style.alignItems = 'center';
-            li.style.padding = '5px';
-            li.style.borderBottom = '1px solid #444';
-            li.style.cursor = 'pointer';
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.className = 'pin-checkbox';
-            checkbox.checked = !!pinnedIPs[packet.ip];
-            checkbox.addEventListener('change', () => {
-                const isPinned = checkbox.checked;
-                socket.emit('pin_ip', { ip: packet.ip, isPinned: isPinned });
-                console.log(`IP ${packet.ip} ${isPinned ? 'pinned' : 'unpinned'}`);
-            });
-
-            const textSpan = document.createElement('span');
-            textSpan.textContent = `${packet.ip || 'N/A'} (${packet.os || 'Unknown'}) - ${packet.country || 'N/A'} - ${packet.org || 'N/A'} (${packet.protocol || 'N/A'}, In: ${packet.incoming_count || 0}, Out: ${packet.outgoing_count || 0})`;
-            textSpan.style.fontSize = '10px';
-            textSpan.style.lineHeight = '1.4';
-
-            const resetButton = document.createElement('button');
-            resetButton.textContent = 'Reset';
-            resetButton.style.marginLeft = '10px';
-            resetButton.style.padding = '5px';
-            resetButton.style.background = '#555';
-            resetButton.style.color = 'white';
-            resetButton.style.border = 'none';
-            resetButton.style.borderRadius = '3px';
-            resetButton.style.cursor = 'pointer';
-            resetButton.addEventListener('click', () => {
-                packet.incoming_count = 0;
-                packet.outgoing_count = 0;
-                packet.packet_count = 0;
-                updateInternalNetworkList();
-                console.log(`Packets for IP ${packet.ip} have been reset.`);
-            });
-
-            const circle = document.createElement('div');
-            circle.style.width = '10px';
-            circle.style.height = '10px';
-            circle.style.borderRadius = '50%';
-            circle.style.background = getCircleColor(packet.threat_level);
-            circle.style.marginRight = '10px';
-
-            li.addEventListener('click', (e) => {
-                if (e.target !== checkbox && e.target !== resetButton) {
-                    showDataList(packet);
-                    if (isValidCoord(packet.lat, packet.lng)) {
-                        globe.pointOfView({
-                            lat: packet.lat,
-                            lng: packet.lng,
-                            altitude: 2.5
-                        }, 1000);
-                        console.log(`Centering on IP: ${packet.ip}, lat: ${packet.lat}, lng: ${packet.lng}`);
-                    }
-                }
-            });
-
-            li.appendChild(circle);
-            li.appendChild(checkbox);
-            li.appendChild(textSpan);
-            li.appendChild(resetButton);
-            fragment.appendChild(li);
+            fragment.appendChild(createPacketListItem(packet, updateInternalNetworkList));
         });
 
-        internalPacketsList.innerHTML = '';
-        internalPacketsList.appendChild(fragment);
+        internalPacketsList.replaceChildren(fragment);
     }
 
-    function showDataList(packet) {
-        dataList.style.display = 'block';
-        dataList.innerHTML = `
-            <div style="display: flex; align-items: center; justify-content: space-between;">
-                <h3>IP: ${escapeHTML(packet.ip) || 'N/A'}</h3>
-                <button id="closeDataList" title="Close">✖</button>
-            </div>
-            <ul>
-                <li><strong>Hostname:</strong> ${escapeHTML(packet.hostname) || 'Unknown'}</li>
-                <li><strong>OS:</strong> ${escapeHTML(packet.os) || 'Unknown'}</li>
-                <li><strong>MAC Address:</strong> ${escapeHTML(packet.mac) || 'N/A'}</li>
-                <li><strong>Vendor:</strong> ${escapeHTML(packet.vendor) || 'Unknown'}</li>
-                <li><strong>City:</strong> ${escapeHTML(packet.city) || 'N/A'}</li>
-                <li><strong>Country:</strong> ${escapeHTML(packet.country) || 'N/A'}</li>
-                <li><strong>Region:</strong> ${escapeHTML(packet.region) || 'N/A'}</li>
-                <li><strong>Organization:</strong> ${escapeHTML(packet.org) || 'N/A'}</li>
-                <li><strong>Protocol:</strong> ${escapeHTML(packet.protocol) || 'N/A'}</li>
-                <li><strong>Source Port:</strong> ${escapeHTML(packet.src_port) || 'N/A'}</li>
-                <li><strong>Dest Port:</strong> ${escapeHTML(packet.dst_port) || 'N/A'}</li>
-                <li><strong>Last Seen:</strong> ${packet.last_seen ? new Date(packet.last_seen * 1000).toLocaleString() : 'N/A'}</li>
-                <li><strong>Incoming Packets:</strong> ${packet.incoming_count || 0}</li>
-                <li><strong>Outgoing Packets:</strong> ${packet.outgoing_count || 0}</li>
-                <li><strong>Total Packets:</strong> ${packet.packet_count || 0}</li>
-                <li><strong>Threat Level:</strong> ${escapeHTML(packet.threat_level) || 'No Threat'}</li>
-            </ul>
-        `;
-        document.getElementById('closeDataList').addEventListener('click', () => {
+    function appendDetailItem(list, label, value) {
+        const item = document.createElement('li');
+        const name = document.createElement('strong');
+        name.textContent = `${label}: `;
+        item.appendChild(name);
+        item.appendChild(document.createTextNode(String(value)));
+        list.appendChild(item);
+    }
+
+    function showDataList(packet, onClose = null) {
+        const details = [
+            ['Hostname', packet.hostname || 'Unknown'],
+            ['OS', packet.os || 'Unknown'],
+            ['MAC Address', packet.mac || 'N/A'],
+            ['Vendor', packet.vendor || 'Unknown'],
+            ['City', packet.city || 'N/A'],
+            ['Country', packet.country || 'N/A'],
+            ['Region', packet.region || 'N/A'],
+            ['Organization', packet.org || 'N/A'],
+            ['Protocol', packet.protocol || 'N/A'],
+            ['Source Port', packet.src_port || 'N/A'],
+            ['Dest Port', packet.dst_port || 'N/A'],
+            ['Last Seen', packet.last_seen ? new Date(packet.last_seen * 1000).toLocaleString() : 'N/A'],
+            ['Incoming Packets', packet.incoming_count || 0],
+            ['Outgoing Packets', packet.outgoing_count || 0],
+            ['Total Packets', packet.packet_count || 0],
+            ['Threat Level', packet.threat_level || 'No Threat']
+        ];
+
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.alignItems = 'center';
+        header.style.justifyContent = 'space-between';
+
+        const title = document.createElement('h3');
+        title.textContent = `IP: ${packet.ip || 'N/A'}`;
+
+        const closeButton = document.createElement('button');
+        closeButton.id = 'closeDataList';
+        closeButton.title = 'Close';
+        closeButton.textContent = 'X';
+        closeButton.addEventListener('click', () => {
             dataList.style.display = 'none';
+            if (onClose) onClose();
         });
+
+        const list = document.createElement('ul');
+        details.forEach(([label, value]) => appendDetailItem(list, label, value));
+
+        header.appendChild(title);
+        header.appendChild(closeButton);
+        dataList.replaceChildren(header, list);
+        dataList.style.display = 'block';
     }
 
     function updateGlobeData() {
@@ -847,9 +778,7 @@ async function initializeGlobe(myIpCoords) {
                 }
             }
 
-            updateGlobeData();
-            updateConnectionsList();
-            updateInternalNetworkList();
+            refreshViews();
             console.log("IP point and arc updated:", data.ip);
         } catch (e) {
             console.error('Error parsing Socket.IO message:', e);
@@ -869,9 +798,7 @@ async function initializeGlobe(myIpCoords) {
             internalPackets[ip].packet_count = packet_count;
         }
         pinnedIPs[ip] = isPinned;
-        updateConnectionsList();
-        updateInternalNetworkList();
-        updateGlobeData();
+        refreshViews();
     });
 
     socket.on('settings_update', (data) => {
@@ -902,9 +829,7 @@ async function initializeGlobe(myIpCoords) {
             toggleTCPOnlyButton.textContent = showTCPOnly ? '📡' : '📶';
             toggleTCPOnlyButton.title = showTCPOnly ? 'Show all protocols' : 'Show TCP connections only';
         }
-        updateConnectionsList();
-        updateInternalNetworkList();
-        updateGlobeData();
+        refreshViews();
     });
 
     socket.on('packet_count_reset', (data) => {
@@ -914,9 +839,7 @@ async function initializeGlobe(myIpCoords) {
             point.incoming_count = 0;
             point.outgoing_count = 0;
             point.packet_count = 0;
-            updateConnectionsList();
-            updateInternalNetworkList();
-            updateGlobeData();
+            refreshViews();
             console.log(`Packets for IP ${ip} have been reset (synced).`);
         }
     });
@@ -935,9 +858,7 @@ async function initializeGlobe(myIpCoords) {
                 internalPackets[ip].packet_count = data[ip].packet_count;
             }
         }
-        updateConnectionsList();
-        updateInternalNetworkList();
-        updateGlobeData();
+        refreshViews();
     });
 
     setInterval(() => {
@@ -960,9 +881,7 @@ async function initializeGlobe(myIpCoords) {
             }
         }
         if (hasChanges) {
-            updateGlobeData();
-            updateConnectionsList();
-            updateInternalNetworkList();
+            refreshViews();
         }
     }, 1000);
 }
