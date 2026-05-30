@@ -1117,6 +1117,71 @@ def t_network_stats_by_device():
         assert_true(k in payload["all"], f"aggregate has {k}")
 
 
+@check("capture_sources.FritzDumpSource (pcap tailing + sub-dir discovery)")
+def t_capture_sources_fritzdump():
+    import capture_sources
+    from scapy.all import wrpcap
+    d = tempfile.mkdtemp()
+    try:
+        p = os.path.join(d, "lan_1-lan.pcap")
+        wrpcap(p, [pkt_tcp("1.2.3.4", "192.168.178.20"),
+                   pkt_udp("192.168.178.20", "8.8.8.8")])
+        src = capture_sources.FritzDumpSource(d)
+        assert_eq(len(src.poll()), 2, "reads both packets from a fresh pcap")
+        # Growing file: the next poll returns only the appended packet.
+        wrpcap(p, [pkt_tcp("1.2.3.4", "192.168.178.20"),
+                   pkt_udp("192.168.178.20", "8.8.8.8"),
+                   pkt_tcp("9.9.9.9", "192.168.178.21")])
+        assert_eq(len(src.poll()), 1, "incremental tail returns only new packets")
+        # FritzDump 'home' mode fans out into a timestamped sub-directory.
+        sub = os.path.join(d, "dump_20260530_x"); os.makedirs(sub)
+        wrpcap(os.path.join(sub, "wifi_4-133.pcap"), [pkt_tcp("5.6.7.8", "192.168.178.22")])
+        assert_eq(len(src.poll()), 1, "discovers pcaps in sub-directories")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check("fritzdump_packet_callback (device-tagged queue item)")
+def t_fritzdump_callback():
+    q = app.PacketQueue()
+    mdns = app.MDNSListener()
+    # private -> public is an 'outgoing' connection from the FRITZ!Box LAN.
+    app.fritzdump_packet_callback(pkt_tcp("192.168.178.20", "5.6.7.8", dport=443),
+                                  q, mdns, True)
+    _prio, item = q.get(timeout=2)
+    assert_eq(item.get("device_id"), app.FRITZDUMP_DEVICE_ID, "tagged with fritzdump id")
+    assert_eq(item.get("direction"), "outgoing", "private->public is outgoing")
+    assert_true(item.get("length", 0) > 0, "carries packet length for per-device stats")
+
+
+@check("capture_source setting + FritzDump device (seed / toggle / guards)")
+def t_capture_source_and_device():
+    # The setting must persist as a string, not be coerced to a bool.
+    app.save_setting("capture_source", "fritzdump")
+    assert_eq(app.load_settings().get("capture_source"), "fritzdump",
+              "capture_source persists as a string")
+    app.save_setting("capture_source", "live")
+    # Mode-code helpers are consistent.
+    assert_eq(app.CAPTURE_MODE_CODES["both"], app.CAPTURE_MODE_BOTH)
+    assert_true(app._fritzdump_capture_active(app.CAPTURE_MODE_BOTH))
+    assert_true(not app._fritzdump_capture_active(app.CAPTURE_MODE_LIVE))
+    assert_true(app._live_capture_active(app.CAPTURE_MODE_LIVE))
+    # The built-in FritzDump device is seeded as a pcap module.
+    dev = app.get_device(app.FRITZDUMP_DEVICE_ID)
+    assert_true(dev is not None and dev["kind"] == "pcap", "fritzdump device seeded as pcap")
+    client = _auth_client()
+    # Enable/disable works (the device on/off + Start/Stop path).
+    assert_eq(client.patch(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}",
+                           json={"enabled": False}).status_code, 200, "can disable")
+    assert_eq(client.patch(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}",
+                           json={"enabled": True}).status_code, 200, "can re-enable")
+    # But it is built-in: not deletable, no key to rotate.
+    assert_eq(client.delete(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}").status_code, 400,
+              "built-in pcap device not deletable")
+    assert_eq(client.post(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}/rotate-key").status_code, 404,
+              "built-in pcap device has no key to rotate")
+
+
 # =========================================================================== #
 #  Runner
 # =========================================================================== #
@@ -1188,6 +1253,9 @@ ALL_TESTS = [
     t_device_crud,
     t_api_ingest,
     t_network_stats_by_device,
+    t_capture_sources_fritzdump,
+    t_fritzdump_callback,
+    t_capture_source_and_device,
     # zuletzt: startet einen Dauer-Thread, der den ip_write_buffer leert
     t_flush_ip_writes,
 ]
