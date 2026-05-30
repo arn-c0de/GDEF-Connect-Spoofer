@@ -128,6 +128,12 @@ can see at a glance which connections belong to which machine.
   even over plain HTTP on a LAN. It carries no database and no datasets.
 - **Colour & filter**: toggle globe colouring between **threat** and **device**,
   show/hide individual devices, and scope the statistics panel to one device or all.
+  Filters and device settings persist across page reloads.
+- **Start / Stop (every device)**: each device row has a **▶ Start / ■ Stop**
+  button (its `enabled` flag). While a device is stopped, **none of its traffic is
+  processed** — not even in the background — and it disappears from the globe and
+  all lists. Starting it again immediately re-fetches and redraws its data. Even
+  the built-in `local` capture can be stopped.
 
 Devices are identified by their `DEVICE_ID`, **never by IP** — so several sensors
 behind the same home router (one shared public IP) stay distinct. The hub's own
@@ -148,19 +154,22 @@ capture (`modules/FritzDump/dumps/`). This lets a hub with no usable capture
 interface (or no `CAP_NET_RAW`) still see real traffic.
 
 - FritzDump appears in **Devices** as a built-in `module` device with its own
-  colour. Use its **▶ Start / ■ Stop** button to switch capture to/from the pcap
-  source live — no restart. Start makes FritzDump the active interface; Stop
-  returns to live capture.
+  colour. It starts **stopped**; press its **▶ Start** button to begin reading the
+  pcaps (no restart). It runs alongside live capture — stopping live and starting
+  FritzDump makes the box the effective source.
 - Point FritzDump at your box (see its README), run it (e.g. `./run.sh home`),
   then press **Start**. New packets appended to the dumps are picked up within
   ~1 s; sub-directories (FritzDump's `home` mode) are discovered automatically.
-- The reader honours the device **on/off** toggle and the capture-source switch,
-  so disabling the FritzDump device stops it being used while live capture (or
-  other devices) keep running.
+- FritzDump has no public IP, so its globe arcs anchor at the hub's own location.
 
 Override the watched directory with `FRITZDUMP_DIR` and the device's display name
-with `FRITZDUMP_DEVICE_NAME`. The active source is the `capture_source` setting
-(`live` | `fritzdump` | `both`), persisted in the DB and toggled from the UI.
+with `FRITZDUMP_DEVICE_NAME`.
+
+> **Docker:** the app runs in a container, so it only sees the pcaps if the dump
+> directory is mounted in. Bind-mount `modules/FritzDump/dumps` into the container
+> at the same path (or set `FRITZDUMP_DIR` to the mounted path). If FritzDump
+> capture works via `run.sh` on the host but the dashboard shows nothing, a
+> missing mount is the usual cause.
 
 ## Security & Privacy
 

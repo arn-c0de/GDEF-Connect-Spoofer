@@ -1154,32 +1154,75 @@ def t_fritzdump_callback():
     assert_true(item.get("length", 0) > 0, "carries packet length for per-device stats")
 
 
-@check("capture_source setting + FritzDump device (seed / toggle / guards)")
-def t_capture_source_and_device():
-    # The setting must persist as a string, not be coerced to a bool.
-    app.save_setting("capture_source", "fritzdump")
-    assert_eq(app.load_settings().get("capture_source"), "fritzdump",
-              "capture_source persists as a string")
-    app.save_setting("capture_source", "live")
-    # Mode-code helpers are consistent.
-    assert_eq(app.CAPTURE_MODE_CODES["both"], app.CAPTURE_MODE_BOTH)
-    assert_true(app._fritzdump_capture_active(app.CAPTURE_MODE_BOTH))
-    assert_true(not app._fritzdump_capture_active(app.CAPTURE_MODE_LIVE))
-    assert_true(app._live_capture_active(app.CAPTURE_MODE_LIVE))
-    # The built-in FritzDump device is seeded as a pcap module.
-    dev = app.get_device(app.FRITZDUMP_DEVICE_ID)
+@check("per-device Start/Stop (enabled flag, disabled set, guards)")
+def t_device_startstop():
+    fid = app.FRITZDUMP_DEVICE_ID
+    # The built-in FritzDump device is seeded as a stopped pcap module.
+    dev = app.get_device(fid)
     assert_true(dev is not None and dev["kind"] == "pcap", "fritzdump device seeded as pcap")
+    app.refresh_disabled_devices()
+    assert_true(app.device_is_disabled(fid), "fritzdump starts stopped (disabled)")
     client = _auth_client()
-    # Enable/disable works (the device on/off + Start/Stop path).
-    assert_eq(client.patch(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}",
-                           json={"enabled": False}).status_code, 200, "can disable")
-    assert_eq(client.patch(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}",
-                           json={"enabled": True}).status_code, 200, "can re-enable")
-    # But it is built-in: not deletable, no key to rotate.
-    assert_eq(client.delete(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}").status_code, 400,
-              "built-in pcap device not deletable")
-    assert_eq(client.post(f"/api/devices/{app.FRITZDUMP_DEVICE_ID}/rotate-key").status_code, 404,
-              "built-in pcap device has no key to rotate")
+    # Start it -> leaves the disabled set; Stop -> rejoins it.
+    assert_eq(client.patch(f"/api/devices/{fid}", json={"enabled": True}).status_code, 200, "can start")
+    assert_true(not app.device_is_disabled(fid), "started device not in disabled set")
+    assert_eq(client.patch(f"/api/devices/{fid}", json={"enabled": False}).status_code, 200, "can stop")
+    assert_true(app.device_is_disabled(fid), "stopped device in disabled set")
+    # Even the local device can be stopped now (Start/Stop on every device).
+    assert_eq(client.patch(f"/api/devices/{app.LOCAL_DEVICE_ID}", json={"enabled": False}).status_code, 200,
+              "local device can be stopped")
+    assert_true(app.device_is_disabled(app.LOCAL_DEVICE_ID), "stopped local in disabled set")
+    assert_eq(client.patch(f"/api/devices/{app.LOCAL_DEVICE_ID}", json={"enabled": True}).status_code, 200,
+              "local device can be restarted")
+    # Built-in pcap device: not deletable, no key to rotate.
+    assert_eq(client.delete(f"/api/devices/{fid}").status_code, 400, "built-in pcap not deletable")
+    assert_eq(client.post(f"/api/devices/{fid}/rotate-key").status_code, 404, "built-in pcap has no key")
+
+
+@check("FritzDump end-to-end: pcap -> reader -> process_packets -> buffered (device-tagged)")
+def t_fritzdump_end_to_end():
+    import types as _types
+    from scapy.all import wrpcap
+    fid = app.FRITZDUMP_DEVICE_ID
+    # Start the FritzDump device so its traffic is not dropped.
+    with app.locked(app.db_lock):
+        with app.db.get_connection() as conn:
+            conn.cursor().execute("UPDATE devices SET enabled = TRUE WHERE device_id = %s", (fid,))
+            conn.commit()
+    app.refresh_disabled_devices()
+    d = tempfile.mkdtemp()
+    try:
+        # A real pcap with one LAN->Internet flow (public dst = TEST-NET-3).
+        wrpcap(os.path.join(d, "lan_1-lan.pcap"),
+               [pkt_tcp("192.168.178.40", "8.8.8.8", dport=443)])
+        src = app.FritzDumpSource(d)
+        q = app.PacketQueue()
+        mdns = app.MDNSListener()
+        for pkt in src.poll():
+            app.fritzdump_packet_callback(pkt, q, mdns, True)
+        with app.locked(app.ip_write_buffer_lock):
+            app.ip_write_buffer.clear()
+        # Drive the REAL dispatcher (daemon thread) to drain the queue.
+        active = _types.SimpleNamespace(value=False)
+        threading.Thread(target=app.process_packets,
+                         args=(q, FAKE_GEO, "192.168.178.1", "203.0.113.1", active, mdns),
+                         daemon=True).start()
+        deadline = time.time() + 3
+        ok = False
+        while time.time() < deadline:
+            with app.locked(app.ip_write_buffer_lock):
+                ok = (fid, "8.8.8.8") in app.ip_write_buffer
+            if ok:
+                break
+            time.sleep(0.05)
+        assert_true(ok, "external IP from the pcap is buffered under the FritzDump device")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        with app.locked(app.db_lock):
+            with app.db.get_connection() as conn:
+                conn.cursor().execute("UPDATE devices SET enabled = FALSE WHERE device_id = %s", (fid,))
+                conn.commit()
+        app.refresh_disabled_devices()
 
 
 # =========================================================================== #
@@ -1255,7 +1298,8 @@ ALL_TESTS = [
     t_network_stats_by_device,
     t_capture_sources_fritzdump,
     t_fritzdump_callback,
-    t_capture_source_and_device,
+    t_device_startstop,
+    t_fritzdump_end_to_end,
     # zuletzt: startet einen Dauer-Thread, der den ip_write_buffer leert
     t_flush_ip_writes,
 ]
