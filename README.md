@@ -154,22 +154,28 @@ capture (`modules/FritzDump/dumps/`). This lets a hub with no usable capture
 interface (or no `CAP_NET_RAW`) still see real traffic.
 
 - FritzDump appears in **Devices** as a built-in `module` device with its own
-  colour. It starts **stopped**; press its **▶ Start** button to begin reading the
-  pcaps (no restart). It runs alongside live capture — stopping live and starting
-  FritzDump makes the box the effective source.
-- Point FritzDump at your box (see its README), run it (e.g. `./run.sh home`),
-  then press **Start**. New packets appended to the dumps are picked up within
-  ~1 s; sub-directories (FritzDump's `home` mode) are discovered automatically.
-- FritzDump has no public IP, so its globe arcs anchor at the hub's own location.
+  colour. It starts **stopped**; press its **▶ Start** button.
+- **Start launches the capture worker for you.** Pressing Start runs the FritzDump
+  worker (`modules/FritzDump/run.sh`, which logs into the box and writes the
+  pcaps) as a managed child process, then tails the resulting pcaps live. **Stop**
+  kills that worker. You only need to configure `modules/FritzDump/.env` once
+  (FRITZ!Box host + credentials — see the module's README).
+- New packets are picked up within ~1 s; the `home` mode's per-interface
+  sub-directories are discovered automatically. FritzDump has no public IP, so its
+  globe arcs anchor at the hub's own location.
+- If the worker exits immediately (usually a missing/wrong `.env`), the hub backs
+  off and logs it instead of respawn-looping.
 
-Override the watched directory with `FRITZDUMP_DIR` and the device's display name
-with `FRITZDUMP_DEVICE_NAME`.
+Tune it with `FRITZDUMP_DIR` (watched dir), `FRITZDUMP_DEVICE_NAME`,
+`FRITZDUMP_WORKER_MODE` (`home` by default), or replace the launch command
+entirely with `FRITZDUMP_WORKER_CMD`. Set `FRITZDUMP_AUTOSTART=0` if you prefer to
+run FritzDump yourself and have the hub only **read** the pcaps.
 
-> **Docker:** the app runs in a container, so it only sees the pcaps if the dump
-> directory is mounted in. Bind-mount `modules/FritzDump/dumps` into the container
-> at the same path (or set `FRITZDUMP_DIR` to the mounted path). If FritzDump
-> capture works via `run.sh` on the host but the dashboard shows nothing, a
-> missing mount is the usual cause.
+> **Docker:** the app runs in a container, so for Start-launches-the-worker the
+> container needs `modules/FritzDump` (with its `.env`), `bash`, and network
+> reach to the box — bind-mount `modules/FritzDump` in at the same path. If you'd
+> rather run FritzDump on the host, set `FRITZDUMP_AUTOSTART=0` and bind-mount the
+> `dumps` directory into the container (or point `FRITZDUMP_DIR` at the mount).
 
 ## Security & Privacy
 
@@ -203,6 +209,9 @@ ConnectSpoofer is built with a **Security-First** approach:
 | `FRITZDUMP_DIR` | `modules/FritzDump/dumps` | Directory the FritzDump pcap source tails |
 | `FRITZDUMP_DEVICE_NAME` | `FritzBox` | Display name of the built-in FritzDump module device |
 | `FRITZDUMP_POLL_INTERVAL` | `1.0` | Seconds between FritzDump pcap polls when idle |
+| `FRITZDUMP_AUTOSTART` | `1` | On Start, also launch the FritzDump worker (`0` = only read pcaps) |
+| `FRITZDUMP_WORKER_MODE` | `home` | `run.sh` mode used when autostarting the worker |
+| `FRITZDUMP_WORKER_CMD` | (run.sh) | Override the entire FritzDump worker launch command |
 
 Sensor-side configuration (`CENTRAL_URL`, `DEVICE_ID`, `DEVICE_KEY`,
 `NETWORK_INTERFACE`, and tuning knobs) is documented in

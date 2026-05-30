@@ -23,6 +23,9 @@ from multiprocessing import Process, Manager, Queue, Value
 from queue import Empty, Full, Queue as ThreadQueue
 import os
 import json
+import shlex
+import signal
+import subprocess
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import urlparse, urljoin
@@ -240,6 +243,26 @@ _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 FRITZDUMP_DIR = os.environ.get('FRITZDUMP_DIR') or os.path.join(
     _APP_DIR, 'modules', 'FritzDump', 'dumps')
 FRITZDUMP_POLL_INTERVAL = float(os.environ.get('FRITZDUMP_POLL_INTERVAL', '1.0'))
+
+# Pressing Start should also LAUNCH the FritzDump capture worker (the process that
+# logs into the box and writes the pcaps), not just tail an already-running one.
+# FRITZDUMP_WORKER_DIR holds modules/FritzDump; the worker is its run.sh. Override
+# the whole command with FRITZDUMP_WORKER_CMD (shell-split). Set FRITZDUMP_AUTOSTART=0
+# if you start FritzDump yourself and only want the hub to read the pcaps.
+FRITZDUMP_WORKER_DIR = os.environ.get('FRITZDUMP_WORKER_DIR') or os.path.join(
+    _APP_DIR, 'modules', 'FritzDump')
+FRITZDUMP_WORKER_MODE = os.environ.get('FRITZDUMP_WORKER_MODE', 'home')
+_fdcmd = os.environ.get('FRITZDUMP_WORKER_CMD', '').strip()
+if _fdcmd:
+    FRITZDUMP_WORKER_CMD = shlex.split(_fdcmd)
+else:
+    _runsh = os.path.join(FRITZDUMP_WORKER_DIR, 'run.sh')
+    FRITZDUMP_WORKER_CMD = ['bash', _runsh, FRITZDUMP_WORKER_MODE] if os.path.isfile(_runsh) else None
+FRITZDUMP_AUTOSTART = os.environ.get('FRITZDUMP_AUTOSTART', '1') not in ('0', 'false', 'False', 'no')
+# If the worker exits within this many seconds it is treated as a failed start
+# (e.g. missing .env / credentials) and we back off instead of respawn-storming.
+FRITZDUMP_WORKER_MIN_UPTIME = 8.0
+FRITZDUMP_WORKER_BACKOFF = 30.0
 
 # --- Per-device Start/Stop ---------------------------------------------------
 # A device's `enabled` flag is its Start/Stop. While a device is stopped, NONE of
@@ -2662,22 +2685,88 @@ def internal_scanner_process(my_geo_data, my_local_ip, my_public_ip, queue, is_i
             time.sleep(5)
 
 
+# Handle to the running FritzDump capture worker (a child process tree). Managed
+# only by the fritzdump_reader thread; exposed for shutdown cleanup.
+_fritzdump_worker = None
+
+
+def _spawn_fritzdump_worker():
+    """Launch the FritzDump capture worker (run.sh) as its own process group so we
+    can later kill the whole tree (run.sh + the per-interface fritzdump.py)."""
+    if not FRITZDUMP_WORKER_CMD:
+        return None
+    try:
+        proc = subprocess.Popen(
+            FRITZDUMP_WORKER_CMD, cwd=FRITZDUMP_WORKER_DIR,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            start_new_session=True)
+        logger.info(f"Started FritzDump worker (pid {proc.pid}): {' '.join(FRITZDUMP_WORKER_CMD)}")
+        return proc
+    except Exception as e:
+        logger.error(f"Could not start FritzDump worker: {e}")
+        return None
+
+
+def _terminate_fritzdump_worker(proc):
+    if proc is None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        logger.info("Stopped FritzDump worker")
+    except ProcessLookupError:
+        pass
+    except Exception as e:
+        logger.error(f"Error stopping FritzDump worker: {e}")
+
+
 def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
-    """Tail the FritzDump pcap directory and feed packets into the same queue as
-    live capture, tagged with the FritzDump device id. Runs only while the
-    FritzDump device is started (its `enabled` flag), so the dashboard Start/Stop
-    turns it on/off with no restart."""
+    """Drive the FritzDump module while its device is started (its `enabled` flag):
+    LAUNCH the capture worker (so pressing Start actually begins capturing), then
+    tail the produced pcaps into the same queue as live capture, tagged with the
+    FritzDump device id. On Stop, the worker is killed and reading pauses."""
+    global _fritzdump_worker
     source = FritzDumpSource(FRITZDUMP_DIR)
     logged_missing = False
+    worker_started_at = 0.0
+    backoff_until = 0.0
     while True:
         try:
             if device_is_disabled(FRITZDUMP_DEVICE_ID):
+                if _fritzdump_worker is not None:
+                    _terminate_fritzdump_worker(_fritzdump_worker)
+                    _fritzdump_worker = None
+                backoff_until = 0.0
                 time.sleep(FRITZDUMP_POLL_INTERVAL)
                 continue
+
+            # Started: own the capture worker's lifecycle (unless autostart is off,
+            # i.e. the user runs FritzDump themselves and we only read the pcaps).
+            if FRITZDUMP_AUTOSTART and FRITZDUMP_WORKER_CMD:
+                if _fritzdump_worker is None:
+                    if time.time() >= backoff_until:
+                        _fritzdump_worker = _spawn_fritzdump_worker()
+                        worker_started_at = time.time()
+                elif _fritzdump_worker.poll() is not None:
+                    rc = _fritzdump_worker.returncode
+                    uptime = time.time() - worker_started_at
+                    _fritzdump_worker = None
+                    if uptime < FRITZDUMP_WORKER_MIN_UPTIME:
+                        backoff_until = time.time() + FRITZDUMP_WORKER_BACKOFF
+                        logger.error(
+                            f"FritzDump worker exited after {uptime:.1f}s (rc={rc}); "
+                            f"check modules/FritzDump/.env credentials. "
+                            f"Retrying in {FRITZDUMP_WORKER_BACKOFF:.0f}s.")
+                    else:
+                        logger.warning(f"FritzDump worker exited (rc={rc}); restarting")
+
             if not os.path.isdir(FRITZDUMP_DIR):
                 if not logged_missing:
-                    logger.warning(f"FritzDump capture selected but dump directory "
-                                   f"not found: {FRITZDUMP_DIR}")
+                    logger.warning(f"FritzDump started but dump directory not found yet: "
+                                   f"{FRITZDUMP_DIR}")
                     logged_missing = True
                 time.sleep(FRITZDUMP_POLL_INTERVAL)
                 continue
@@ -2840,6 +2929,7 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
 
 def cleanup(internal_process, zeroconf):
     logger.info("Shutting down processes...")
+    _terminate_fritzdump_worker(_fritzdump_worker)
     internal_process.terminate()
     internal_process.join()
     if zeroconf:
