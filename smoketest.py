@@ -1038,6 +1038,85 @@ def t_select_interface_helpers():
         assert_true(callable(si.get_friendly_interface_name))
 
 
+def _auth_client():
+    """A logged-in Flask test client (CSRF seeded for the login POST)."""
+    client = app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["_csrf_token"] = "csrf123"
+    client.post("/login", data={"_csrf_token": "csrf123", "token": app.ACCESS_TOKEN})
+    return client
+
+
+def _ingest(client, device_id, key, seq, ip="9.9.9.9", out_delta=5):
+    import device_crypto
+    batch = {"schema": 1, "device_id": device_id, "seq": seq, "sent_at": time.time(),
+             "events": [{"ip": ip, "direction": "outgoing", "protocol": "TCP",
+                         "src_port": 51000, "dst_port": 443,
+                         "in_delta": 0, "out_delta": out_delta, "bytes": 4000, "ttl": 117}]}
+    token = device_crypto.encrypt_batch(key, batch)
+    return client.post("/api/ingest", data=token, headers={"X-Device-Id": device_id},
+                       content_type="application/octet-stream")
+
+
+@check("device CRUD (create / list / patch / delete)")
+def t_device_crud():
+    client = _auth_client()
+    r = client.post("/api/devices", json={"name": "sensorA", "color": "#4FC3F7"})
+    assert_eq(r.status_code, 201, "create returns 201 + key")
+    dev = r.get_json()
+    did = dev["device_id"]
+    assert_true(dev.get("key"), "create returns a one-time key")
+    assert_true(app.load_device_key(did) is not None, "key persisted on disk")
+    # list contains local + the new device
+    devs = client.get("/api/devices").get_json()["devices"]
+    names = {d["name"] for d in devs}
+    assert_true("sensorA" in names and any(d["kind"] == "local" for d in devs), names)
+    # rename + recolor
+    assert_eq(client.patch(f"/api/devices/{did}", json={"name": "sensorB"}).status_code, 200)
+    devs = client.get("/api/devices").get_json()["devices"]
+    assert_true("sensorB" in {d["name"] for d in devs}, "rename took effect")
+    # delete removes the row and the key
+    assert_eq(client.delete(f"/api/devices/{did}").status_code, 200)
+    assert_true(app.load_device_key(did) is None, "key removed on delete")
+
+
+@check("/api/ingest (valid / replay / bad-key / disabled)")
+def t_api_ingest():
+    client = _auth_client()
+    did = client.post("/api/devices", json={"name": "ingestDev"}).get_json()["device_id"]
+    key = app.load_device_key(did)
+    with app.locked(app.ip_write_buffer_lock):
+        app.ip_write_buffer.clear()
+    # valid batch accepted and buffered under (device, ip)
+    r = _ingest(client, did, key, 1)
+    assert_eq(r.status_code, 200, "valid batch accepted")
+    assert_eq(r.get_json()["accepted"], 1)
+    with app.locked(app.ip_write_buffer_lock):
+        assert_true((did, "9.9.9.9") in app.ip_write_buffer, "buffered per (device, ip)")
+    # replayed / non-advancing sequence rejected
+    assert_eq(_ingest(client, did, key, 1).status_code, 409, "stale seq rejected")
+    # wrong key rejected
+    import device_crypto
+    assert_eq(_ingest(client, did, device_crypto.generate_key(), 2).status_code, 401, "bad key rejected")
+    # unknown device rejected
+    assert_eq(_ingest(client, "nosuchdevice", key, 2).status_code, 401, "unknown device rejected")
+    # disabled device rejected
+    assert_eq(client.patch(f"/api/devices/{did}", json={"enabled": False}).status_code, 200)
+    assert_eq(_ingest(client, did, key, 2).status_code, 403, "disabled device rejected")
+    client.delete(f"/api/devices/{did}")
+
+
+@check("network_stats by_device payload")
+def t_network_stats_by_device():
+    payload = app._device_stats_payload(app.SharedStats())
+    assert_true("tcp_packets" in payload, "keeps legacy flat keys")
+    assert_true(isinstance(payload.get("by_device"), dict), "has by_device map")
+    assert_true(app.LOCAL_DEVICE_ID in payload["by_device"], "local device present")
+    assert_true(isinstance(payload.get("all"), dict), "has aggregate 'all'")
+    for k in ("tcp", "udp", "icmp", "bytes", "active"):
+        assert_true(k in payload["all"], f"aggregate has {k}")
+
+
 # =========================================================================== #
 #  Runner
 # =========================================================================== #
@@ -1106,6 +1185,9 @@ ALL_TESTS = [
     t_start_sniffing_present,
     t_internal_scanner_present,
     t_select_interface_helpers,
+    t_device_crud,
+    t_api_ingest,
+    t_network_stats_by_device,
     # zuletzt: startet einen Dauer-Thread, der den ip_write_buffer leert
     t_flush_ip_writes,
 ]

@@ -19,6 +19,7 @@ It is designed as a standalone module that can be run independently today and in
 - **3D geo-visualization**: Displays external connections on an interactive globe.
 - **Local network discovery**: Detects local devices and mDNS activity.
 - **Threat enrichment**: Uses FireHOL-style blocklist data for basic reputation context.
+- **Multi-device aggregation**: Acts as a hub for remote sensors — each a named, coloured origin — with encrypted push ingestion and per-device statistics.
 - **Operational controls**: Supports TCP/UDP filters, local/external toggles, pinned IPs, and live statistics.
 - **Suite-ready structure**: Keeps runtime configuration, datasets, scripts, and web assets separated for modular GDEF Suite integration.
 
@@ -112,6 +113,32 @@ To run the app outside Docker against your own PostgreSQL, configure the connect
 
 The app waits for PostgreSQL to accept connections on startup and creates its schema automatically (`init_db`).
 
+## Multi-Device Monitoring (Sensors)
+
+ConnectSpoofer can act as a **central hub** that aggregates traffic from several
+capture **devices** at once — your local host plus any number of remote
+**sensors**. Each device is its own named, coloured origin on the globe, so you
+can see at a glance which connections belong to which machine.
+
+- **Register a device**: in the dashboard sidebar, **Devices → + Add device**.
+  The hub issues a `DEVICE_ID` and a one-time `DEVICE_KEY` (shown once).
+- **Install the sensor** on the target server: see [`sensor/README.md`](sensor/README.md).
+  The sensor captures locally and pushes connections to the hub, **gzip-compressed
+  and Fernet-encrypted** with the device key — confidential and replay-protected
+  even over plain HTTP on a LAN. It carries no database and no datasets.
+- **Colour & filter**: toggle globe colouring between **threat** and **device**,
+  show/hide individual devices, and scope the statistics panel to one device or all.
+
+Devices are identified by their `DEVICE_ID`, **never by IP** — so several sensors
+behind the same home router (one shared public IP) stay distinct. The hub's own
+capture is the built-in `local` device; its display name comes from
+`HUB_DEVICE_NAME` (defaults to the hostname).
+
+The hub exposes `POST /api/ingest` for sensors (per-device key auth, rate-limited,
+size-capped) and a session-authenticated device API (`/api/devices…`). Ingestion
+limits are tunable via `INGEST_MAX_AGE`, `INGEST_MAX_EVENTS`, `INGEST_MAX_BODY`
+and `INGEST_RATE_LIMIT`.
+
 ## Security & Privacy
 
 ConnectSpoofer is built with a **Security-First** approach:
@@ -136,6 +163,8 @@ ConnectSpoofer is built with a **Security-First** approach:
 | `ALLOW_INSECURE_GEO_API`| `0` | Geo lookups are HTTPS-only by default; set to `1` to allow the unencrypted `http://ip-api.com` fallback |
 | `TRUST_PROXY` | off | Set to `1` ONLY when behind a trusted reverse proxy that overwrites `X-Forwarded-For`; lets per-IP limits see the real client IP |
 | `TRUST_PROXY_HOPS` | `1` | Exact number of trusted proxies in front of the app (only with `TRUST_PROXY=1`) |
+| `HUB_DEVICE_NAME` | hostname | Display name for the hub's built-in `local` capture device |
+| `INGEST_RATE_LIMIT` | `20` | Max sensor ingest batches per second per device |
 
 ## Python Workflow
 
@@ -163,7 +192,10 @@ Application state (live IPs, pinned IPs, settings, MAC cache, threat list) is st
 
 ```text
 ConnectSpoofer/
-├── app.py                           # Flask server, packet processing, Socket.IO events
+├── app.py                           # Flask hub: capture, ingestion, devices, Socket.IO
+├── capture_core.py                  # Shared packet classification (hub + sensor)
+├── device_crypto.py                 # Shared sensor↔hub encrypted batch framing (Fernet)
+├── sensor/                          # Standalone remote sensor worker (see sensor/README.md)
 ├── db.py                            # PostgreSQL connection-pool layer (fork-aware)
 ├── Dockerfile                       # App/sniffer container image
 ├── docker-compose.yml              # App + PostgreSQL stack
