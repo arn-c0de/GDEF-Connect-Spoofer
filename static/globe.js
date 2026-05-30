@@ -68,6 +68,16 @@ function getCircleColor(threat_level, org) {
     return 'white';
 }
 
+function escapeHTML(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 async function initializeGlobe(myIpCoords) {
     await loadTrustedOrgs();
 
@@ -155,7 +165,7 @@ async function initializeGlobe(myIpCoords) {
         .pointColor(point => point.ip === 'Your IP' ? '#FFFF00' : getCircleColor(point.threat_level))
         .pointLabel(point => `
             <div>
-                ${point.ip || 'N/A'} - ${point.org || 'N/A'}
+                ${escapeHTML(point.ip) || 'N/A'} - ${escapeHTML(point.org) || 'N/A'}
             </div>
         `)
         .pointLat('lat')
@@ -180,26 +190,26 @@ async function initializeGlobe(myIpCoords) {
             dataList.style.display = 'block';
             dataList.innerHTML = `
                 <div style="display: flex; align-items: center;">
-                    <h3>IP: ${point.ip || 'N/A'}</h3>
+                    <h3>IP: ${escapeHTML(point.ip) || 'N/A'}</h3>
                     <button id="closeDataList" style="margin-left: 10px; background: #555; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">✖</button>
                 </div>
                 <ul>
-                    <li><strong>Hostname:</strong> ${point.hostname || 'Unknown'}</li>
-                    <li><strong>OS:</strong> ${point.os || 'Unknown'}</li>
-                    <li><strong>MAC Address:</strong> ${point.mac || 'N/A'}</li>
-                    <li><strong>Vendor:</strong> ${point.vendor || 'Unknown'}</li>
-                    <li><strong>City:</strong> ${point.city || 'N/A'}</li>
-                    <li><strong>Country:</strong> ${point.country || 'N/A'}</li>
-                    <li><strong>Region:</strong> ${point.region || 'N/A'}</li>
-                    <li><strong>Organization:</strong> ${point.org || 'N/A'}</li>
-                    <li><strong>Protocol:</strong> ${point.protocol || 'N/A'}</li>
-                    <li><strong>Source Port:</strong> ${point.src_port || 'N/A'}</li>
-                    <li><strong>Dest Port:</strong> ${point.dst_port || 'N/A'}</li>
+                    <li><strong>Hostname:</strong> ${escapeHTML(point.hostname) || 'Unknown'}</li>
+                    <li><strong>OS:</strong> ${escapeHTML(point.os) || 'Unknown'}</li>
+                    <li><strong>MAC Address:</strong> ${escapeHTML(point.mac) || 'N/A'}</li>
+                    <li><strong>Vendor:</strong> ${escapeHTML(point.vendor) || 'Unknown'}</li>
+                    <li><strong>City:</strong> ${escapeHTML(point.city) || 'N/A'}</li>
+                    <li><strong>Country:</strong> ${escapeHTML(point.country) || 'N/A'}</li>
+                    <li><strong>Region:</strong> ${escapeHTML(point.region) || 'N/A'}</li>
+                    <li><strong>Organization:</strong> ${escapeHTML(point.org) || 'N/A'}</li>
+                    <li><strong>Protocol:</strong> ${escapeHTML(point.protocol) || 'N/A'}</li>
+                    <li><strong>Source Port:</strong> ${escapeHTML(point.src_port) || 'N/A'}</li>
+                    <li><strong>Dest Port:</strong> ${escapeHTML(point.dst_port) || 'N/A'}</li>
                     <li><strong>Last Seen:</strong> ${point.last_seen ? new Date(point.last_seen * 1000).toLocaleString() : 'N/A'}</li>
                     <li><strong>Incoming Packets:</strong> ${point.incoming_count || 0}</li>
                     <li><strong>Outgoing Packets:</strong> ${point.outgoing_count || 0}</li>
                     <li><strong>Total Packets:</strong> ${point.packet_count || 0}</li>
-                    <li><strong>Threat Level:</strong> ${point.threat_level || 'No Threat'}</li>
+                    <li><strong>Threat Level:</strong> ${escapeHTML(point.threat_level) || 'No Threat'}</li>
                 </ul>
             `;
             document.getElementById('closeDataList').addEventListener('click', () => {
@@ -500,10 +510,7 @@ async function initializeGlobe(myIpCoords) {
             });
 
             const textSpan = document.createElement('span');
-            textSpan.innerHTML = `
-                ${point.ip || 'N/A'} (${point.os || 'Unknown'}) - ${point.country || 'N/A'} - ${point.org || 'N/A'}
-                (${point.protocol || 'N/A'}, In: ${point.incoming_count || 0}, Out: ${point.outgoing_count || 0})
-            `;
+            textSpan.textContent = `${point.ip || 'N/A'} (${point.os || 'Unknown'}) - ${point.country || 'N/A'} - ${point.org || 'N/A'} (${point.protocol || 'N/A'}, In: ${point.incoming_count || 0}, Out: ${point.outgoing_count || 0})`;
             textSpan.style.fontSize = '10px';
             textSpan.style.lineHeight = '1.4';
 
@@ -597,10 +604,7 @@ async function initializeGlobe(myIpCoords) {
             });
 
             const textSpan = document.createElement('span');
-            textSpan.innerHTML = `
-                ${packet.ip || 'N/A'} (${packet.os || 'Unknown'}) - ${packet.country || 'N/A'} - ${packet.org || 'N/A'}
-                (${packet.protocol || 'N/A'}, In: ${packet.incoming_count || 0}, Out: ${packet.outgoing_count || 0})
-            `;
+            textSpan.textContent = `${packet.ip || 'N/A'} (${packet.os || 'Unknown'}) - ${packet.country || 'N/A'} - ${packet.org || 'N/A'} (${packet.protocol || 'N/A'}, In: ${packet.incoming_count || 0}, Out: ${packet.outgoing_count || 0})`;
             textSpan.style.fontSize = '10px';
             textSpan.style.lineHeight = '1.4';
 
@@ -657,26 +661,26 @@ async function initializeGlobe(myIpCoords) {
         dataList.style.display = 'block';
         dataList.innerHTML = `
             <div style="display: flex; align-items: center; justify-content: space-between;">
-                <h3>IP: ${packet.ip || 'N/A'}</h3>
+                <h3>IP: ${escapeHTML(packet.ip) || 'N/A'}</h3>
                 <button id="closeDataList" title="Close">✖</button>
             </div>
             <ul>
-                <li><strong>Hostname:</strong> ${packet.hostname || 'Unknown'}</li>
-                <li><strong>OS:</strong> ${packet.os || 'Unknown'}</li>
-                <li><strong>MAC Address:</strong> ${packet.mac || 'N/A'}</li>
-                <li><strong>Vendor:</strong> ${packet.vendor || 'Unknown'}</li>
-                <li><strong>City:</strong> ${packet.city || 'N/A'}</li>
-                <li><strong>Country:</strong> ${packet.country || 'N/A'}</li>
-                <li><strong>Region:</strong> ${packet.region || 'N/A'}</li>
-                <li><strong>Organization:</strong> ${packet.org || 'N/A'}</li>
-                <li><strong>Protocol:</strong> ${packet.protocol || 'N/A'}</li>
-                <li><strong>Source Port:</strong> ${packet.src_port || 'N/A'}</li>
-                <li><strong>Dest Port:</strong> ${packet.dst_port || 'N/A'}</li>
+                <li><strong>Hostname:</strong> ${escapeHTML(packet.hostname) || 'Unknown'}</li>
+                <li><strong>OS:</strong> ${escapeHTML(packet.os) || 'Unknown'}</li>
+                <li><strong>MAC Address:</strong> ${escapeHTML(packet.mac) || 'N/A'}</li>
+                <li><strong>Vendor:</strong> ${escapeHTML(packet.vendor) || 'Unknown'}</li>
+                <li><strong>City:</strong> ${escapeHTML(packet.city) || 'N/A'}</li>
+                <li><strong>Country:</strong> ${escapeHTML(packet.country) || 'N/A'}</li>
+                <li><strong>Region:</strong> ${escapeHTML(packet.region) || 'N/A'}</li>
+                <li><strong>Organization:</strong> ${escapeHTML(packet.org) || 'N/A'}</li>
+                <li><strong>Protocol:</strong> ${escapeHTML(packet.protocol) || 'N/A'}</li>
+                <li><strong>Source Port:</strong> ${escapeHTML(packet.src_port) || 'N/A'}</li>
+                <li><strong>Dest Port:</strong> ${escapeHTML(packet.dst_port) || 'N/A'}</li>
                 <li><strong>Last Seen:</strong> ${packet.last_seen ? new Date(packet.last_seen * 1000).toLocaleString() : 'N/A'}</li>
                 <li><strong>Incoming Packets:</strong> ${packet.incoming_count || 0}</li>
                 <li><strong>Outgoing Packets:</strong> ${packet.outgoing_count || 0}</li>
                 <li><strong>Total Packets:</strong> ${packet.packet_count || 0}</li>
-                <li><strong>Threat Level:</strong> ${packet.threat_level || 'No Threat'}</li>
+                <li><strong>Threat Level:</strong> ${escapeHTML(packet.threat_level) || 'No Threat'}</li>
             </ul>
         `;
         document.getElementById('closeDataList').addEventListener('click', () => {

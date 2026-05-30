@@ -1,8 +1,12 @@
 // static/init-globe.js
 document.addEventListener('DOMContentLoaded', () => {
-    if (window.coords) {
-        initializeGlobe(window.coords);
+    const body = document.body;
+    const lat = parseFloat(body.dataset.lat);
+    const lng = parseFloat(body.dataset.lng);
+
+    if (!isNaN(lat) && !isNaN(lng)) {
+        initializeGlobe({ lat, lng });
     } else {
-        console.error('window.coords is not defined');
+        console.error('Coordinates not found on document.body.dataset');
     }
 });

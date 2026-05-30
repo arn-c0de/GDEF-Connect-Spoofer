@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - OrbDef-L1nk</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background-color: #111;
+            color: #eee;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .login-container {
+            background: #222;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            width: 300px;
+            text-align: center;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #00ff00; }
+        input[type="password"] {
+            width: 100%;
+            padding: 0.8rem;
+            margin-bottom: 1rem;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #333;
+            color: #fff;
+            box-sizing: border-box;
+        }
+        button {
+            width: 100%;
+            padding: 0.8rem;
+            border: none;
+            border-radius: 4px;
+            background: #008000;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        button:hover { background: #00a000; }
+        .error { color: #ff0000; margin-bottom: 1rem; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>OrbDef-L1nk</h1>
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% endif %}
+        <form method="POST" action="{{ url_for('login') }}">
+            <input type="password" name="token" placeholder="Access Token" required autofocus>
+            <button type="submit">Login</button>
+        </form>
+    </div>
+</body>
+</html>
