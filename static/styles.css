@@ -1,3 +1,7 @@
+/* ============================================================
+   Reset + variables
+   ============================================================ */
+
 html, body {
     margin: 0;
     padding: 0;
@@ -5,572 +9,734 @@ html, body {
     overflow: hidden;
 }
 
-/* Einheitliches Farbschema */
 :root {
-    --primary-bg: #222;
-    --secondary-bg: #333;
-    --hover-bg: #444;
-    --active-bg: #555;
-    --text-color: white;
-    --highlight-color: rgba(0, 128, 0, 0.8);
+    --bg-primary:   #1a1a1a;
+    --bg-secondary: #252525;
+    --bg-hover:     #333;
+    --bg-active:    #444;
+    --border:       rgba(255, 255, 255, 0.08);
+    --text:         #e0e0e0;
+    --text-dim:     #888;
+    --accent:       #1e3c72;
+    --accent-light: #2a5298;
+    --green:        rgba(0, 128, 0, 0.85);
 }
 
-/* Versteckt Scrollbalken */
-::-webkit-scrollbar,
-#connectionsList::-webkit-scrollbar,
-#internalNetworkList::-webkit-scrollbar {
-    display: none;
-}
-
-* {
-    scrollbar-width: none;
-}
-
-#connectionsList,
-#internalNetworkList {
-    overflow-y: auto;
-    max-height: 300px;
-}
+/* Hide scrollbars globally (content still scrollable via JS/touch) */
+* { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; }
 
 body {
-    background-color: var(--primary-bg);
-    color: var(--text-color);
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    background: var(--bg-primary);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
 }
+
+/* ============================================================
+   Globe canvas
+   ============================================================ */
 
 #globeViz {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     z-index: 1;
 }
 
+/* ============================================================
+   Top bar
+   ============================================================ */
 
-
-#projectTitle {
-    margin-right: auto; /* Schiebt den Projekttitel nach links */
-    font-size: 14px; /* Schriftgröße */
-    font-weight: bold;
-    color: white; /* Helle Schriftfarbe für besseren Kontrast */
-    background: linear-gradient(90deg, #1e3c72, #2a5298); /* Blauer Farbverlauf */
-    padding: 5px 10px; /* Innenabstand */
-    border-radius: 5px; /* Abgerundete Ecken */
-    white-space: nowrap; /* Verhindert Zeilenumbrüche */
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5); /* Schatten für 3D-Effekt */
-    text-transform: uppercase; /* Text in Großbuchstaben */
-    letter-spacing: 1px; /* Leicht vergrößerter Buchstabenabstand */
-    transition: transform 0.3s ease, box-shadow 0.3s ease; /* Animation bei Hover */
-}
-
-#projectTitle:hover {
-    transform: scale(1.05); /* Leichtes Vergrößern bei Hover */
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.8); /* Intensiverer Schatten bei Hover */
-}
-#closeDataList {
-    position: absolute;
-    top: 5px;
-    right: 5px;
-    background: none;
-    border: none;
-    color: white;
-    font-size: 16px;
-    cursor: pointer;
-    z-index: 1100;
-}
-
-#closeDataList:hover {
-    color: red; /* Farbe beim Hover */
-}
-
-#dataList {
-
-    position: absolute;
-    top: 50px !important; /* Erzwingt den Wert */
-    left: 10px;
-    background: rgba(0, 0, 0, 0.8);
-    color: var(--text-color);
-    padding: 10px;
-    border-radius: 5px;
-    max-width: 300px;
-    z-index: 1000;
-    box-shadow: 0 4px 8px rgba(50, 50, 50, 0.5); /* Grauer Randschatten */
-}
-
-#connectionStatus {
-    margin-left: auto; /* Schiebt den Verbindungsstatus nach rechts */
-    background: var(--highlight-color);
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 12px;
-    white-space: nowrap;
-}
-
-#connectionStatus {
-    background: var(--highlight-color);
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 12px;
-    white-space: nowrap;
-}
 #ownConnectionData {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
-    height: auto; /* Automatische Höhe, um Platz zu sparen */
-    background: rgba(0, 0, 0, 0.8);
-    color: var(--text-color);
-    padding: 5px 10px; /* Weniger Innenabstand */
+    background: rgba(0, 0, 0, 0.85);
+    color: var(--text);
+    padding: 4px 10px;
     z-index: 1000;
     display: flex;
-    align-items: center; /* Zentriert den Inhalt vertikal */
-    gap: 5px; /* Reduzierter Abstand zwischen den Elementen */
+    align-items: center;
+    gap: 6px;
     box-sizing: border-box;
-    box-shadow: 0 4px 8px 0 rgba(50, 50, 50, 0.5);
-    font-size: 12px; /* Kleinere Schriftgröße */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+    font-size: 11px;
 }
 
-#ownConnectionData ul {
+#projectTitle {
+    font-size: 13px;
+    font-weight: bold;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light));
+    padding: 4px 10px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+#connectionDataList {
     list-style: none;
     padding: 0;
     margin: 0;
     display: flex;
-    gap: 3px; /* Weniger Abstand zwischen den Boxen */
-    font-size: 10px; /* Kleinere Schriftgröße */
-    line-height: 1.1; /* Engere Zeilenhöhe */
+    gap: 4px;
+    flex-wrap: wrap;
 }
 
-#ownConnectionData li {
-    margin: 0;
-    padding: 3px 5px; /* Weniger Innenabstand für die Box */
-    font-size: 10px; /* Kleinere Schriftgröße */
-    line-height: 1.1; /* Engere Zeilenhöhe */
-    background: rgba(40, 40, 40, 0.9); /* Etwas dunklerer Hintergrund für die Box */
-    border: 1px solid rgba(255, 255, 255, 0.1); /* Dünnere Umrandung */
-    border-radius: 3px; /* Kleinere abgerundete Ecken */
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); /* Leichterer Schatten */
-    white-space: nowrap; /* Verhindert Zeilenumbruch */
-    overflow: hidden; /* Versteckt überfließenden Text */
-    text-overflow: ellipsis; /* Fügt "..." bei überlangem Text hinzu */
+#connectionDataList li {
+    padding: 2px 6px;
+    background: rgba(40, 40, 40, 0.9);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    white-space: nowrap;
+    font-size: 10px;
+    line-height: 1.3;
 }
 
-#ownConnectionData li strong {
-    font-weight: bold;
-    color: #bbb; /* Etwas hellere Farbe für die Labels */
-    margin-right: 3px; /* Weniger Abstand zwischen Label und Wert */
+#connectionDataList li strong {
+    color: #aaa;
+    margin-right: 2px;
 }
 
 #connectionStatus {
-    margin-left: auto; /* Schiebt den Verbindungsstatus nach rechts */
-    background: var(--highlight-color);
-    padding: 2px 6px; /* Weniger Innenabstand */
+    margin-left: auto;
+    background: var(--green);
+    padding: 2px 8px;
     border-radius: 3px;
-    font-size: 11px; /* Kleinere Schriftgröße */
+    font-size: 11px;
+    font-weight: bold;
     white-space: nowrap;
+    flex-shrink: 0;
+    transition: background 0.3s;
 }
+
+/* ============================================================
+   Settings button
+   ============================================================ */
 
 #menuButton {
     position: fixed;
     top: 10%;
     right: 0;
     transform: translateY(-50%);
-    width: 50px;
-    height: 50px;
-    background: linear-gradient(90deg, #1e3c72, #2a5298); /* Blauer Farbverlauf */
+    width: 44px;
+    height: 44px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light));
     color: white;
     border: none;
-    border-radius: 50%;
+    border-radius: 50% 0 0 50%;
     cursor: pointer;
-    z-index: 2000; /* Höherer z-index, damit der Button immer im Vordergrund bleibt */
+    z-index: 2000;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 20px;
-    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+    font-size: 18px;
+    transition: background 0.2s, box-shadow 0.2s;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.4);
 }
 
 #menuButton:hover {
-    background: linear-gradient(90deg, #2a5298, #1e3c72);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+    background: linear-gradient(90deg, var(--accent-light), var(--accent));
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.6);
 }
+
+/* ============================================================
+   Sidebar
+   ============================================================ */
 
 #sidebar {
     position: fixed;
-    top: 40px; /* Höhe von #ownConnectionData, damit die Sidebar bündig darunter beginnt */
-    right: -100%; /* Verschiebt die Sidebar vollständig außerhalb des Bildschirms */
+    top: 36px;
+    right: -320px;
     width: 300px;
-    height: calc(100% - 40px); /* Reduziert die Höhe der Sidebar, um Platz für #ownConnectionData zu lassen */
-    background-color: rgba(0, 0, 0, 0.9);
-    color: white;
-    transition: right 0.3s ease; /* Animation für das Öffnen und Schließen */
-    z-index: 1000; /* Niedrigerer z-index als der Menübutton */
-    padding: 20px;
-    box-shadow: -2px 0 5px rgba(0, 0, 0, 0.5); /* Schatten für den Rand */
-    border-left: 3px solid rgba(255, 255, 255, 0.2); /* Heller Rand auf der linken Seite */
-    display: flex; /* Flexbox-Layout aktivieren */
-    flex-direction: column; /* Inhalt vertikal anordnen */
-    gap: 15px; /* Abstand zwischen den Elementen */
-    overflow-y: auto; /* Ermöglicht Scrollen, falls der Inhalt zu groß ist */
+    height: calc(100% - 36px);
+    background: rgba(10, 10, 15, 0.97);
+    color: var(--text);
+    transition: right 0.3s ease;
+    z-index: 1500;
+    padding: 16px;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.6);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    overflow-y: auto;
+    box-sizing: border-box;
 }
 
-#sidebar.open {
-    right: 0; /* Verschiebt die Sidebar ins Sichtfeld */
+#sidebar.open { right: 0; }
+
+.sidebar-section {
+    padding: 12px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
+
+.sidebar-section:first-child {
+    border-top: none;
+    padding-top: 0;
+}
+
+.sidebar-section h4 {
+    margin: 0 0 10px 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    font-weight: 600;
+}
+
+#sidebar label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 4px 0;
+    color: var(--text);
+}
+
+/* Stat grid */
+
+.stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.stat-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 8px 10px;
+    text-align: center;
+}
+
+.stat-card span {
+    display: block;
+    font-size: 15px;
+    font-weight: bold;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+}
+
+.stat-card small {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.threat-summary {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+/* Organisation editor */
+
+.org-editor label {
+    display: block;
+    font-size: 10px;
+    color: var(--text-dim);
+    margin: 8px 0 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+.org-editor label:first-child { margin-top: 0; }
+
+.org-editor textarea {
+    width: 100%;
+    background: var(--bg-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 11px;
+    padding: 6px 8px;
+    resize: vertical;
+    box-sizing: border-box;
+    font-family: monospace;
+    line-height: 1.5;
+}
+
+.org-editor textarea:focus {
+    outline: none;
+    border-color: var(--accent-light);
+}
+
+.save-orgs-btn {
+    width: 100%;
+    margin-top: 10px;
+    padding: 7px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.2s;
+}
+
+.save-orgs-btn:hover { background: var(--accent-light); }
+
+/* Export link */
+
+.export-btn {
+    display: inline-block;
+    padding: 7px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text);
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.export-btn:hover {
+    background: var(--bg-hover);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Logout link */
+
+.logout-link {
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    color: #e05555;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 12px;
+    display: block;
+    transition: color 0.2s;
+}
+
+.logout-link:hover { color: #ff7777; }
+
+/* ============================================================
+   Detail panel (IP info popup)
+   ============================================================ */
 
 #dataList {
-    position: absolute;
-    top: 20px;
-    left: 10px;
-    background: rgba(0, 0, 0, 0.8);
-    color: var(--text-color);
-    padding: 10px;
-    border-radius: 5px;
-    max-width: 300px;
-    z-index: 1000;
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(12, 12, 18, 0.98);
+    color: var(--text);
+    padding: 16px 20px;
+    border-radius: 8px;
+    min-width: 300px;
+    max-width: 420px;
+    max-height: 80vh;
+    overflow-y: auto;
+    z-index: 2500;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.12);
 }
+
+.detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.detail-header h3 {
+    margin: 0;
+    font-size: 14px;
+    color: #fff;
+    font-family: monospace;
+}
+
+.detail-header button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+    transition: color 0.15s;
+}
+
+.detail-header button:hover { color: #fff; }
 
 #dataList ul {
     list-style: none;
     padding: 0;
+    margin: 0;
 }
 
-#dataList button {
-    margin-left: 10px;
-    background: var(--secondary-bg);
-    color: var(--text-color);
-    border: none;
-    padding: 10px 15px;
-    border-radius: 5px;
-    cursor: pointer;
-    font-size: 16px;
-    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+#dataList ul li {
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 12px;
+    line-height: 1.4;
 }
 
-#dataList button:hover {
-    background: var(--hover-bg);
+#dataList ul li strong {
+    color: var(--text-dim);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: inline-block;
+    min-width: 110px;
 }
 
-#dataList button:active {
-    background: var(--active-bg);
-    transform: scale(0.95);
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-}
+/* ============================================================
+   Connection list panels (shared)
+   ============================================================ */
 
-#listContainer {
-    position: relative; /* Container für die Listen */
-    display: flex; /* Flexbox-Layout aktivieren */
-    gap: 10px; /* Abstand zwischen den Listen */
-    z-index: 1000;
-}
-
-/* Gemeinsame Eigenschaften für beide Listen */
 #activeConnectionsList,
 #internalNetworkList {
-    position: absolute;
-    bottom: 0; /* Startet am unteren Rand */
-    background: rgba(0, 0, 0, 0.8);
-    color: var(--text-color);
-    padding: 10px;
-    border-radius: 5px 5px 0 0; /* Nur die oberen Ecken sind abgerundet */
-    width: calc(40% - 20px); /* Standardbreite */
-    max-height: 50vh; /* Immer 50% der Bildschirmhöhe */
+    position: fixed;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.88);
+    color: var(--text);
     z-index: 1000;
     font-size: 12px;
     display: flex;
-    flex-direction: column-reverse; /* Kehrt die Reihenfolge um: Filterknöpfe unten */
-    box-shadow: 0 0 8px rgba(50, 50, 50, 0.5); /* Schatten in alle Richtungen */
-    overflow-y: auto; /* Ermöglicht Scrollen */
-}
-/* Stil für die Einträge in der Liste der aktiven Verbindungen */
-#connectionsList li {
-    font-size: 12px; /* Kleinere Schriftgröße */
-    padding: 3px; /* Weniger Innenabstand */
-    border-bottom: 1px solid var(--hover-bg);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    transition: transform 0.2s ease, background-color 0.2s ease;
-}
-/* Schriftgröße für die Paketinformationen in den Einträgen */
-#connectionsList li small {
-    font-size: 10px; /* Kleinere Schriftgröße */
-    color: #aaa; /* Optional: Hellere Farbe für weniger Hervorhebung */
+    flex-direction: column;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    max-height: calc(100vh - 50px);
 }
 
-/* Stil für die Statuskreise */
-.status-circle {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    margin-left: 10px;
-    flex-shrink: 0;
-    background-color: white; /* Standardfarbe für keine Bedrohung */
-    border: 1px solid #ccc; /* Optionaler Rand für bessere Sichtbarkeit */
-}
-
-/* Spezifische Eigenschaften für #activeConnectionsList */
 #activeConnectionsList {
-    left: 0; /* Direkt am linken Bildschirmrand */
-    border-radius: 0 5px 0 0; /* Nur die obere rechte Ecke ist abgerundet */
-    width: calc(50% - 20px); /* Standardbreite */
-    max-height: calc(100vh - 100px); /* Maximal bis unter die connectionDataList */
-    overflow-y: auto;
-    font-size: 12px; /* Kleinere Schriftgröße */
-    padding: 5px;
+    left: 0;
+    width: calc(50% - 2px);
+    border-radius: 0 8px 0 0;
+    border-right: 1px solid var(--border);
 }
 
-/* Spezifische Eigenschaften für #internalNetworkList */
 #internalNetworkList {
-    right: 0; /* Direkt am rechten Bildschirmrand */
-    border-radius: 5px 0 0 0; /* Nur die obere linke Ecke ist abgerundet */
-    max-height: calc(100vh - 100px); /* Maximal bis unter die connectionDataList */
-    overflow-y: auto;
-    font-size: 12px; /* Kleinere Schriftgröße */
-    padding: 5px;
-}
-
-#internalNetworkList.collapsed {
-    max-width: 150px; /* Reduzierte Breite im eingeklappten Zustand */
-    max-height: 40px; /* Reduzierte Höhe */
-    overflow: hidden; /* Versteckt den Inhalt, der nicht sichtbar sein soll */
-}
-
-#sidebar.open ~ #activeConnectionsList,
-#sidebar.open ~ #internalNetworkList {
-    right: calc(300px + 20px); /* Verschiebt die Listen bündig mit der Sidebar */
+    right: 0;
+    width: calc(50% - 2px);
+    border-radius: 8px 0 0 0;
+    border-left: 1px solid var(--border);
 }
 
 #activeConnectionsList.collapsed,
 #internalNetworkList.collapsed {
-    max-height: 40px;
+    max-height: 42px;
     overflow: hidden;
 }
 
-#activeConnectionsList ul,
-#internalNetworkList ul {
+#connectionsList,
+#internalPacketsList {
     list-style: none;
     padding: 0;
     margin: 0;
-    flex-grow: 1; /* Nimmt den verfügbaren Platz ein */
-    overflow-y: auto; /* Ermöglicht Scrollen */
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* ============================================================
+   List header + filter controls
+   ============================================================ */
+
+.list-header {
     display: flex;
-    flex-direction: column-reverse; /* Elemente werden von unten nach oben angezeigt */
-    transition: max-height 0.3s ease;
-    -webkit-overflow-scrolling: touch;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    flex-shrink: 0;
+    flex-wrap: wrap;
 }
 
-#activeConnectionsList li,
-#internalNetworkList li {
-    padding: 10px;
-    border-bottom: 1px solid var(--hover-bg);
-    cursor: pointer;
-    font-size: 14px;
-    transition: transform 0.2s ease, background-color 0.2s ease;
+.list-header h3 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    flex-grow: 1;
+    white-space: nowrap;
 }
 
-#activeConnectionsList li:hover,
-#internalNetworkList li:hover {
-    background-color: var(--hover-bg);
-    transform: translateY(-5px); /* Leichtes Verschieben nach oben beim Hover */
+.list-header span {
+    font-size: 10px;
+    color: var(--text-dim);
+    white-space: nowrap;
 }
 
-#toggleInternalNetwork,
-#toggleActiveConnections {
-    background: var(--secondary-bg);
-    color: var(--text-color);
-    border: none;
-    border-radius: 5px;
-    padding: 10px 15px;
-    cursor: pointer;
-    font-size: 16px;
-    margin-right: 10px;
-    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-#toggleInternalNetwork:hover,
-#toggleActiveConnections:hover {
-    background: var(--hover-bg);
-}
-
-#toggleInternalNetwork:active,
-#toggleActiveConnections:active {
-    background: var(--active-bg);
-    transform: scale(0.95);
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-}
-
-#activeConnectionsList .filter-buttons,
-#internalNetworkList .filter-buttons {
-    margin-top: auto; /* Schiebt die Filterknöpfe nach unten */
+.list-header label {
+    font-size: 10px;
+    color: var(--text-dim);
     display: flex;
-    gap: 10px;
-    justify-content: flex-end; /* Knöpfe rechtsbündig */
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    white-space: nowrap;
 }
 
-.status-circle {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    margin-left: 10px;
+/* ============================================================
+   Toggle buttons
+   ============================================================ */
+
+.toggle-button,
+#toggleActiveConnections,
+#toggleInternalNetwork {
+    background: var(--bg-secondary);
+    color: var(--text-dim);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
     flex-shrink: 0;
 }
 
-.toggle-button {
-    background: #555; /* Grauer Hintergrund */
-    color: white;
-    border: none;
-    border-radius: 5px;
-    padding: 5px 5px;
+.toggle-button:hover,
+#toggleActiveConnections:hover,
+#toggleInternalNetwork:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+}
+
+.toggle-button.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent-light);
+}
+
+/* ============================================================
+   Search bar
+   ============================================================ */
+
+.search-bar {
+    padding: 5px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    flex-shrink: 0;
+}
+
+.search-input {
+    width: 100%;
+    background: var(--bg-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 11px;
+    padding: 5px 9px;
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.search-input:focus {
+    border-color: var(--accent-light);
+}
+
+.search-input::placeholder { color: #555; }
+
+/* ============================================================
+   Connection row (list item)
+   ============================================================ */
+
+.conn-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
     cursor: pointer;
-    font-size: 16px;
-    transition: background 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+    transition: background 0.1s;
+    min-height: 30px;
 }
 
-.toggle-button:hover {
-    background: #666; /* Etwas helleres Grau beim Hover */
+.conn-row:hover { background: rgba(255, 255, 255, 0.04); }
+
+.conn-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-.toggle-button:active {
-    background: #444; /* Dunkleres Grau beim Klicken */
-    transform: scale(0.95);
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+.pin-checkbox {
+    flex-shrink: 0;
+    cursor: pointer;
+    accent-color: var(--accent-light);
 }
+
+.conn-main {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.conn-ip {
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: bold;
+    color: #ddd;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.conn-host {
+    font-size: 10px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.conn-proto {
+    font-size: 9px;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.07);
+    color: #bbb;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.conn-packets {
+    font-size: 10px;
+    color: #bbb;
+    white-space: nowrap;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.service-tag {
+    display: inline-block;
+    font-size: 9px;
+    color: #666;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0 3px;
+    border-radius: 2px;
+    margin-left: 3px;
+}
+
+.conn-time {
+    font-size: 9px;
+    color: #555;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 44px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.reset-btn {
+    background: none;
+    border: none;
+    color: #444;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0 2px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.15s;
+}
+
+.reset-btn:hover { color: #aaa; }
+
+/* ============================================================
+   Threat badges
+   ============================================================ */
+
+.threat-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    text-transform: uppercase;
+}
+
+.threat-high    { background: rgba(180,  20,  20, 0.85); color: #fff; }
+.threat-medium  { background: rgba(180, 100,   0, 0.85); color: #fff; }
+.threat-low     { background: rgba(160, 140,   0, 0.85); color: #111; }
+.threat-ok,
+.threat-no-threat { background: rgba(0, 110, 0, 0.6); color: #dfd; }
+
+/* ============================================================
+   Toast notifications
+   ============================================================ */
+
+#toastContainer {
+    position: fixed;
+    top: 50px;
+    right: 12px;
+    z-index: 3000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 340px;
+    pointer-events: none;
+}
+
+.toast {
+    background: rgba(18, 18, 24, 0.97);
+    color: #eee;
+    border-left: 4px solid #555;
+    border-radius: 4px;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.4;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+    animation: toast-slide-in 0.2s ease;
+}
+
+.toast-high  { border-left-color: #c01c1c; }
+.toast-ok    { border-left-color: #1c8a1c; }
+.toast-error { border-left-color: #c01c1c; }
+.toast-info  { border-left-color: var(--accent-light); }
+
+@keyframes toast-slide-in {
+    from { opacity: 0; transform: translateX(16px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ============================================================
+   Responsive (mobile)
+   ============================================================ */
 
 @media (max-width: 768px) {
     #ownConnectionData {
-        flex-direction: column;
+        flex-wrap: wrap;
         height: auto;
-        padding: 10px;
+        padding: 6px 10px;
     }
 
-    #ownConnectionData ul {
-        flex-direction: column;
-        gap: 10px;
-    }
-
-    #activeConnectionsList,
-    #internalNetworkList {
-        position: static; /* Entfernt absolute Positionierung bei kleinen Bildschirmen */
-        max-width: 100%; /* Listen nehmen die volle Breite ein */
-        margin: 0;
-        border-radius: 0;
-    }
-
-    #activeConnectionsList {
-        bottom: calc(70% + 50px);
-    }
-
-    #internalNetworkList {
-        bottom: 50px;
-    }
-
-    #listContainer {
-        flex-wrap: nowrap; /* Verhindert, dass die Listen untereinander verschoben werden */
+    #connectionDataList {
+        flex-direction: row;
+        flex-wrap: wrap;
     }
 
     #activeConnectionsList,
     #internalNetworkList {
-        max-height: 50vh; /* 50% der Bildschirmhöhe */
-        overflow-y: auto; /* Scrollbar aktivieren, falls der Inhalt zu groß ist */
+        width: 50%;
+        max-height: 45vh;
     }
 }
 
 @media (hover: none) and (pointer: coarse) {
-    #toggleInternalNetwork,
-    #toggleActiveConnections,
-    #menuButton,
-    #dataList button {
-        background: var(--hover-bg);
+    .toggle-button:hover,
+    #toggleActiveConnections:hover,
+    #toggleInternalNetwork:hover {
+        background: var(--bg-secondary);
     }
-
-    #activeConnectionsList li:hover,
-    #internalNetworkList li:hover {
-        background-color: inherit;
-    }
-}
-
-@media (max-width: 768px) {
-    /* Oberer Bereich (10% Höhe) */
-    #ownConnectionData {
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 10%; /* 10% der Bildschirmhöhe */
-        display: flex;
-        flex-direction: row; /* Elemente nebeneinander */
-        align-items: center;
-        justify-content: space-between;
-        padding: 5px 10px;
-        background: rgba(0, 0, 0, 0.8);
-        z-index: 1000;
-    }
-
-    /* Aktive Verbindungen unten links */
-    #activeConnectionsList {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        width: 50%; /* Nimmt die linke Hälfte ein */
-        height: 40%; /* 40% der Bildschirmhöhe */
-        border-radius: 10px 0 0 0; /* Nur die obere linke Ecke abgerundet */
-        overflow-y: auto;
-        background: rgba(0, 0, 0, 0.8);
-        z-index: 1000;
-    }
-
-    /* Interne Verbindungen unten rechts */
-    #internalNetworkList {
-        position: fixed;
-        bottom: 0;
-        right: 0;
-        width: 50%; /* Nimmt die rechte Hälfte ein */
-        height: 40%; /* 40% der Bildschirmhöhe */
-        border-radius: 0 10px 0 0; /* Nur die obere rechte Ecke abgerundet */
-        overflow-y: auto;
-        background: rgba(0, 0, 0, 0.8);
-        z-index: 1000;
-    }
-
-    /* Listencontainer für Flexibilität */
-    #listContainer {
-        position: fixed;
-        bottom: 0;
-        width: 100%;
-        display: flex;
-        justify-content: space-between;
-        gap: 0;
-    }
-
-    /* Allgemeine Anpassungen für kleinere Bildschirme */
-    #activeConnectionsList ul,
-    #internalNetworkList ul {
-        padding: 5px;
-        margin: 0;
-        list-style: none;
-    }
-
-    #activeConnectionsList li,
-    #internalNetworkList li {
-        font-size: 10px; /* Kleinere Schriftgröße */
-        padding: 3px; /* Weniger Innenabstand */
-        border-bottom: 1px solid var(--hover-bg);
-        
-    }
-    /* Reduzierte Schriftgröße für die Leiste */
-    #ownConnectionData {
-    white-space: nowrap; /* Verhindert Zeilenumbrüche */
-    overflow: hidden; /* Versteckt überfließenden Inhalt */
-    text-overflow: ellipsis; /* Fügt "..." bei überlangem Text hinzu */
-    display: flex;
-    align-items: center; /* Zentriert den Inhalt vertikal */
-    justify-content: space-between; /* Elemente gleichmäßig verteilen */
-    height: 10%; /* 10% der Bildschirmhöhe */
-    padding: 5px 10px; /* Innenabstand */
-}
+    .conn-row:hover { background: transparent; }
 }

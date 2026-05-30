@@ -11,20 +11,17 @@
             img-src 'self' https://unpkg.com;
             font-src 'self';
         ">
-        <title>OrbDef-L1nk - Visualization Software</title>
-        <script type="text/javascript" src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-        <script type="text/javascript" src="https://unpkg.com/globe.gl@2.30.0/dist/globe.gl.min.js"></script>
-        <script type="text/javascript" src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+        <title>OrbDef-L1nk</title>
+        <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+        <script src="https://unpkg.com/globe.gl@2.30.0/dist/globe.gl.min.js"></script>
+        <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
         <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     </head>
     <body data-lat="{{ lat|default(0, true)|float }}" data-lng="{{ lng|default(0, true)|float }}">
 
-
+        <!-- Top bar: title + own connection info + status -->
         <div id="ownConnectionData">
-            <!-- Project title left -->
-            <div id="projectTitle">OrbDef-L1nk </div>
-
-            <!-- Connection data center -->
+            <div id="projectTitle">OrbDef-L1nk</div>
             <ul id="connectionDataList">
                 <li><strong>Interface:</strong> {{ backend_config.interface_name }}</li>
                 <li><strong>Adapter:</strong> {{ backend_config.adapter_description }}</li>
@@ -34,68 +31,107 @@
                 <li><strong>Country:</strong> {{ my_geo_data.country }}</li>
                 <li><strong>City:</strong> {{ my_geo_data.city }}</li>
                 <li><strong>Region:</strong> {{ my_geo_data.region }}</li>
-
             </ul>
-
-            <!-- Connection status far right -->
-            <div id="connectionStatus">Connecting...</div>
-        </div>
-    <!-- Globe container -->
-    <div id="globeViz"></div>
-
-    <!-- Settings button -->
-    <button id="menuButton" title="Settings">⚙️</button>
-
-    <!-- Settings sidebar -->
-    <div id="sidebar">
-        <label>
-            <input type="checkbox" id="showBorders" checked>
-            Show country borders
-        </label>
-        <label>
-            <input type="checkbox" id="showArcs" checked>
-            Show lines
-        </label>
-        <hr style="border: 0; border-top: 1px solid #444; margin: 10px 0;">
-        <a href="{{ url_for('logout') }}" style="color: #ff4444; text-decoration: none; font-weight: bold; display: block; margin-top: 10px;">🚪 Logout</a>
-    </div>
-
-    <!-- Active connections container (bottom left) -->
-    <div id="activeConnectionsList">
-
-        <div class="filter-buttons">
-                    <div style="display: flex; align-items: center; padding-top: 5px; border-top: 1px solid #444;">
-                    <button id="toggleActiveConnections" title="Show/hide active connections">▼</button>
-                    <span id="connectionCount" style="margin-right: 10px;"></span>
-                    <button id="toggleLocalNetwork" title="Show/hide local network">🌐</button>
-                    <button id="toggleExternalNetwork" title="Show/hide external network">🔗</button>
-                    <button id="toggleTCPOnly" title="Show TCP connections only">📡</button>
-                    <button id="toggleAllUDPPackets" title="Show all UDP packets">📶</button>
-                    <button id="centerOwnLocation" title="Center on own location">📍</button>
+            <div id="connectionStatus">Connecting…</div>
         </div>
 
-          <ul id="activeConnections"></ul>
-        </div>
-        <ul id="connectionsList">
-        </ul>
-    </div>
+        <!-- Globe -->
+        <div id="globeViz"></div>
 
-    <!-- Internal network packets container (bottom right) -->
-    <div id="internalNetworkList">
-        <div style="display: flex; align-items: center; padding-top: 5px; border-top: 1px solid #444;">
-            <button id="toggleInternalNetwork" title="Show/hide internal network packets">▼</button>
-            <h3 style="margin: 0; flex-grow: 1;">Internal Network Packets</h3>
-            <span id="internalConnectionCount" style="margin-left: 10px;">0 connections (TCP: 0, UDP: 0)</span>
-            <label style="margin-left: 10px;">
-                <input type="checkbox" id="searchInternalPackets" checked>
-                Active search
-            </label>
-        </div>
-        <ul id="internalPacketsList"></ul>
-    </div>
+        <!-- Settings button -->
+        <button id="menuButton" title="Settings">⚙️</button>
 
-    <!-- Scripts -->
-    <script type="text/javascript" src="{{ url_for('static', filename='globe.js') }}"></script>
-    <script type="text/javascript" src="{{ url_for('static', filename='init-globe.js') }}"></script>
-</body>
+        <!-- Settings sidebar -->
+        <div id="sidebar">
+
+            <div class="sidebar-section">
+                <h4>Network Stats</h4>
+                <div class="stat-grid">
+                    <div class="stat-card"><span id="statTCP">—</span><small>TCP Pkts</small></div>
+                    <div class="stat-card"><span id="statUDP">—</span><small>UDP Pkts</small></div>
+                    <div class="stat-card"><span id="statBytes">—</span><small>Bytes</small></div>
+                    <div class="stat-card"><span id="statActive">—</span><small>Active</small></div>
+                </div>
+                <div class="threat-summary">
+                    <span id="statThreatHigh" class="threat-badge threat-high">0 HIGH</span>
+                    <span id="statThreatMed"  class="threat-badge threat-medium">0 MED</span>
+                    <span id="statThreatLow"  class="threat-badge threat-low">0 LOW</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Display</h4>
+                <label>
+                    <input type="checkbox" id="showBorders" checked>
+                    Country borders
+                </label>
+                <label>
+                    <input type="checkbox" id="showArcs" checked>
+                    Connection lines
+                </label>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Organisation Lists</h4>
+                <div class="org-editor">
+                    <label>Trusted (one per line)</label>
+                    <textarea id="orgTrusted"    rows="4" placeholder="Google LLC&#10;Cloudflare, Inc."></textarea>
+                    <label>Suspicious</label>
+                    <textarea id="orgSuspicious" rows="3" placeholder="Unknown ISP"></textarea>
+                    <label>Dangerous</label>
+                    <textarea id="orgDangerous"  rows="3" placeholder="Malware Host"></textarea>
+                    <button id="saveOrgs" class="save-orgs-btn">Save Lists</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Export</h4>
+                <a href="/api/export/csv" class="export-btn" download>↓ Download CSV</a>
+            </div>
+
+            <a href="{{ url_for('logout') }}" class="logout-link">Logout</a>
+        </div>
+
+        <!-- Active connections (bottom left) -->
+        <div id="activeConnectionsList">
+            <div class="list-header">
+                <button id="toggleActiveConnections" title="Show/hide">▼</button>
+                <span id="connectionCount"></span>
+                <button id="toggleLocalNetwork"    class="toggle-button active" title="Toggle local network">Local</button>
+                <button id="toggleExternalNetwork" class="toggle-button active" title="Toggle external network">Ext</button>
+                <button id="toggleTCPOnly"         class="toggle-button"       title="TCP connections only">TCP</button>
+                <button id="toggleAllUDPPackets"   class="toggle-button"       title="All UDP packets">UDP</button>
+                <button id="centerOwnLocation"     class="toggle-button"       title="Center on own location">📍</button>
+            </div>
+            <div class="search-bar">
+                <input type="text" id="connectionSearch" class="search-input"
+                       placeholder="Search IP, host, org, country…">
+            </div>
+            <ul id="connectionsList"></ul>
+        </div>
+
+        <!-- Internal network (bottom right) -->
+        <div id="internalNetworkList">
+            <div class="list-header">
+                <button id="toggleInternalNetwork" title="Show/hide">▼</button>
+                <h3>Internal Network</h3>
+                <span id="internalConnectionCount">0 connections</span>
+                <label>
+                    <input type="checkbox" id="searchInternalPackets" checked>
+                    Active search
+                </label>
+            </div>
+            <div class="search-bar">
+                <input type="text" id="internalSearch" class="search-input"
+                       placeholder="Search internal hosts…">
+            </div>
+            <ul id="internalPacketsList"></ul>
+        </div>
+
+        <!-- Toast / alert container -->
+        <div id="toastContainer"></div>
+
+        <script src="{{ url_for('static', filename='globe.js') }}"></script>
+        <script src="{{ url_for('static', filename='init-globe.js') }}"></script>
+    </body>
 </html>
