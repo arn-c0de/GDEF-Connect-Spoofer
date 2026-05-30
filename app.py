@@ -268,6 +268,10 @@ FRITZDUMP_AUTOSTART = os.environ.get('FRITZDUMP_AUTOSTART', '1') not in ('0', 'f
 # (e.g. missing .env / credentials) and we back off instead of respawn-storming.
 FRITZDUMP_WORKER_MIN_UPTIME = 8.0
 FRITZDUMP_WORKER_BACKOFF = 30.0
+# The worker's stdout/stderr go here (persistent, in the mounted database dir) so
+# a failed run.sh (wrong .env, bad interface id, no route to the box) is visible:
+#   cat database/fritzdump_worker.log
+FRITZDUMP_WORKER_LOG = os.path.join(DATABASE_DIR, 'fritzdump_worker.log')
 
 # --- Per-device Start/Stop ---------------------------------------------------
 # A device's `enabled` flag is its Start/Stop. While a device is stopped, NONE of
@@ -2705,17 +2709,33 @@ def _spawn_fritzdump_worker():
     """Launch the FritzDump capture worker (run.sh) as its own process group so we
     can later kill the whole tree (run.sh + the per-interface fritzdump.py)."""
     if not FRITZDUMP_WORKER_CMD:
+        logger.warning("FritzDump worker not launched: no run.sh found "
+                       f"(looked in {FRITZDUMP_WORKER_DIR}). In Docker, enable the "
+                       "module with: ./run.sh fritzdump on")
         return None
+    logf = None
     try:
+        # Capture the worker's output to a persistent log so its failure reason is
+        # diagnosable from the host.
+        try:
+            logf = open(FRITZDUMP_WORKER_LOG, 'ab', buffering=0)
+            logf.write(f"\n=== starting {' '.join(FRITZDUMP_WORKER_CMD)} (cwd {FRITZDUMP_WORKER_DIR}) ===\n".encode())
+        except OSError:
+            logf = None
         proc = subprocess.Popen(
             FRITZDUMP_WORKER_CMD, cwd=FRITZDUMP_WORKER_DIR,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-            start_new_session=True)
-        logger.info(f"Started FritzDump worker (pid {proc.pid}): {' '.join(FRITZDUMP_WORKER_CMD)}")
+            stdout=(logf or subprocess.DEVNULL),
+            stderr=(subprocess.STDOUT if logf else subprocess.DEVNULL),
+            stdin=subprocess.DEVNULL, start_new_session=True)
+        logger.info(f"Started FritzDump worker (pid {proc.pid}): {' '.join(FRITZDUMP_WORKER_CMD)} "
+                    f"(output -> {FRITZDUMP_WORKER_LOG})")
         return proc
     except Exception as e:
         logger.error(f"Could not start FritzDump worker: {e}")
         return None
+    finally:
+        if logf is not None:
+            logf.close()
 
 
 def _terminate_fritzdump_worker(proc):
@@ -2744,6 +2764,11 @@ def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
     logged_missing = False
     worker_started_at = 0.0
     backoff_until = 0.0
+    total_packets = 0
+    last_status = 0.0
+    warned_no_parse = False
+    logger.info(f"FritzDump reader active: dir={FRITZDUMP_DIR} autostart={FRITZDUMP_AUTOSTART} "
+                f"cmd={' '.join(FRITZDUMP_WORKER_CMD) if FRITZDUMP_WORKER_CMD else None}")
     while True:
         try:
             if device_is_disabled(FRITZDUMP_DEVICE_ID):
@@ -2751,6 +2776,7 @@ def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
                     _terminate_fritzdump_worker(_fritzdump_worker)
                     _fritzdump_worker = None
                 backoff_until = 0.0
+                last_status = 0.0
                 time.sleep(FRITZDUMP_POLL_INTERVAL)
                 continue
 
@@ -2783,8 +2809,25 @@ def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
                 continue
             logged_missing = False
             packets = source.poll()
+            if packets:
+                if total_packets == 0:
+                    logger.info("FritzDump: receiving packets from the box")
+                total_packets += len(packets)
             for pkt in packets:
                 fritzdump_packet_callback(pkt, queue, mdns_listener, showAllUDPPackets.value)
+            # Periodic status so "no data" is diagnosable: how many capture files
+            # were found vs how many packets we have actually parsed.
+            now = time.time()
+            if now - last_status >= 20:
+                nfiles = len(source.readers)
+                logger.info(f"FritzDump status: {nfiles} capture file(s) in {FRITZDUMP_DIR}, "
+                            f"{total_packets} packet(s) parsed")
+                if nfiles > 0 and total_packets == 0 and not warned_no_parse:
+                    logger.warning("FritzDump: capture files exist but no packets parsed yet — "
+                                   "the box may be writing slowly, or the files are not classic "
+                                   "pcap. Check database/fritzdump_worker.log for worker errors.")
+                    warned_no_parse = True
+                last_status = now
             # Busy-spin lightly while data is flowing; back off when idle.
             time.sleep(0 if packets else FRITZDUMP_POLL_INTERVAL)
         except Exception as e:
