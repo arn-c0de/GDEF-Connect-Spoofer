@@ -153,6 +153,18 @@ that [`modules/FritzDump`](modules/FritzDump/README.md) writes from a FRITZ!Box
 capture (`modules/FritzDump/dumps/`). This lets a hub with no usable capture
 interface (or no `CAP_NET_RAW`) still see real traffic.
 
+**The module is OFF by default** — if you don't use it, you never see the device
+and nothing extra runs. Turn it on (Docker):
+
+```bash
+./run.sh fritzdump on     # opt in (bind-mounts the module, sets FRITZDUMP_ENABLED=1)
+./run.sh restart          # apply
+./run.sh fritzdump off    # turn it back off any time, then ./run.sh restart
+```
+
+Outside Docker, just set `FRITZDUMP_ENABLED=1`. Once on, the **FritzBox** device
+appears in the dashboard:
+
 - FritzDump appears in **Devices** as a built-in `module` device with its own
   colour. It starts **stopped**; press its **▶ Start** button.
 - **Start launches the capture worker for you.** Pressing Start runs the FritzDump
@@ -171,11 +183,12 @@ Tune it with `FRITZDUMP_DIR` (watched dir), `FRITZDUMP_DEVICE_NAME`,
 entirely with `FRITZDUMP_WORKER_CMD`. Set `FRITZDUMP_AUTOSTART=0` if you prefer to
 run FritzDump yourself and have the hub only **read** the pcaps.
 
-> **Docker:** the app runs in a container, so for Start-launches-the-worker the
-> container needs `modules/FritzDump` (with its `.env`), `bash`, and network
-> reach to the box — bind-mount `modules/FritzDump` in at the same path. If you'd
-> rather run FritzDump on the host, set `FRITZDUMP_AUTOSTART=0` and bind-mount the
-> `dumps` directory into the container (or point `FRITZDUMP_DIR` at the mount).
+> **Docker:** `./run.sh fritzdump on` already bind-mounts `modules/FritzDump`
+> into the container (so Start can launch the worker) and the base stack uses host
+> networking (so the worker reaches the box). The module is **not** baked into the
+> image — it is mounted only while enabled. If you'd rather run FritzDump on the
+> host, set `FRITZDUMP_AUTOSTART=0` and have the hub only **read** the pcaps via a
+> mounted `dumps` directory (or point `FRITZDUMP_DIR` at the mount).
 
 ## Security & Privacy
 
@@ -206,6 +219,7 @@ ConnectSpoofer is built with a **Security-First** approach:
 | `INGEST_MAX_AGE` | `300` | Reject sensor batches older than this many seconds (replay window) |
 | `INGEST_MAX_EVENTS` | `5000` | Max connection events accepted per ingest batch |
 | `INGEST_MAX_BODY` | `8388608` | Max encrypted ingest body size in bytes |
+| `FRITZDUMP_ENABLED` | `0` | Master switch for the FritzDump module (`1` = on; `./run.sh fritzdump on` sets it) |
 | `FRITZDUMP_DIR` | `modules/FritzDump/dumps` | Directory the FritzDump pcap source tails |
 | `FRITZDUMP_DEVICE_NAME` | `FritzBox` | Display name of the built-in FritzDump module device |
 | `FRITZDUMP_POLL_INTERVAL` | `1.0` | Seconds between FritzDump pcap polls when idle |

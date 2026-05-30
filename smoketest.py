@@ -44,6 +44,9 @@ os.chdir(TMP_DIR)
 # Damit der Import keine festen Ports / unsicheren Defaults nutzt.
 os.environ.setdefault("APP_PORT", "8000")
 os.environ.setdefault("MAC_NEGATIVE_TTL", "60")
+# FritzDump ist standardmaessig AUS; fuer die Tests einschalten, damit das Modul
+# (Geraet sichtbar, Reader, Worker) vollstaendig abgedeckt ist.
+os.environ.setdefault("FRITZDUMP_ENABLED", "1")
 
 import requests  # noqa: E402
 
@@ -1245,6 +1248,20 @@ def t_fritzdump_worker_lifecycle():
         assert_true(app._spawn_fritzdump_worker() is None, "no command -> no worker")
 
 
+@check("FritzDump master switch (FRITZDUMP_ENABLED off hides + force-stops)")
+def t_fritzdump_master_switch():
+    fid = app.FRITZDUMP_DEVICE_ID
+    # Tests run with the module on -> it appears in the public device list.
+    assert_true(any(d["device_id"] == fid for d in app.public_device_list()),
+                "device shown while module enabled")
+    with patched(app, "FRITZDUMP_ENABLED", False):
+        app.refresh_disabled_devices()
+        assert_true(app.device_is_disabled(fid), "force-stopped while module off")
+        assert_true(not any(d["device_id"] == fid for d in app.public_device_list()),
+                    "hidden from the UI while module off")
+    app.refresh_disabled_devices()   # restore on-state for the rest of the suite
+
+
 # =========================================================================== #
 #  Runner
 # =========================================================================== #
@@ -1321,6 +1338,7 @@ ALL_TESTS = [
     t_device_startstop,
     t_fritzdump_end_to_end,
     t_fritzdump_worker_lifecycle,
+    t_fritzdump_master_switch,
     # zuletzt: startet einen Dauer-Thread, der den ip_write_buffer leert
     t_flush_ip_writes,
 ]

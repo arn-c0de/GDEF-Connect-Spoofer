@@ -1,0 +1,24 @@
+# ConnectSpoofer — FritzDump module override (opt-in).
+#
+# The FritzDump capture module is OFF by default. Turn it on with:
+#   ./run.sh fritzdump on      # creates the .fritzdump marker, then start/restart
+#   ./run.sh start             # (or restart) — run.sh layers this file automatically
+# Turn it off again with:
+#   ./run.sh fritzdump off
+#
+# This override switches the module on (FRITZDUMP_ENABLED=1) and bind-mounts the
+# module into the container so pressing Start can launch its capture worker
+# (modules/FritzDump/run.sh) and read the pcaps it writes. The host networking in
+# the base compose lets the worker reach the FRITZ!Box. Configure the box + login
+# once in modules/FritzDump/.env (see modules/FritzDump/README.md).
+#
+# Not using FritzDump? Do nothing — the module stays hidden and inert.
+
+services:
+  app:
+    environment:
+      FRITZDUMP_ENABLED: "1"
+    volumes:
+      # Live module (code + .env + dumps). Edits on the host are seen in the
+      # container; the pcaps the worker writes are visible on the host too.
+      - ./modules/FritzDump:/app/modules/FritzDump

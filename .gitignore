@@ -8,6 +8,7 @@ app.pid
 
 # Dev-mode marker (set by ./run.sh dev, cleared by start/stop)
 .dev-mode
+.fritzdump
 
 # Python artifacts
 __pycache__/
