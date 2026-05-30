@@ -702,10 +702,10 @@ def t_queue_geo_enrichment():
 def t_geo_enrichment_worker():
     # Eintrag anlegen, den der Worker aktualisiert
     with app.db.get_connection() as conn:
-        conn.execute("INSERT INTO ip_data (ip, last_seen, incoming_count, outgoing_count) "
-                     "VALUES (%s, %s, 0, 0) ON CONFLICT (ip) DO UPDATE SET "
+        conn.execute("INSERT INTO ip_data (device_id, ip, last_seen, incoming_count, outgoing_count) "
+                     "VALUES (%s, %s, %s, 0, 0) ON CONFLICT (device_id, ip) DO UPDATE SET "
                      "last_seen = EXCLUDED.last_seen, incoming_count = 0, outgoing_count = 0",
-                     ("77.77.77.77", time.time()))
+                     (app.LOCAL_DEVICE_ID, "77.77.77.77", time.time()))
         conn.commit()
     rec = EmitRecorder()
     app.geo_enrich_inflight.clear()
@@ -741,8 +741,10 @@ def t_update_ip():
                   mac="aa:bb:cc:dd:ee:ff", vendor="Test Vendor Inc",
                   src_ip="44.44.44.44", dst_ip="192.168.1.10", ttl=64,
                   hostname="Unknown")
-    assert_true("44.44.44.44" in app.ip_write_buffer, "update_ip sollte Write puffern")
-    assert_eq(app.ip_write_buffer["44.44.44.44"]["in_delta"], 1)
+    # Buffer is keyed (device_id, ip); the local capture uses LOCAL_DEVICE_ID.
+    key = (app.LOCAL_DEVICE_ID, "44.44.44.44")
+    assert_true(key in app.ip_write_buffer, "update_ip sollte Write puffern")
+    assert_eq(app.ip_write_buffer[key]["in_delta"], 1)
 
 
 # ---- Stats / Cleanup Worker ----------------------------------------------- #
@@ -769,9 +771,9 @@ def t_cleanup_expired_ips():
     # abgelaufene IP einfuegen
     old = time.time() - app.EXPIRATION_SECONDS - 100
     with app.db.get_connection() as conn:
-        conn.execute("INSERT INTO ip_data (ip, last_seen) VALUES (%s, %s) "
-                     "ON CONFLICT (ip) DO UPDATE SET last_seen = EXCLUDED.last_seen",
-                     ("66.66.66.66", old))
+        conn.execute("INSERT INTO ip_data (device_id, ip, last_seen) VALUES (%s, %s, %s) "
+                     "ON CONFLICT (device_id, ip) DO UPDATE SET last_seen = EXCLUDED.last_seen",
+                     (app.LOCAL_DEVICE_ID, "66.66.66.66", old))
         conn.commit()
     # alten geo_cache-Eintrag setzen
     with app.cache_lock:
@@ -845,13 +847,18 @@ def _buf_data(**over):
 def t_buffer_ip_write():
     with app.locked(app.ip_write_buffer_lock):
         app.ip_write_buffer.clear()
+    loc = app.LOCAL_DEVICE_ID
     app.buffer_ip_write("5.5.5.5", "incoming", _buf_data())
     app.buffer_ip_write("5.5.5.5", "incoming", _buf_data())
-    assert_eq(app.ip_write_buffer["5.5.5.5"]["in_delta"], 2,
+    assert_eq(app.ip_write_buffer[(loc, "5.5.5.5")]["in_delta"], 2,
               "zwei 'incoming' -> Delta 2 (Coalescing)")
     # private IP zaehlt nicht hoch (Original-Semantik)
     app.buffer_ip_write("192.168.9.9", "incoming", _buf_data())
-    assert_eq(app.ip_write_buffer["192.168.9.9"]["in_delta"], 0)
+    assert_eq(app.ip_write_buffer[(loc, "192.168.9.9")]["in_delta"], 0)
+    # Same IP from a different device stays a separate buffer entry.
+    app.buffer_ip_write("5.5.5.5", "incoming", _buf_data(), device_id="dev2")
+    assert_eq(app.ip_write_buffer[("dev2", "5.5.5.5")]["in_delta"], 1,
+              "zweites Geraet -> eigener Buffer-Eintrag")
 
 
 @check("flush_ip_writes (1 Flush -> DB-Insert + ip_update_batch)")
@@ -907,16 +914,16 @@ def t_send_ip_to_clients():
 def t_send_all_ips():
     with app.db.get_connection() as conn:
         conn.execute("INSERT INTO ip_data "
-                     "(ip, lat, lon, city, country, org, last_seen, protocol, "
+                     "(device_id, ip, lat, lon, city, country, org, last_seen, protocol, "
                      " incoming_count, outgoing_count) "
-                     "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                     "ON CONFLICT (ip) DO UPDATE SET "
+                     "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                     "ON CONFLICT (device_id, ip) DO UPDATE SET "
                      "lat=EXCLUDED.lat, lon=EXCLUDED.lon, city=EXCLUDED.city, "
                      "country=EXCLUDED.country, org=EXCLUDED.org, "
                      "last_seen=EXCLUDED.last_seen, protocol=EXCLUDED.protocol, "
                      "incoming_count=EXCLUDED.incoming_count, "
                      "outgoing_count=EXCLUDED.outgoing_count",
-                     ("55.55.55.55", 1.0, 2.0, "C", "CO", "Org",
+                     (app.LOCAL_DEVICE_ID, "55.55.55.55", 1.0, 2.0, "C", "CO", "Org",
                       time.time(), "TCP", 1, 1))
         conn.commit()
     rec = EmitRecorder()
