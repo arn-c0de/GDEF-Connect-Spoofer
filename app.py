@@ -27,8 +27,20 @@ logger = logging.getLogger(__name__)
 
 # Security Configuration
 ACCESS_TOKEN = secrets.token_urlsafe(16)
-# Print token to stdout only, avoid logging to persistent log files via logger
+TOKEN_FILE = os.path.join("database", "access_token.txt")
+
+try:
+    if not os.path.exists("database"):
+        os.makedirs("database")
+    with open(TOKEN_FILE, "w") as f:
+        f.write(ACCESS_TOKEN)
+    os.chmod(TOKEN_FILE, 0o600)
+except Exception as e:
+    logger.error(f"Could not save access token to file: {e}")
+
+# Still print token to stderr for convenience during first run/local development
 print("\n" + "="*50 + f"\nACCESS TOKEN: {ACCESS_TOKEN}\n" + "="*50 + "\n", file=sys.stderr)
+print(f"Token also saved to: {TOKEN_FILE}", file=sys.stderr)
 
 def login_required(f):
     @wraps(f)
@@ -186,14 +198,40 @@ def update_pinned_ips(ip, is_pinned):
         except sqlite3.Error as e:
             logger.error(f"Error updating pinned IPs for {ip}: {e}")
 
-# Flask App und SocketIO
+# Flask app and Socket.IO
 app = Flask(__name__)
-app.config['SECRET_KEY'] = str(uuid4())
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', str(uuid4()))
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE=os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax'),
-    SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes'),
+    PERMANENT_SESSION_LIFETIME=3600
 )
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org;"
+    return response
+
+@app.before_request
+def csrf_protect():
+    if request.method == "POST" and not request.path.startswith('/socket.io'):
+        token = session.pop('_csrf_token', None)
+        if not token or token != request.form.get('_csrf_token'):
+            logger.warning(f"CSRF attempt detected from {request.remote_addr}")
+            return "Forbidden: CSRF Token invalid or missing", 403
+
+def generate_csrf_token():
+    if '_csrf_token' not in session:
+        session['_csrf_token'] = secrets.token_urlsafe(32)
+    return session['_csrf_token']
+
+app.jinja_env.globals['csrf_token'] = generate_csrf_token
 socketio_origins = os.environ.get('SOCKETIO_CORS_ORIGINS')
 if socketio_origins:
     socketio_origins = [origin.strip() for origin in socketio_origins.split(',') if origin.strip()]
@@ -203,6 +241,15 @@ else:
 
 socketio = SocketIO(app, cors_allowed_origins=socketio_origins, async_mode='threading',
                     ping_timeout=SOCKETIO_PING_TIMEOUT, ping_interval=SOCKETIO_PING_INTERVAL)
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org;"
+    return response
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -632,29 +679,36 @@ def get_geo_data(ip, my_geo_data=None):
 
 def get_my_public_ip_coords():
     try:
-        response = requests.get("http://api.ipify.org", timeout=2)
+        response = requests.get("https://api.ipify.org", timeout=2)
         public_ip = response.text
         geo_data = get_geo_data(public_ip)
         return [geo_data["lat"], geo_data["lon"]], geo_data, public_ip
     except Exception as e:
-        logger.warning(f"Error at api.ipify: {e}")
+        logger.warning(f"Error at api.ipify (https): {e}")
         try:
-            response = requests.get("https://ipinfo.io/json", timeout=2)
-            data = response.json()
-            public_ip = data.get("ip")
+            response = requests.get("http://api.ipify.org", timeout=2)
+            public_ip = response.text
             geo_data = get_geo_data(public_ip)
             return [geo_data["lat"], geo_data["lon"]], geo_data, public_ip
         except Exception as e:
-            logger.error(f"Error at ipinfo: {e}")
-            return DEFAULT_COORDS, {
-                "ip": "Unknown",
-                "lat": DEFAULT_COORDS[0],
-                "lon": DEFAULT_COORDS[1],
-                "city": "Unknown",
-                "country": "Unknown",
-                "region": "Unknown",
-                "org": "Not available"
-            }, "Unknown"
+            logger.warning(f"Error at api.ipify (http): {e}")
+            try:
+                response = requests.get("https://ipinfo.io/json", timeout=2)
+                data = response.json()
+                public_ip = data.get("ip")
+                geo_data = get_geo_data(public_ip)
+                return [geo_data["lat"], geo_data["lon"]], geo_data, public_ip
+            except Exception as e:
+                logger.error(f"Error at ipinfo: {e}")
+                return DEFAULT_COORDS, {
+                    "ip": "Unknown",
+                    "lat": DEFAULT_COORDS[0],
+                    "lon": DEFAULT_COORDS[1],
+                    "city": "Unknown",
+                    "country": "Unknown",
+                    "region": "Unknown",
+                    "org": "Not available"
+                }, "Unknown"
 
 def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, mac=None, vendor="Unknown", src_ip=None, dst_ip=None, ttl=None, hostname="Unknown"):
     if ip in (my_local_ip, my_public_ip):

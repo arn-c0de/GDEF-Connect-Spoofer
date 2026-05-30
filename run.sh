@@ -12,7 +12,8 @@ umask 077
 #   sudo ./run.sh logs
 #
 # Environment:
-#   PYTHON=python3.11      Select Python executable
+#   PYTHON=python3.11      Override Python executable/version
+#   UV=uv                  Select uv executable
 #   APP_HOST=127.0.0.1     Bind address; use 0.0.0.0 only for trusted networks
 #   APP_PORT=8000          Web UI port
 #   SOCKETIO_CORS_ORIGINS  Comma-separated allowed browser origins
@@ -20,7 +21,9 @@ umask 077
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$PROJECT_DIR/.venv"
 REQ="$PROJECT_DIR/requirements.txt"
-PYTHON="${PYTHON:-python3}"
+PYPROJECT="$PROJECT_DIR/pyproject.toml"
+PYTHON="${PYTHON:-}"
+UV="${UV:-uv}"
 BACKEND_CONF="$PROJECT_DIR/database/backend_conf.json"
 LOG_FILE="$PROJECT_DIR/app.log"
 PID_FILE="$PROJECT_DIR/app.pid"
@@ -50,7 +53,8 @@ usage() {
     "  sudo ./run.sh logs" \
     "" \
     "Environment:" \
-    "  PYTHON=python3.11      Select Python executable" \
+    "  PYTHON=python3.11      Override Python executable/version" \
+    "  UV=uv                  Select uv executable" \
     "  APP_HOST=127.0.0.1     Bind address; use 0.0.0.0 only for trusted networks" \
     "  APP_PORT=8000          Web UI port" \
     "  SOCKETIO_CORS_ORIGINS  Comma-separated allowed browser origins" \
@@ -59,7 +63,7 @@ usage() {
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
-    die "Root-Rechte sind fuer Packet-Sniffing noetig. Starte: sudo $0 $*"
+    die "Root privileges are required for packet sniffing. Run: sudo $0 $*"
   fi
 }
 
@@ -87,53 +91,70 @@ install_system_packages() {
 
   case "$manager" in
     apt)
-      info "Installiere Systempakete mit apt..."
+      info "Installing system packages with apt..."
       apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip python3-dev libpcap-dev tcpdump
       ;;
     dnf)
-      info "Installiere Systempakete mit dnf..."
+      info "Installing system packages with dnf..."
       dnf install -y python3 python3-pip python3-devel libpcap-devel tcpdump
       ;;
     yum)
-      info "Installiere Systempakete mit yum..."
+      info "Installing system packages with yum..."
       yum install -y python3 python3-pip python3-devel libpcap-devel tcpdump
       ;;
     pacman)
-      info "Installiere Systempakete mit pacman..."
+      info "Installing system packages with pacman..."
       pacman -Sy --needed --noconfirm python python-pip libpcap tcpdump
       ;;
     zypper)
-      info "Installiere Systempakete mit zypper..."
+      info "Installing system packages with zypper..."
       zypper --non-interactive install python3 python3-pip python3-devel libpcap-devel tcpdump
       ;;
     brew)
-      info "Installiere Systempakete mit brew..."
+      info "Installing system packages with brew..."
       brew install python libpcap
       ;;
     none)
-      info "Kein unterstuetzter Paketmanager gefunden; pruefe vorhandene Tools."
+      info "No supported package manager found; checking existing tools."
       ;;
   esac
 }
 
 ensure_python() {
-  command -v "$PYTHON" >/dev/null 2>&1 || die "Python nicht gefunden: $PYTHON"
-  "$PYTHON" - <<'PY'
+  local python_cmd="${PYTHON:-python3}"
+  command -v "$python_cmd" >/dev/null 2>&1 || die "Python not found: $python_cmd"
+  "$python_cmd" - <<'PY'
 import sys
-if sys.version_info < (3, 8):
-    raise SystemExit("Python 3.8+ ist erforderlich")
+if sys.version_info < (3, 11):
+    raise SystemExit("Python 3.11+ is required")
 PY
 }
 
 ensure_venv() {
-  ensure_python
+  if command -v "$UV" >/dev/null 2>&1 && [[ -f "$PYPROJECT" ]]; then
+    info "Synchronizing the Python environment with uv..."
+    (
+      cd "$PROJECT_DIR"
+      sync_args=(sync --no-dev)
+      if [[ -n "$PYTHON" ]]; then
+        sync_args+=(--python "$PYTHON")
+      fi
+      if [[ -f "$PROJECT_DIR/uv.lock" ]]; then
+        sync_args+=(--locked)
+      fi
+      UV_PROJECT_ENVIRONMENT="$VENV" "$UV" "${sync_args[@]}"
+    )
+    return
+  fi
 
+  info "uv was not found or pyproject.toml is missing; using the venv/pip fallback."
+  ensure_python
   if [[ ! -d "$VENV" ]]; then
-    info "Erstelle virtuelle Umgebung: $VENV"
-    "$PYTHON" -m venv "$VENV"
+    info "Creating virtual environment: $VENV"
+    "${PYTHON:-python3}" -m venv "$VENV"
   else
-    info "Nutze virtuelle Umgebung: $VENV"
+    info "Using virtual environment: $VENV"
   fi
 
   "$VENV/bin/python" -m pip install --upgrade pip setuptools wheel
@@ -150,7 +171,7 @@ ensure_directories() {
 
 configure_interface() {
   if [[ ! -f "$BACKEND_CONF" ]]; then
-    info "Keine Interface-Konfiguration gefunden; starte Auswahl."
+    info "No interface configuration found; starting interface selection."
     "$VENV/bin/python" "$PROJECT_DIR/select_interface.py"
     return
   fi
@@ -158,7 +179,7 @@ configure_interface() {
   if [[ "${RESELECT_INTERFACE:-0}" == "1" ]]; then
     "$VENV/bin/python" "$PROJECT_DIR/select_interface.py"
   else
-    info "Interface-Konfiguration vorhanden. Fuer Neuauswahl: RESELECT_INTERFACE=1 sudo ./run.sh start"
+    info "Interface configuration found. To select again: RESELECT_INTERFACE=1 sudo ./run.sh start"
   fi
 }
 
@@ -168,7 +189,7 @@ install_all() {
   ensure_directories
   ensure_venv
   configure_interface
-  info "Installation und Einrichtung abgeschlossen."
+  info "Installation and setup completed."
 }
 
 pid_is_running() {
@@ -206,7 +227,7 @@ start_app() {
   configure_interface
 
   if is_running; then
-    info "ConnectSpoofer laeuft bereits mit PID $(current_pid)."
+    info "ConnectSpoofer is already running with PID $(current_pid)."
     return 0
   fi
 
@@ -214,7 +235,7 @@ start_app() {
   touch "$LOG_FILE"
   chmod 600 "$LOG_FILE"
 
-  info "Starte ConnectSpoofer im Hintergrund auf http://$APP_HOST:$APP_PORT"
+  info "Starting ConnectSpoofer in the background on http://$APP_HOST:$APP_PORT"
   nohup env APP_HOST="$APP_HOST" APP_PORT="$APP_PORT" SOCKETIO_CORS_ORIGINS="$SOCKETIO_CORS_ORIGINS" "$VENV/bin/python" "$PROJECT_DIR/app.py" >> "$LOG_FILE" 2>&1 &
   local pid="$!"
   echo "$pid" > "$PID_FILE"
@@ -222,10 +243,10 @@ start_app() {
 
   sleep 2
   if is_running; then
-    info "Gestartet. PID: $pid, Log: $LOG_FILE"
+    info "Started. PID: $pid, log: $LOG_FILE"
   else
     rm -f "$PID_FILE"
-    die "Start fehlgeschlagen. Letzte Logs: $(tail -n 20 "$LOG_FILE" 2>/dev/null | tr '\n' ' ')"
+    die "Start failed. Last logs: $(tail -n 20 "$LOG_FILE" 2>/dev/null | tr '\n' ' ')"
   fi
 }
 
@@ -234,31 +255,31 @@ stop_app() {
 
   if ! is_running; then
     rm -f "$PID_FILE"
-    info "ConnectSpoofer laeuft nicht."
+    info "ConnectSpoofer is not running."
     return 0
   fi
 
   local pid
   pid="$(current_pid)"
-  info "Stoppe ConnectSpoofer PID $pid..."
+  info "Stopping ConnectSpoofer PID $pid..."
   kill "$pid"
 
   for _ in {1..20}; do
     if ! pid_is_running "$pid"; then
       rm -f "$PID_FILE"
-      info "Gestoppt."
+      info "Stopped."
       return 0
     fi
     sleep 0.5
   done
 
   if pid_belongs_to_app "$pid"; then
-    info "Prozess reagiert nicht; sende SIGKILL."
+    info "Process did not exit; sending SIGKILL."
     kill -9 "$pid"
   fi
 
   rm -f "$PID_FILE"
-  info "Gestoppt."
+  info "Stopped."
 }
 
 restart_app() {
@@ -277,7 +298,7 @@ status_app() {
 
 show_logs() {
   if [[ ! -f "$LOG_FILE" ]]; then
-    die "Noch keine Logdatei vorhanden: $LOG_FILE"
+    die "No log file exists yet: $LOG_FILE"
   fi
   tail -f "$LOG_FILE"
 }
@@ -306,6 +327,6 @@ case "$COMMAND" in
     ;;
   *)
     usage
-    die "Unbekannter Befehl: $COMMAND"
+    die "Unknown command: $COMMAND"
     ;;
 esac

@@ -55,6 +55,7 @@
             <div class="error">{{ error }}</div>
         {% endif %}
         <form method="POST" action="{{ url_for('login') }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <input type="password" name="token" placeholder="Access Token" required autofocus>
             <button type="submit">Login</button>
         </form>
