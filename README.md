@@ -146,6 +146,44 @@ size-capped) and a session-authenticated device API (`/api/devices…`). Ingesti
 limits are tunable via `INGEST_MAX_AGE`, `INGEST_MAX_EVENTS`, `INGEST_MAX_BODY`
 and `INGEST_RATE_LIMIT`.
 
+### Dashboard overlay tabs
+
+Open the dashboard overlay with the **⚙ Settings** button or the **📊 Statistics**
+button. It has four tabs:
+
+- **Statistics**: live counters, protocol/threat charts, top talkers, newest
+  connections, unknown IPs, and suspicious targets. Use the **Device** selector in
+  the header to view all traffic or only one device.
+- **Connections**: sortable connection table with IP, LAN device(s), country,
+  organisation, protocol, packet counts, threat level, and last-seen time. The
+  same **Device** selector scopes the table.
+- **Devices**: enable, stop, rename, colour, filter, add, rotate, or delete
+  capture devices.
+- **Settings**: display options, organisation lists, IP labels, CSV export, and
+  logout.
+
+In the **Devices** tab, each row has two different controls:
+
+- The checkbox at the left only shows/hides that device on the globe and in the
+  lists. It is a display filter.
+- **▶ Start / ■ Stop** controls whether the hub processes that device's traffic.
+  Stopped devices are not processed in the background and disappear from the live
+  views.
+
+Common device rows:
+
+- **local** / your hub device: this is the hub's own network adapter capture. The
+  adapter is selected with `NETWORK_INTERFACE` in the root `.env` or
+  `database/backend_conf.json`. Start it to capture from that adapter; stop it if
+  you only want sensor/FritzDump traffic.
+- **FritzBox** / `module`: this is the FritzDump pcap source. It appears only
+  after the module is enabled. Configure `modules/FritzDump/.env`, then open
+  **Devices** and press **▶ Start** on the FritzBox row. Start launches the
+  FritzDump worker and begins tailing `modules/FritzDump/dumps/`; Stop kills the
+  worker and clears its current data.
+- **sensor** devices: remote hosts registered with **+ Add device**. Start/Stop
+  accepts or rejects their encrypted ingest batches.
+
 ### FritzDump module (capture from pcap files)
 
 Besides live capture from a NIC, the hub can use the **FritzDump** module as a
@@ -201,15 +239,56 @@ and nothing extra runs. Turn it on (Docker):
 
 `fritzdump on/off` **recreates the app container itself** (a plain `restart`
 wouldn't pick up the new mount/env). Outside Docker, just set `FRITZDUMP_ENABLED=1`.
-Once on, the **FritzBox** device appears in the dashboard:
+
+Before you press Start, put the FRITZ!Box login data into the module's own env
+file. This is **not** the root project `.env`; FritzDump reads:
+
+```text
+modules/FritzDump/.env
+```
+
+The module has its own detailed README here:
+[`modules/FritzDump/README.md`](modules/FritzDump/README.md).
+
+Create it from the template and restrict the permissions:
+
+```bash
+cd modules/FritzDump
+cp .env.example .env
+chmod 600 .env
+```
+
+Then edit `modules/FritzDump/.env`:
+
+```dotenv
+FRITZ_HOST=192.168.178.1
+FRITZ_USER=fritz-capture-user
+FRITZ_PW=your-fritzbox-password
+FRITZ_HTTPS=true
+
+# Recommended when FRITZ_HTTPS=true: pin the FRITZ!Box certificate.
+# FRITZ_CACERT=fritzbox.pem
+```
+
+Use a dedicated FRITZ!Box user if possible. It only needs the **"FRITZ!Box
+settings"** permission. If your box uses password-only login without a username,
+set `FRITZ_USER=dslf-config`.
+
+You can test the credentials and list the available capture interfaces directly:
+
+```bash
+cd modules/FritzDump
+./run.sh test
+```
+
+Once configured and enabled, the **FritzBox** device appears in the dashboard:
 
 - FritzDump appears in **Devices** as a built-in `module` device with its own
   colour. It starts **stopped**; press its **▶ Start** button.
 - **Start launches the capture worker for you.** Pressing Start runs the FritzDump
   worker (`modules/FritzDump/run.sh`, which logs into the box and writes the
   pcaps) as a managed child process, then tails the resulting pcaps live. **Stop**
-  kills that worker. You only need to configure `modules/FritzDump/.env` once
-  (FRITZ!Box host + credentials — see the module's README).
+  kills that worker. You only need to configure `modules/FritzDump/.env` once.
 - New packets are picked up within ~1 s; the `home` mode's per-interface
   sub-directories are discovered automatically. FritzDump has no public IP, so its
   globe arcs anchor at the hub's own location.

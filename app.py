@@ -320,6 +320,7 @@ active_clients = set()
 active_clients_lock = threading.Lock()
 db_lock = threading.Lock()
 pinned_ips_cache = {}
+pinned_ips_cache_lock = threading.Lock()
 
 # Per-client Socket.IO rate limiting (sliding window). Caps how often a single
 # client may invoke state-changing events such as pin_ip / reset_packet_count,
@@ -370,23 +371,58 @@ last_ip_updates = {}
 
 # Packet Queue
 class PacketQueue:
-    def __init__(self):
-        self.queue = Queue(maxsize=5000)
+    def __init__(self, maxsize=5000):
+        # multiprocessing.Queue is FIFO, so putting (priority, item) into one
+        # queue did not actually prioritize external traffic. Two queues keep the
+        # capture path non-blocking while process_packets drains external packets
+        # first and only uses internal traffic when the high-priority lane is idle.
+        self.high = Queue(maxsize=maxsize)
+        self.low = Queue(maxsize=maxsize)
+
+    def _is_external(self, item):
+        if 'ip_src' in item or 'ip_dst' in item:
+            return not (is_private_ip(item.get('ip_src', '')) and is_private_ip(item.get('ip_dst', '')))
+        if 'ip' in item:
+            return not is_private_ip(item.get('ip', ''))
+        return True
 
     def put(self, item):
         try:
-            is_external = not (is_private_ip(item.get('ip_src', '')) and is_private_ip(item.get('ip_dst', '')))
+            is_external = self._is_external(item)
             priority = 1 if is_external else 5
-            self.queue.put_nowait((priority, item))
+            target = self.high if is_external else self.low
+            target.put_nowait((priority, item))
             logger.debug(f"Packet queued: {item.get('protocol')}, {'external' if is_external else 'internal'}")
         except Full:
             logger.warning("Queue full, packet dropped")
 
     def get(self, timeout=None):
-        return self.queue.get(timeout=timeout)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if timeout == 0:
+                try:
+                    return self.high.get_nowait()
+                except Empty:
+                    return self.low.get_nowait()
+            high_wait = 0.01
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise Empty
+                high_wait = min(high_wait, remaining)
+            try:
+                return self.high.get(timeout=high_wait)
+            except Empty:
+                pass
+            try:
+                return self.low.get_nowait()
+            except Empty:
+                pass
+            if deadline is not None and time.monotonic() >= deadline:
+                raise Empty
 
     def empty(self):
-        return self.queue.empty()
+        return self.high.empty() and self.low.empty()
 
 class SharedStats:
     """Cross-process packet counters backed by multiprocessing.Value (shared
@@ -442,6 +478,8 @@ def get_mac_vendor(mac):
         response = requests.get(f"https://api.macvendors.com/{mac}", timeout=API_TIMEOUT)
         if response.status_code == 200:
             vendor = response.text.strip() or "Unknown"
+            if vendor != "Unknown":
+                _remember_mac_vendor(mac, vendor)
             with locked(db_lock):
                 try:
                     with db.get_connection() as conn:
@@ -461,6 +499,8 @@ def get_mac_vendor(mac):
         response = requests.get(f"https://maclookup.app/api/v2/macs/{mac}", timeout=2)
         if response.status_code == 200:
             vendor = response.json().get("company", "Unknown").strip() or "Unknown"
+            if vendor != "Unknown":
+                _remember_mac_vendor(mac, vendor)
             with locked(db_lock):
                 try:
                     with db.get_connection() as conn:
@@ -481,8 +521,16 @@ def get_mac_vendor_cached(mac):
     Used inside the packet-capture callbacks so capture is never blocked by an
     outbound HTTP lookup. Cache misses are resolved later by the background
     enrichment worker (see mac_enrichment_worker)."""
-    if not mac:
+    if not is_valid_mac(mac):
         return None
+    now = time.time()
+    with locked(mac_vendor_hot_cache_lock):
+        cached = mac_vendor_hot_cache.get(mac)
+        if cached:
+            vendor, expiry = cached
+            if expiry > now:
+                return vendor
+            del mac_vendor_hot_cache[mac]
     # Read-only and on the capture path (also the forked sniffer process): use a
     # lock-free connection. WAL serves a consistent snapshot without blocking on
     # the writer.
@@ -491,7 +539,11 @@ def get_mac_vendor_cached(mac):
             c = conn.cursor()
             c.execute("SELECT vendor FROM mac_cache WHERE mac = %s", (mac,))
             result = c.fetchone()
-            return result[0] if result else None
+            if result:
+                _remember_mac_vendor(mac, result[0])
+                return result[0]
+            _remember_mac_vendor(mac, None, ttl=MAC_VENDOR_MISS_TTL)
+            return None
     except db.DBError as e:
         logger.error(f"Error reading mac_cache for MAC {mac}: {e}")
         return None
@@ -507,6 +559,19 @@ mac_enrich_lock = threading.Lock()
 # MAC cannot hammer the external vendor APIs. TTL is refreshed on each miss.
 MAC_NEGATIVE_TTL = int(os.environ.get('MAC_NEGATIVE_TTL', str(24 * 3600)))
 mac_negative_cache = {}  # mac -> expiry timestamp
+# Hot-path read-through cache for mac_cache. Repeated packets from the same MAC
+# should not borrow a DB connection every time; misses are cached briefly because
+# the enrichment worker will refresh the entry once a vendor is learned.
+MAC_VENDOR_CACHE_TTL = int(os.environ.get('MAC_VENDOR_CACHE_TTL', '300'))
+MAC_VENDOR_MISS_TTL = int(os.environ.get('MAC_VENDOR_MISS_TTL', '30'))
+mac_vendor_hot_cache = {}  # mac -> (vendor_or_None, expiry)
+mac_vendor_hot_cache_lock = threading.Lock()
+
+def _remember_mac_vendor(mac, vendor, ttl=MAC_VENDOR_CACHE_TTL):
+    if not is_valid_mac(mac):
+        return
+    with locked(mac_vendor_hot_cache_lock):
+        mac_vendor_hot_cache[mac] = (vendor, time.time() + ttl)
 
 def queue_mac_enrichment(mac):
     """Schedule a background vendor lookup for `mac` (deduplicated, non-blocking)."""
@@ -539,6 +604,7 @@ def mac_enrichment_worker():
         try:
             vendor = get_mac_vendor(mac)  # network lookup; also writes mac_cache
             if vendor and vendor != "Unknown":
+                _remember_mac_vendor(mac, vendor)
                 with locked(db_lock):
                     try:
                         with db.get_connection() as conn:
@@ -568,9 +634,15 @@ def load_pinned_ips():
         with db_connect() as conn:
             c = conn.cursor()
             c.execute("SELECT ip, packet_count FROM pinned_ips")
-            pinned_ips_cache = {row[0]: row[1] for row in c.fetchall()}
+            loaded = {row[0]: row[1] for row in c.fetchall()}
+        with locked(pinned_ips_cache_lock):
+            pinned_ips_cache = loaded
     except db.DBError as e:
         logger.error(f"Error loading pinned IPs: {e}")
+
+def is_ip_pinned_cached(ip):
+    with locked(pinned_ips_cache_lock):
+        return ip in pinned_ips_cache
 
 def update_pinned_ips(ip, is_pinned):
     global pinned_ips_cache
@@ -581,10 +653,12 @@ def update_pinned_ips(ip, is_pinned):
                 if is_pinned:
                     c.execute("INSERT INTO pinned_ips (ip, packet_count) VALUES (%s, 0) "
                               "ON CONFLICT (ip) DO NOTHING", (ip,))
-                    pinned_ips_cache[ip] = 0
+                    with locked(pinned_ips_cache_lock):
+                        pinned_ips_cache[ip] = 0
                 else:
                     c.execute("DELETE FROM pinned_ips WHERE ip = %s", (ip,))
-                    pinned_ips_cache.pop(ip, None)
+                    with locked(pinned_ips_cache_lock):
+                        pinned_ips_cache.pop(ip, None)
                 conn.commit()
         except db.DBError as e:
             logger.error(f"Error updating pinned IPs for {ip}: {e}")
@@ -1185,6 +1259,9 @@ def init_db():
             logger.error(f"Error initializing database: {e}")
     # Prime the in-memory Start/Stop set from the persisted enabled flags.
     refresh_disabled_devices()
+    # Prime the in-memory pin set used by process_packets to avoid one DB read
+    # per private packet while internal search is disabled.
+    load_pinned_ips()
 
 _BOOL_SETTINGS = {
     'is_internal_search_active', 'show_all_udp_packets',
@@ -2936,13 +3013,11 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
                     if not packet_data.get("vendor") or packet_data.get("vendor") == "Unknown":
                         queue_mac_enrichment(packet_data.get("mac"))
                     if is_private_ip(ip) and not is_internal_search_active.value:
-                        # Hot-path read: lock-free so a packet flood's pinned-check
-                        # never serializes behind the 1s write flush.
-                        with db_connect() as conn:
-                            c = conn.cursor()
-                            c.execute("SELECT ip FROM pinned_ips WHERE ip = %s", (ip,))
-                            if not c.fetchone():
-                                continue
+                        # Hot path: the pin set is tiny and changes only via UI
+                        # events, so keep it in memory instead of borrowing a DB
+                        # connection for every private packet.
+                        if not is_ip_pinned_cached(ip):
+                            continue
                     update_ip(
                         ip,
                         packet_data["direction"],

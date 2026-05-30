@@ -26,6 +26,10 @@ umask 077
 # Configuration lives in .env (copy from .env.example); set NETWORK_INTERFACE there.
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fixed Compose project name so container/image/volume names are branded
+# (gdef-l1nk-app-1, gdef-l1nk-db-1, ...) instead of being derived from the
+# host directory name. Must be lowercase per Compose's project-name rules.
+PROJECT_NAME="gdef-l1nk"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
 DEV_COMPOSE_FILE="$PROJECT_DIR/docker-compose.dev.yml"
 DEV_MARKER="$PROJECT_DIR/.dev-mode"
@@ -84,7 +88,7 @@ compose() {
   local files=(-f "$COMPOSE_FILE")
   [[ -f "$DEV_MARKER" ]]       && files+=(-f "$DEV_COMPOSE_FILE")
   [[ -f "$FRITZDUMP_MARKER" ]] && files+=(-f "$FRITZDUMP_COMPOSE_FILE")
-  "${COMPOSE[@]}" --project-directory "$PROJECT_DIR" "${files[@]}" "$@"
+  "${COMPOSE[@]}" -p "$PROJECT_NAME" --project-directory "$PROJECT_DIR" "${files[@]}" "$@"
 }
 
 # Read a KEY=VALUE from .env without sourcing it (returns $2 if unset).
