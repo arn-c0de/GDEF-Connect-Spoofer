@@ -28,7 +28,7 @@ import signal
 import subprocess
 from contextlib import contextmanager
 from functools import wraps
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 import secrets
 
 # Logging Setup
@@ -218,6 +218,9 @@ SOCKETIO_PING_INTERVAL = 25
 DATABASE_DIR = CONFIG["database_dir"]
 DATABASE_PATH = CONFIG["database_path"]
 TRUSTED_ORGS_PATH = os.path.join(DATABASE_DIR, "trusted_organisations.json")
+# Operator-defined friendly names for local/LAN IPs (e.g. 192.168.178.100 -> "PC-E1").
+# Display-only; surfaced in the dashboard's "LAN device" columns.
+IP_LABELS_PATH = os.path.join(DATABASE_DIR, "ip_labels.json")
 
 # --- Multi-device (sensor) identity -----------------------------------------
 # Every captured connection belongs to a "device". The hub's own local capture
@@ -728,9 +731,10 @@ def login():
             target = request.args.get('next')
             if not is_safe_redirect_target(target):
                 return redirect(url_for('index'))
-            # Pin the redirect to this origin: the host comes from our own
-            # request, only the (validated, host-free) path comes from 'next'.
-            return redirect(urljoin(request.host_url, target.lstrip('/')))
+            # is_safe_redirect_target guarantees a rooted, host-free local path
+            # ('/...'), so redirecting to it verbatim stays same-origin — a
+            # relative path carries no scheme/host and can never point off-site.
+            return redirect(target)
         login_register_failure(client_ip)
         logger.warning(f"Failed login attempt from {client_ip}")
         error = 'Invalid access token'
@@ -844,6 +848,48 @@ def api_organisations():
         return jsonify({"status": "ok"})
     except Exception as e:
         logger.error(f"Error updating organisations: {e}")
+        return jsonify({"error": "write failed"}), 500
+
+
+@app.route('/api/ip-labels', methods=['GET', 'PUT'])
+@login_required
+def api_ip_labels():
+    """Read (GET) or overwrite (PUT) the operator's IP -> friendly-name map.
+
+    Stored as a flat JSON object, e.g. {"192.168.178.100": "PC-E1"}. Used purely
+    for display (the dashboard shows the name next to a LAN IP)."""
+    if request.method == 'GET':
+        try:
+            with open(IP_LABELS_PATH, 'r') as f:
+                return jsonify(json.load(f))
+        except FileNotFoundError:
+            return jsonify({})
+        except Exception as e:
+            logger.error(f"Error reading ip labels: {e}")
+            return jsonify({"error": "read failed"}), 500
+
+    # PUT — replace the whole map. Validate it's a flat {str: str} object and
+    # cap the size so a stray client can't write an unbounded file.
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    if len(data) > 5000:
+        return jsonify({"error": "too many entries"}), 400
+    cleaned = {}
+    for ip, name in data.items():
+        if not isinstance(ip, str) or not isinstance(name, str):
+            return jsonify({"error": "keys and values must be strings"}), 400
+        ip = ip.strip()
+        name = name.strip()[:64]
+        if ip and name:
+            cleaned[ip] = name
+    try:
+        with open(IP_LABELS_PATH, 'w') as f:
+            json.dump(cleaned, f, indent=4)
+        logger.info(f"IP labels updated by {request.remote_addr} ({len(cleaned)} entries)")
+        return jsonify({"status": "ok", "count": len(cleaned)})
+    except Exception as e:
+        logger.error(f"Error updating ip labels: {e}")
         return jsonify({"error": "write failed"}), 500
 
 
@@ -1901,7 +1947,22 @@ def _valid_device_id(s):
 
 
 def device_key_path(device_id):
-    return os.path.join(DEVICE_KEYS_DIR, f"{device_id}.key")
+    """Build the on-disk path for a device's key.
+
+    Single choke point for turning a device id into a path, so path-traversal
+    is impossible no matter which caller we came from: the id must match
+    _DEVICE_ID_RE (no '/', '.' or other separators), and as belt-and-braces we
+    normalise the result and confirm it still lives directly inside
+    DEVICE_KEYS_DIR. An id that fails either check raises rather than escaping
+    the key directory.
+    """
+    if not _valid_device_id(device_id):
+        raise ValueError(f"invalid device id: {device_id!r}")
+    base = os.path.normpath(DEVICE_KEYS_DIR)
+    path = os.path.normpath(os.path.join(base, f"{device_id}.key"))
+    if os.path.dirname(path) != base:
+        raise ValueError(f"device key path escapes key directory: {device_id!r}")
+    return path
 
 
 def load_device_key(device_id):

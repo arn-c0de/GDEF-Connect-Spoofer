@@ -29,6 +29,8 @@ database/geo_data.db-wal
 # Generated config files (created on first start)
 database/backend_conf.json
 database/trusted_organisations.json
+# Operator IP labels (LAN IP -> friendly name), created when first saved
+database/ip_labels.json
 
 # Secrets (created on first start) - never commit
 database/access_token.txt
@@ -38,6 +40,6 @@ database/devices/
 # FritzDump worker stdout/stderr (runtime diagnostics)
 database/fritzdump_worker.log
 
-# FritzDump capture module: cloned/installed separately (its own git repo), and
-# its pcap dumps must never be committed.
-modules/
+# Capture modules under modules/ are tracked as git submodules (each its own
+# repo with its own .gitignore, e.g. modules/FritzDump -> fritzdump.git). The
+# parent stores only the submodule pointer, never a module's secrets or dumps.

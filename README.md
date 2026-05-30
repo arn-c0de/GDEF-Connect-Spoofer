@@ -21,6 +21,7 @@ It is designed as a standalone module that can be run independently today and in
 - **Threat enrichment**: Uses FireHOL-style blocklist data for basic reputation context.
 - **Multi-device aggregation**: Acts as a hub for remote sensors — each a named, coloured origin — with encrypted push ingestion and per-device statistics.
 - **Operational controls**: Supports TCP/UDP filters, local/external toggles, pinned IPs, and live statistics.
+- **Unified dashboard panel**: A single tabbed overlay (**Statistics · Connections · Devices · Settings**) for all charts, the connection table, device management, and configuration — opened via the ⚙ (Settings) or 📊 (Statistics) buttons.
 - **Suite-ready structure**: Keeps runtime configuration, datasets, scripts, and web assets separated for modular GDEF Suite integration.
 
 ## Requirements
@@ -173,9 +174,19 @@ FRITZ!Box ──(login + capture)──> modules/FritzDump/run.sh ──> dumps/
    the connections appear on the globe and in the stats.
 
 Because the FRITZ!Box sees the whole LAN, each external connection also records
-its **local peer** — *which device in your network* (e.g. `192.168.178.50`) is
-talking to that external IP. It is shown as **"Local device"** in a point's detail
-panel and as a **"LAN device"** column in the Connections tab.
+its **local peer(s)** — *which device(s) in your network* are talking to that
+external IP. A single external server is often reached by several local hosts at
+once (e.g. `192.168.178.100`, `.90`, `.44`), so the dashboard collects **all** of
+them. The LAN device(s) appear:
+
+- inline under each row in the live **connection list** (`→ 192.168.178.100, …`),
+- as **"LAN device(s)"** in a point's detail panel, and
+- as a sortable **"LAN device(s)"** column in the Connections tab.
+
+You can give your own hosts friendly names under **Settings → IP Labels** (one
+`IP Name` per line, e.g. `192.168.178.100 PC-E1`). Names are stored as a simple
+JSON map (`database/ip_labels.json`) and shown as `PC-E1 (192.168.178.100)`
+everywhere a LAN device is listed.
 
 **Stop** kills the worker and clears its data. The module is just another device,
 so it honours the same per-device colour, visibility, and Start/Stop as any sensor.

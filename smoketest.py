@@ -1198,6 +1198,26 @@ def t_local_ip_captured():
     assert_eq(m["local_ip"], "192.168.178.50", "local_ip in the ip_update payload")
 
 
+@check("/api/ip-labels (GET default / PUT validate / round-trip)")
+def t_ip_labels():
+    client = _auth_client()
+    # Unauthenticated access is redirected to the login page.
+    anon = app.app.test_client()
+    assert_eq(anon.get("/api/ip-labels").status_code, 302, "ip-labels requires login")
+    # PUT a valid map, then GET it back.
+    r = client.put("/api/ip-labels", json={"192.168.178.100": "PC-E1", "192.168.178.90 ": " NAS "})
+    assert_eq(r.status_code, 200, "valid PUT accepted")
+    got = client.get("/api/ip-labels").get_json()
+    assert_eq(got.get("192.168.178.100"), "PC-E1", "label round-trips")
+    assert_eq(got.get("192.168.178.90"), "NAS", "keys/values are trimmed")
+    # Non-object body and non-string values are rejected.
+    assert_eq(client.put("/api/ip-labels", json=["nope"]).status_code, 400, "list body rejected")
+    assert_eq(client.put("/api/ip-labels", json={"1.2.3.4": 5}).status_code, 400, "non-string value rejected")
+    # An empty object clears the map.
+    assert_eq(client.put("/api/ip-labels", json={}).status_code, 200, "empty PUT clears")
+    assert_eq(client.get("/api/ip-labels").get_json(), {}, "map cleared")
+
+
 @check("fritzdump_packet_callback (device-tagged queue item)")
 def t_fritzdump_callback():
     q = app.PacketQueue()
@@ -1390,6 +1410,7 @@ ALL_TESTS = [
     t_capture_sources_fritzdump,
     t_capture_sources_modified_pcap,
     t_local_ip_captured,
+    t_ip_labels,
     t_fritzdump_callback,
     t_device_startstop,
     t_fritzdump_end_to_end,

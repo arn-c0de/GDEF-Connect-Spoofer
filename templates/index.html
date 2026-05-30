@@ -48,26 +48,13 @@
         <!-- Globe -->
         <div id="globeViz"></div>
 
-        <!-- Settings button -->
+        <!-- Settings button (opens the unified overlay on the Settings page) -->
         <button id="menuButton" title="Settings">⚙️</button>
 
-        <!-- Settings sidebar -->
+        <!-- Settings source sections. On load these are relocated by globe.js into
+             the unified overlay's Settings page (buildOverlay), keeping their IDs
+             and wiring intact. This div is removed once relocated. -->
         <div id="sidebar">
-
-            <div class="sidebar-section">
-                <h4>Network Stats</h4>
-                <div class="stat-grid">
-                    <div class="stat-card"><span id="statTCP">—</span><small>TCP Pkts</small></div>
-                    <div class="stat-card"><span id="statUDP">—</span><small>UDP Pkts</small></div>
-                    <div class="stat-card"><span id="statBytes">—</span><small>Bytes</small></div>
-                    <div class="stat-card"><span id="statActive">—</span><small>Active</small></div>
-                </div>
-                <div class="threat-summary">
-                    <span id="statThreatHigh" class="threat-badge threat-high">0 HIGH</span>
-                    <span id="statThreatMed"  class="threat-badge threat-medium">0 MED</span>
-                    <span id="statThreatLow"  class="threat-badge threat-low">0 LOW</span>
-                </div>
-            </div>
 
             <div class="sidebar-section">
                 <h4>Display</h4>
@@ -91,6 +78,16 @@
                     <label>Dangerous</label>
                     <textarea id="orgDangerous"  rows="3" placeholder="Malware Host"></textarea>
                     <button id="saveOrgs" class="save-orgs-btn">Save Lists</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>IP Labels</h4>
+                <div class="org-editor">
+                    <label>Name your LAN hosts — one per line: <code>IP Name</code></label>
+                    <textarea id="ipLabels" rows="5"
+                              placeholder="192.168.178.100 PC-E1&#10;192.168.178.90 NAS&#10;192.168.178.44 Phone"></textarea>
+                    <button id="saveIpLabels" class="save-orgs-btn">Save Labels</button>
                 </div>
             </div>
 
