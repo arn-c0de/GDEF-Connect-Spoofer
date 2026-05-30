@@ -11,6 +11,11 @@ umask 077
 #   sudo ./run.sh status
 #   sudo ./run.sh logs
 #
+# Least-privilege (run as non-root): grant capture capabilities once, then
+# start/stop without sudo:
+#   sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f .venv/bin/python)"
+#   ./run.sh start
+#
 # Environment:
 #   PYTHON=python3.11      Override Python executable/version
 #   UV=uv                  Select uv executable
@@ -63,8 +68,32 @@ usage() {
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
-    die "Root privileges are required for packet sniffing. Run: sudo $0 $*"
+    die "Root privileges are required for this command. Run: sudo $0 $*"
   fi
+}
+
+# Packet capture needs CAP_NET_RAW. Allow running as a non-root user when the
+# interpreter that will run app.py has been granted the capability via setcap
+# (least privilege). Falls back to requiring root otherwise.
+require_capture_privileges() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    return 0
+  fi
+
+  local py="$VENV/bin/python"
+  if command -v getcap >/dev/null 2>&1 && [[ -x "$py" ]]; then
+    local real_py caps
+    real_py="$(readlink -f "$py")"
+    caps="$(getcap "$real_py" 2>/dev/null || true)"
+    if [[ "$caps" == *cap_net_raw* ]]; then
+      info "Running as non-root using granted capabilities on $real_py"
+      return 0
+    fi
+  fi
+
+  die "Packet capture needs root or CAP_NET_RAW. Either run: sudo $0 ${COMMAND}
+  or grant the capability once to run as a non-root user (least privilege):
+    sudo setcap cap_net_raw,cap_net_admin=eip \$(readlink -f \"$VENV/bin/python\")"
 }
 
 detect_package_manager() {
@@ -221,9 +250,9 @@ is_running() {
 }
 
 start_app() {
-  require_root "$@"
   ensure_directories
   ensure_venv
+  require_capture_privileges
   configure_interface
 
   if is_running; then
@@ -251,8 +280,8 @@ start_app() {
 }
 
 stop_app() {
-  require_root "$@"
-
+  # No root required: the user who started the app owns the process and may
+  # signal it. install (package management) still requires root.
   if ! is_running; then
     rm -f "$PID_FILE"
     info "ConnectSpoofer is not running."

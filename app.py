@@ -38,9 +38,9 @@ try:
 except Exception as e:
     logger.error(f"Could not save access token to file: {e}")
 
-# Still print token to stderr for convenience during first run/local development
-print("\n" + "="*50 + f"\nACCESS TOKEN: {ACCESS_TOKEN}\n" + "="*50 + "\n", file=sys.stderr)
-print(f"Token also saved to: {TOKEN_FILE}", file=sys.stderr)
+# Log hygiene: never write the token itself to stderr/app.log. The token is
+# only persisted to TOKEN_FILE (0600). Retrieve it with: cat database/access_token.txt
+print(f"Access token written to: {TOKEN_FILE} (run: cat {TOKEN_FILE})", file=sys.stderr)
 
 def login_required(f):
     @wraps(f)
@@ -49,6 +49,63 @@ def login_required(f):
             return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
     return decorated_function
+
+def is_safe_redirect_target(target):
+    """Allow only local, relative redirect targets (open-redirect protection).
+
+    Accepts paths like '/index' but rejects absolute URLs ('http://evil'),
+    scheme-relative URLs ('//evil') and backslash tricks ('/\\evil')."""
+    if not target:
+        return False
+    # Reject anything that isn't a plain path rooted at '/'
+    if not target.startswith('/'):
+        return False
+    # '//host' and '/\host' are scheme-relative / host-relative -> external
+    if target.startswith('//') or target.startswith('/\\'):
+        return False
+    # A control char or embedded scheme indicates an attempt to escape
+    if '\\' in target or '\n' in target or '\r' in target:
+        return False
+    return True
+
+# Brute-force protection for the login form (simple in-memory limiter).
+LOGIN_MAX_ATTEMPTS = int(os.environ.get('LOGIN_MAX_ATTEMPTS', '5'))
+LOGIN_LOCKOUT_SECONDS = int(os.environ.get('LOGIN_LOCKOUT_SECONDS', '300'))
+login_attempts = {}  # ip -> [fail_count, first_attempt_ts, locked_until_ts]
+login_attempts_lock = threading.Lock()
+
+def login_is_locked(ip):
+    """Return remaining lockout seconds for an IP, or 0 if not locked."""
+    now = time.time()
+    with login_attempts_lock:
+        record = login_attempts.get(ip)
+        if not record:
+            return 0
+        locked_until = record[2]
+        if locked_until and now < locked_until:
+            return int(locked_until - now)
+        # Lockout window expired -> reset
+        if locked_until and now >= locked_until:
+            login_attempts.pop(ip, None)
+        return 0
+
+def login_register_failure(ip):
+    """Record a failed login attempt and lock the IP once the limit is hit."""
+    now = time.time()
+    with login_attempts_lock:
+        # Opportunistic cleanup to bound memory usage.
+        for old_ip in [k for k, v in login_attempts.items()
+                       if v[2] and now >= v[2] and now - v[1] > LOGIN_LOCKOUT_SECONDS]:
+            login_attempts.pop(old_ip, None)
+        record = login_attempts.get(ip, [0, now, 0])
+        record[0] += 1
+        if record[0] >= LOGIN_MAX_ATTEMPTS:
+            record[2] = now + LOGIN_LOCKOUT_SECONDS
+        login_attempts[ip] = record
+
+def login_register_success(ip):
+    with login_attempts_lock:
+        login_attempts.pop(ip, None)
 
 # Path to configuration file
 BACKEND_CONF_PATH = os.path.join("database", "backend_conf.json")
@@ -254,12 +311,24 @@ def add_security_headers(response):
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
+    client_ip = request.remote_addr or 'unknown'
     if request.method == 'POST':
+        remaining = login_is_locked(client_ip)
+        if remaining > 0:
+            logger.warning(f"Login blocked for {client_ip}: locked for {remaining}s")
+            error = f'Too many failed attempts. Try again in {remaining} seconds.'
+            return render_template('login.html', error=error), 429
         submitted_token = request.form.get('token', '')
         if secrets.compare_digest(submitted_token, ACCESS_TOKEN):
+            login_register_success(client_ip)
             session.clear()
             session['authenticated'] = True
-            return redirect(request.args.get('next') or url_for('index'))
+            target = request.args.get('next')
+            if not is_safe_redirect_target(target):
+                target = url_for('index')
+            return redirect(target)
+        login_register_failure(client_ip)
+        logger.warning(f"Failed login attempt from {client_ip}")
         error = 'Invalid access token'
     return render_template('login.html', error=error)
 
@@ -349,12 +418,37 @@ def get_local_ip():
         logger.error(f"Error getting local IP: {e}")
         return "127.0.0.1"
 
+# Linux capability bits required for raw packet capture.
+CAP_NET_ADMIN = 12
+CAP_NET_RAW = 13
+
+def has_net_capabilities():
+    """On Linux, check whether the effective capability set grants the rights
+    needed for sniffing (CAP_NET_RAW / CAP_NET_ADMIN). This lets the app run as
+    a non-root user when the Python binary has been granted capabilities via:
+        sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))
+    """
+    try:
+        with open('/proc/self/status', 'r') as f:
+            for line in f:
+                if line.startswith('CapEff:'):
+                    cap_eff = int(line.split()[1], 16)
+                    needed = (1 << CAP_NET_RAW)
+                    return (cap_eff & needed) == needed
+    except Exception as e:
+        logger.debug(f"Could not read capabilities: {e}")
+    return False
+
 def is_admin():
+    """Return True if the process can capture raw packets: either it is root /
+    Administrator, or (on Linux) it holds the required net capabilities."""
     try:
         if sys.platform == 'win32':
             return ctypes.windll.shell32.IsUserAnAdmin()
-        else:
-            return os.geteuid() == 0
+        if os.geteuid() == 0:
+            return True
+        # Non-root: accept if capabilities have been granted (least privilege).
+        return has_net_capabilities()
     except Exception as e:
         logger.error(f"Error checking admin privileges: {e}")
         return False
@@ -600,6 +694,12 @@ last_api_call = 0
 API_CALL_INTERVAL = 0.1
 UDP_FILTER_PORTS = {137, 138, 1900, 5353}
 
+# Geolocation providers. ipinfo.io (HTTPS) is primary; ip-api.com (HTTP) is an
+# optional fallback. Provide IPINFO_TOKEN for higher limits, or set
+# ALLOW_INSECURE_GEO_API=0 to disable the unencrypted HTTP fallback entirely.
+IPINFO_TOKEN = os.environ.get('IPINFO_TOKEN', '').strip()
+ALLOW_INSECURE_GEO_API = os.environ.get('ALLOW_INSECURE_GEO_API', '1').lower() in ('1', 'true', 'yes')
+
 def get_geo_data(ip, my_geo_data=None):
     global last_api_call
     now = time.time()
@@ -625,27 +725,13 @@ def get_geo_data(ip, my_geo_data=None):
         time_since_last_call = now - last_api_call
         if time_since_last_call < API_CALL_INTERVAL:
             time.sleep(API_CALL_INTERVAL - time_since_last_call)
+        # Primary provider: ipinfo.io over HTTPS (encrypted in transit, free tier
+        # supports TLS). Set IPINFO_TOKEN to raise the rate limit.
         try:
-            response = requests.get(f"http://ip-api.com/json/{ip}", timeout=2)
-            last_api_call = time.time()
-            data = response.json()
-            if data.get("status") == "success" and isinstance(data.get("lat"), (int, float)) and isinstance(data.get("lon"), (int, float)):
-                geo_data = {
-                    "ip": ip,
-                    "lat": data["lat"],
-                    "lon": data["lon"],
-                    "city": data.get("city", "Unknown"),
-                    "country": data.get("country", "Unknown"),
-                    "region": data.get("regionName", "Unknown"),
-                    "org": data.get("org", data.get("isp", "Not available"))
-                }
-                with cache_lock:
-                    geo_cache[ip] = {"data": geo_data, "timestamp": now}
-                return geo_data
-        except Exception as e:
-            logger.warning(f"Error at ip-api for {ip}: {e}")
-        try:
-            response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=2)
+            ipinfo_url = f"https://ipinfo.io/{ip}/json"
+            if IPINFO_TOKEN:
+                ipinfo_url += f"?token={IPINFO_TOKEN}"
+            response = requests.get(ipinfo_url, timeout=2)
             last_api_call = time.time()
             data = response.json()
             if "loc" in data:
@@ -663,7 +749,30 @@ def get_geo_data(ip, my_geo_data=None):
                     geo_cache[ip] = {"data": geo_data, "timestamp": now}
                 return geo_data
         except Exception as e:
-            logger.warning(f"Error at ipinfo for {ip}: {e}")
+            logger.warning(f"Error at ipinfo (https) for {ip}: {e}")
+        # Fallback provider: ip-api.com. The free tier is HTTP-only, so this is
+        # used only when the HTTPS provider above is unavailable. Opt out by
+        # setting ALLOW_INSECURE_GEO_API=0.
+        if ALLOW_INSECURE_GEO_API:
+            try:
+                response = requests.get(f"http://ip-api.com/json/{ip}", timeout=2)
+                last_api_call = time.time()
+                data = response.json()
+                if data.get("status") == "success" and isinstance(data.get("lat"), (int, float)) and isinstance(data.get("lon"), (int, float)):
+                    geo_data = {
+                        "ip": ip,
+                        "lat": data["lat"],
+                        "lon": data["lon"],
+                        "city": data.get("city", "Unknown"),
+                        "country": data.get("country", "Unknown"),
+                        "region": data.get("regionName", "Unknown"),
+                        "org": data.get("org", data.get("isp", "Not available"))
+                    }
+                    with cache_lock:
+                        geo_cache[ip] = {"data": geo_data, "timestamp": now}
+                    return geo_data
+            except Exception as e:
+                logger.warning(f"Error at ip-api (http fallback) for {ip}: {e}")
         geo_data = {
             "ip": ip,
             "lat": DEFAULT_COORDS[0],
@@ -1208,7 +1317,11 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
         if sys.platform == 'win32':
             logger.error("This script requires administrator privileges.")
         else:
-            logger.error("This script requires root privileges (sudo).")
+            logger.error(
+                "Packet capture requires CAP_NET_RAW. Either run with sudo, or "
+                "grant capabilities to run as a non-root user (least privilege):\n"
+                "  sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))"
+            )
         sys.exit(1)
     validate_interface()
     init_db()
