@@ -32,30 +32,32 @@ It is designed as a standalone module that can be run independently today and in
 
 ## Quick Start
 
-### Windows
+ConnectSpoofer is protected by a token-based login. The access token is generated on first start and stored securely in `database/access_token.txt`.
 
-Install Npcap first, then run the launcher as administrator:
+### Windows (Recommended)
 
-```powershell
-start.bat
-```
+1.  **Install Npcap**: Download and install from [npcap.com](https://npcap.com/). Select "Install Npcap with WinPcap API-compatible Mode".
+2.  **Run Launcher**: Right-click `start.bat` and select **"Run as Administrator"**.
+    *   The script will automatically harden the `database/` folder permissions (only you and Administrators will have access).
+    *   It will synchronize dependencies using `uv` (or `pip` fallback).
+3.  **Access Dashboard**: Open `http://localhost:8000`.
+4.  **Login**: Find your access token in `database/access_token.txt`.
 
-### Linux/macOS
+### Linux / macOS
 
-```bash
-sudo ./run.sh install
-sudo ./run.sh start
-```
+1.  **Install & Setup**:
+    ```bash
+    sudo ./run.sh install
+    ```
+2.  **Start the Service**:
+    ```bash
+    sudo ./run.sh start
+    ```
+    *   *Note: Use `sudo ./run.sh logs` to follow the output.*
+3.  **Access Dashboard**: Open `http://localhost:8000`.
+4.  **Login**: Retrieve your token: `cat database/access_token.txt`.
 
-The web UI is available at:
-
-```text
-http://localhost:8000
-```
-
-The launcher creates or updates `.venv`, installs dependencies from `pyproject.toml` with `uv sync --no-dev`, falls back to `requirements.txt` with pip when `uv` is unavailable, and starts the app in the background.
-
-## Service Commands
+## Service Commands (Linux/macOS)
 
 ```bash
 sudo ./run.sh install   # install system packages, sync Python deps, configure interface
@@ -66,43 +68,40 @@ sudo ./run.sh status    # print running/stopped state
 sudo ./run.sh logs      # follow app.log
 ```
 
-By default, the server binds to `127.0.0.1:8000`. To expose it on a trusted network, set both the bind address and allowed Socket.IO origin:
+### Least-Privilege Mode (Linux)
+
+You can run ConnectSpoofer without full `root` by granting specific network capabilities to the Python interpreter:
 
 ```bash
-sudo APP_HOST=0.0.0.0 SOCKETIO_CORS_ORIGINS=http://YOUR-LAN-IP:8000 ./run.sh restart
-```
-
-To select a different network interface:
-
-```bash
-sudo RESELECT_INTERFACE=1 ./run.sh start
-```
-
-### Running without root (least privilege)
-
-Packet capture only needs the `CAP_NET_RAW` capability, not full root. Grant it
-once to the virtualenv interpreter, then start/stop as your normal user:
-
-```bash
+# Grant capabilities once
 sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f .venv/bin/python)"
+
+# Now run without sudo
 ./run.sh start
 ```
 
-`install` still requires `sudo` because it installs system packages.
+## Security & Privacy
 
-### Security-relevant environment variables
+ConnectSpoofer is built with a **Security-First** approach:
+- **Authentication**: Mandatory token-based login (Timing-safe comparison).
+- **Hardened Sessions**: HTTPOnly, SameSite=Lax, and Secure-cookie support.
+- **XSS Protection**: Strict HTML escaping and a robust Content Security Policy (CSP).
+- **CSRF Protection**: Cryptographic tokens for all state-changing actions.
+- **DoS Resilience**: In-memory resource limits and Socket.IO rate limiting.
+- **Data Protection**:
+    - **Windows**: ACL hardening (icacls) for sensitive data.
+    - **Linux**: Secure umask (077) and private directory permissions (0700).
+- **Least Privilege**: Support for Linux capabilities (`setcap`).
+
+### Security Environment Variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FLASK_SECRET_KEY` | random per start | Stable session signing key |
-| `SESSION_COOKIE_SECURE` | off | Set to `1`/`true` when served over HTTPS |
+| `FLASK_SECRET_KEY` | random | Stable session signing key |
+| `SESSION_COOKIE_SECURE` | off | Set to `1` when using HTTPS |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Failed logins per IP before lockout |
-| `LOGIN_LOCKOUT_SECONDS` | `300` | Lockout duration after too many failures |
-| `IPINFO_TOKEN` | unset | Token for the HTTPS ipinfo.io geolocation provider |
-| `ALLOW_INSECURE_GEO_API` | `1` | Set to `0` to disable the HTTP ip-api.com fallback |
-
-The access token is written only to `database/access_token.txt` (mode `0600`);
-retrieve it with `cat database/access_token.txt`.
+| `SOCKET_RATE_LIMIT` | `5` | Max Socket.IO events per second per client |
+| `ALLOW_INSECURE_GEO_API`| `1` | Set to `0` to disable HTTP fallbacks (ip-api.com) |
 
 ## Python Workflow
 
@@ -158,21 +157,28 @@ The author assumes no responsibility for misuse.
 ## Troubleshooting
 
 ### `NPF not found` on Windows
+This indicates that Npcap is missing or not running.
+- **Fix**: Install Npcap from [npcap.com](https://npcap.com/).
+- **Crucial**: Ensure "WinPcap API-compatible Mode" is checked during installation.
 
-Install Npcap from `https://npcap.com/` and enable WinPcap API-compatible mode during installation if required.
+### Permission Denied (Linux)
+Packet capture requires raw socket access.
+- **Solution 1 (Recommended)**: Use the Least-Privilege mode with `setcap` (see above).
+- **Solution 2**: Run the service with `sudo ./run.sh start`.
+
+### Login Failed / Token Missing
+The dashboard is locked by default.
+- **Fix**: Check `database/access_token.txt` for your unique code.
+- **Windows**: If you cannot see the file, ensure you ran `start.bat` as Administrator.
 
 ### Interface names show only NPF paths
-
-Use the interface menu debug option or run:
-
+Use the interface diagnostics helper:
 ```bash
 python debug_interfaces.py
 ```
-
-### Missing privileges
-
-Use `sudo ./run.sh start` on Linux/macOS, or grant `CAP_NET_RAW` to run without
-root (see "Running without root" above). On Windows, run `start.bat` as administrator.
+Or use the interactive selection via launcher:
+- **Linux**: `sudo RESELECT_INTERFACE=1 ./run.sh start`
+- **Windows**: Press `I` when prompted by `start.bat`.
 
 ## License
 
