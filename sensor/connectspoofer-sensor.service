@@ -1,0 +1,24 @@
+[Unit]
+Description=ConnectSpoofer sensor worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these paths to wherever you deployed the sensor.
+WorkingDirectory=/opt/connectspoofer-sensor
+EnvironmentFile=/opt/connectspoofer-sensor/sensor.env
+ExecStart=/opt/connectspoofer-sensor/.venv/bin/python /opt/connectspoofer-sensor/sensor.py
+
+# Least privilege: grant only raw-socket capture instead of full root.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+# If your platform/interface needs more than CAP_NET_RAW, drop the three lines
+# above and run as root instead (User=root).
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
