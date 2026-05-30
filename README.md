@@ -157,13 +157,13 @@ interface (or no `CAP_NET_RAW`) still see real traffic.
 and nothing extra runs. Turn it on (Docker):
 
 ```bash
-./run.sh fritzdump on     # opt in (bind-mounts the module, sets FRITZDUMP_ENABLED=1)
-./run.sh restart          # apply
-./run.sh fritzdump off    # turn it back off any time, then ./run.sh restart
+./run.sh fritzdump on      # bind-mounts the module, enables it, and recreates the app container
+./run.sh fritzdump off     # turn it back off any time (also applies immediately)
 ```
 
-Outside Docker, just set `FRITZDUMP_ENABLED=1`. Once on, the **FritzBox** device
-appears in the dashboard:
+`fritzdump on/off` **recreates the app container itself** (a plain `restart`
+wouldn't pick up the new mount/env). Outside Docker, just set `FRITZDUMP_ENABLED=1`.
+Once on, the **FritzBox** device appears in the dashboard:
 
 - FritzDump appears in **Devices** as a built-in `module` device with its own
   colour. It starts **stopped**; press its **▶ Start** button.
@@ -177,6 +177,15 @@ appears in the dashboard:
   globe arcs anchor at the hub's own location.
 - If the worker exits immediately (usually a missing/wrong `.env`), the hub backs
   off and logs it instead of respawn-looping.
+
+**No data after Start?** Check, in order:
+- `./run.sh logs` — the reader logs `FritzDump status: N capture file(s), M packet(s) parsed`
+  every ~20 s. `N=0` → the worker isn't writing pcaps; `N>0, M=0` → files exist but
+  aren't being parsed.
+- `cat database/fritzdump_worker.log` — the worker's own stdout/stderr. Login
+  failures, wrong interface IDs, or no route to the box show up here.
+- Confirm `modules/FritzDump/.env` has the right host/credentials, and that the
+  interface IDs in `modules/FritzDump/run.sh` (`home` mode) match your box.
 
 Tune it with `FRITZDUMP_DIR` (watched dir), `FRITZDUMP_DEVICE_NAME`,
 `FRITZDUMP_WORKER_MODE` (`home` by default), or replace the launch command

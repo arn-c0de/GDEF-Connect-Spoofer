@@ -186,17 +186,29 @@ fritzdump_toggle() {
       [[ -f "$PROJECT_DIR/modules/FritzDump/.env" ]] \
         || info "Note: modules/FritzDump/.env is missing — set the FRITZ!Box login before pressing Start."
       touch "$FRITZDUMP_MARKER"
-      info "FritzDump module ENABLED. Apply it now with: ./run.sh restart"
+      info "FritzDump module ENABLED."
       ;;
     off)
       rm -f "$FRITZDUMP_MARKER"
-      info "FritzDump module DISABLED. Apply it now with: ./run.sh restart"
+      info "FritzDump module DISABLED."
       ;;
     *)
       [[ -f "$FRITZDUMP_MARKER" ]] && info "FritzDump module is currently ON." || info "FritzDump module is currently OFF."
       echo "Usage: ./run.sh fritzdump on|off"
+      return 0
       ;;
   esac
+  # Apply now by RECREATING the app container so the new volume/env from the
+  # override actually take effect — a plain `compose restart` would not pick them
+  # up. Keeps the current mode (dev/prod) intact (unlike `start`, which clears it).
+  if command -v "$DOCKER" >/dev/null 2>&1 && "$DOCKER" info >/dev/null 2>&1; then
+    detect_compose; ensure_env; ensure_directories
+    info "Applying — recreating the app container..."
+    compose up -d --build
+    info "Done. Watch it with: ./run.sh logs"
+  else
+    info "Docker isn't running — apply later with: ./run.sh start"
+  fi
 }
 
 case "$COMMAND" in
