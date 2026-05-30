@@ -182,6 +182,15 @@ async function initializeGlobe(myIpCoords) {
     dataList.id = 'dataList';
     document.body.appendChild(dataList);
 
+    // Close the detail panel when clicking anywhere outside it.
+    // Globe-canvas clicks are excluded here — onGlobeClick handles those.
+    document.addEventListener('click', e => {
+        if (dataList.style.display !== 'block') return;
+        if (dataList.contains(e.target)) return;
+        if (document.getElementById('globeViz').contains(e.target)) return;
+        dataList.style.display = 'none';
+    });
+
     const activeConnectionsList = document.getElementById('activeConnectionsList');
 
     // ── Globe ─────────────────────────────────────────────
