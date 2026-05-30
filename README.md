@@ -7,7 +7,7 @@
 ![Network](https://img.shields.io/badge/Network-Monitoring-critical?logo=wireshark)
 ![Backend](https://img.shields.io/badge/Backend-Flask-black?logo=flask)
 
-![GDEF-L1NK screenshot](images/Connectspoofer-link.png)
+![GDEF-L1NK screenshot](images/gdef-l1nk-link.png)
 
 GDEF-L1NK is a modular network intelligence component of the **GDEF Suite**. It captures authorized network traffic, enriches observed endpoints, and visualizes live connections on an interactive 3D globe for defensive analysis, lab work, and internal security operations.
 
@@ -102,12 +102,12 @@ To run the app outside Docker against your own PostgreSQL, configure the connect
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | *(unset)* | Full libpq URL, e.g. `postgresql://user:pass@127.0.0.1:5432/connectspoofer`. Overrides the `PG*` vars below. |
+| `DATABASE_URL` | *(unset)* | Full libpq URL, e.g. `postgresql://user:pass@127.0.0.1:5432/gdef_l1nk`. Overrides the `PG*` vars below. |
 | `PGHOST` | `127.0.0.1` | Database host |
 | `PGPORT` | `5432` | Database port |
-| `PGDATABASE` | `connectspoofer` | Database name |
-| `PGUSER` | `connectspoofer` | Database user |
-| `PGPASSWORD` | `connectspoofer` | Database password |
+| `PGDATABASE` | `gdef_l1nk` | Database name |
+| `PGUSER` | `gdef_l1nk` | Database user |
+| `PGPASSWORD` | `gdef_l1nk` | Database password |
 | `DB_POOL_SIZE` | `10` | Max pooled connections per process |
 | `DB_CONNECT_TIMEOUT` | `15` | Seconds to wait for a connection |
 | `NETWORK_INTERFACE` | *(from config)* | Capture interface; overrides `database/backend_conf.json` (useful in containers) |

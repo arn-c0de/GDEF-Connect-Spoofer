@@ -1,4 +1,4 @@
-# ConnectSpoofer — DEV override (applied by `./run.sh dev`).
+# GDEF-L1NK — DEV override (applied by `./run.sh dev`).
 #
 # Bind-mounts the source into the running app container so code edits are picked
 # up without rebuilding the image:

@@ -1,4 +1,4 @@
-# ConnectSpoofer — Docker Compose stack (driven by ./run.sh).
+# GDEF-L1NK — Docker Compose stack (driven by ./run.sh).
 #
 #   db   PostgreSQL (persistent: known MACs, pinned IPs, threat list, live table)
 #   app  Flask sniffer + web UI, host networking so Scapy sees the real NIC
@@ -17,15 +17,15 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-connectspoofer}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-connectspoofer}
-      POSTGRES_DB: ${POSTGRES_DB:-connectspoofer}
+      POSTGRES_USER: ${POSTGRES_USER:-gdef_l1nk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gdef_l1nk}
+      POSTGRES_DB: ${POSTGRES_DB:-gdef_l1nk}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-connectspoofer} -d ${POSTGRES_DB:-connectspoofer}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gdef_l1nk} -d ${POSTGRES_DB:-gdef_l1nk}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -49,7 +49,7 @@ services:
     environment:
       # Host networking → connect to the db container's published loopback port.
       # Set explicitly here so it always wins over any DATABASE_URL left in .env.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-connectspoofer}:${POSTGRES_PASSWORD:-connectspoofer}@127.0.0.1:${POSTGRES_PORT:-55432}/${POSTGRES_DB:-connectspoofer}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gdef_l1nk}:${POSTGRES_PASSWORD:-gdef_l1nk}@127.0.0.1:${POSTGRES_PORT:-55432}/${POSTGRES_DB:-gdef_l1nk}
     volumes:
       # geo .mmdb datasets + generated secrets/config persist on the host.
       - ./database:/app/database

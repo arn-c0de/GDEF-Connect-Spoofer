@@ -1,5 +1,5 @@
 [project]
-name = "connectspoofer"
+name = "gdef-l1nk"
 version = "1.0.3"
 description = "Modular GDEF Suite network intelligence component for packet visibility, enrichment, and interactive globe visualization."
 readme = "README.md"
@@ -40,8 +40,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/arn-c0de/GDEF-Connect-Spoofer"
-Repository = "https://github.com/arn-c0de/GDEF-Connect-Spoofer"
+Homepage = "https://github.com/arn-c0de/GDEF-L1NK"
+Repository = "https://github.com/arn-c0de/GDEF-L1NK"
 
 [dependency-groups]
 dev = [

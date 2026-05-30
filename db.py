@@ -1,4 +1,4 @@
-"""PostgreSQL access layer for ConnectSpoofer.
+"""PostgreSQL access layer for GDEF-L1NK.
 
 Replaces the former embedded SQLite database. A single fork-aware connection
 pool serves every thread; the hot packet path (pinned-IP checks, enrichment
@@ -15,9 +15,9 @@ Configuration (env):
     DATABASE_URL        full libpq URL/DSN; overrides the PG* vars below
     PGHOST              default 127.0.0.1
     PGPORT              default 5432
-    PGDATABASE          default connectspoofer
-    PGUSER              default connectspoofer
-    PGPASSWORD          default connectspoofer
+    PGDATABASE          default gdef_l1nk
+    PGUSER              default gdef_l1nk
+    PGPASSWORD          default gdef_l1nk
     DB_POOL_SIZE        max pooled connections per process (default 10)
     DB_CONNECT_TIMEOUT  seconds to wait for a connection (default 15)
 """
@@ -31,7 +31,7 @@ from contextlib import contextmanager
 import psycopg
 from psycopg_pool import ConnectionPool
 
-logger = logging.getLogger("ConnectSpoofer")
+logger = logging.getLogger("GDEF-L1NK")
 
 # Every DB error the app used to catch via ``sqlite3.Error`` maps to this base.
 DBError = psycopg.Error
@@ -43,9 +43,9 @@ def _dsn():
         return url
     host = os.environ.get("PGHOST", "127.0.0.1")
     port = os.environ.get("PGPORT", "5432")
-    name = os.environ.get("PGDATABASE", "connectspoofer")
-    user = os.environ.get("PGUSER", "connectspoofer")
-    pw = os.environ.get("PGPASSWORD", "connectspoofer")
+    name = os.environ.get("PGDATABASE", "gdef_l1nk")
+    user = os.environ.get("PGUSER", "gdef_l1nk")
+    pw = os.environ.get("PGPASSWORD", "gdef_l1nk")
     return f"host={host} port={port} dbname={name} user={user} password={pw}"
 
 
@@ -77,7 +77,7 @@ def _get_pool():
             max_size=_POOL_SIZE,
             timeout=_CONNECT_TIMEOUT,
             max_idle=60.0,
-            name=f"connectspoofer-{pid}",
+            name=f"gdef-l1nk-{pid}",
             open=True,
         )
         _pool_pid = pid

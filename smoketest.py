@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ConnectSpoofer – Full Smoke Test
+GDEF-L1NK – Full Smoke Test
 ================================
 
 Testet JEDE Funktion von app.py (und select_interface.py) ohne echten
@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 #  0)  Umgebung praeparieren  –  MUSS vor `import app` passieren
 # --------------------------------------------------------------------------- #
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-TMP_DIR = tempfile.mkdtemp(prefix="connectspoofer_smoke_")
+TMP_DIR = tempfile.mkdtemp(prefix="gdef_l1nk_smoke_")
 
 # Projektverzeichnis fuer den Import sicherstellen, dann ins TempDir wechseln.
 sys.path.insert(0, PROJECT_DIR)
@@ -1422,7 +1422,7 @@ ALL_TESTS = [
 
 
 def main():
-    print(f"\n{Colors.BOLD}{Colors.BLUE}=== ConnectSpoofer Full Smoke Test ==={Colors.END}")
+    print(f"\n{Colors.BOLD}{Colors.BLUE}=== GDEF-L1NK Full Smoke Test ==={Colors.END}")
     print(f"Arbeitsverzeichnis (temp): {TMP_DIR}\n")
 
     global_setup()

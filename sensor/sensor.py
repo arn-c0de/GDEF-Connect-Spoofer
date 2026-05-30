@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ConnectSpoofer sensor worker.
+"""GDEF-L1NK sensor worker.
 
 Run this on each server you want to monitor. It captures locally with scapy,
 coalesces connections, and pushes them — gzip-compressed and Fernet-encrypted —
@@ -265,7 +265,7 @@ def main():
     global MY_LOCAL_IP, MY_PUBLIC_IP
     MY_LOCAL_IP = get_local_ip()
     MY_PUBLIC_IP = get_public_ip()
-    logger.info("ConnectSpoofer sensor %s starting: iface=%s local_ip=%s public_ip=%s -> %s",
+    logger.info("GDEF-L1NK sensor %s starting: iface=%s local_ip=%s public_ip=%s -> %s",
                 DEVICE_ID[:8], INTERFACE or "(default)", MY_LOCAL_IP, MY_PUBLIC_IP, INGEST_URL)
     threading.Thread(target=_flush_loop, daemon=True).start()
     bpf = capture_core.build_bpf_filter()  # ip or icmp

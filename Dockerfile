@@ -1,4 +1,4 @@
-# ConnectSpoofer — sniffer + web UI container.
+# GDEF-L1NK — sniffer + web UI container.
 #
 # Runs with host networking and NET_RAW/NET_ADMIN so Scapy can capture from the
 # physical interface (see docker-compose.yml). Application data lives in

@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-# ConnectSpoofer – Smoke-Test Runner
+# GDEF-L1NK – Smoke-Test Runner
 # ==================================
 # Fuehrt smoketest.py aus, der JEDE Funktion von app.py / select_interface.py
 # testet (ohne echten Netzwerk-Traffic und ohne Root).

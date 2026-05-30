@@ -1,4 +1,4 @@
-# ConnectSpoofer — FritzDump module override (opt-in).
+# GDEF-L1NK — FritzDump module override (opt-in).
 #
 # The FritzDump capture module is OFF by default. Turn it on with:
 #   ./run.sh fritzdump on      # creates the .fritzdump marker, then start/restart
