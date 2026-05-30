@@ -412,14 +412,16 @@ body {
 
 #activeConnectionsList {
     left: 0;
-    width: calc(50% - 2px);
+    width: 35%;
+    max-width: 480px;
     border-radius: 0 8px 0 0;
     border-right: 1px solid var(--border);
 }
 
 #internalNetworkList {
     right: 0;
-    width: calc(50% - 2px);
+    width: 35%;
+    max-width: 480px;
     border-radius: 8px 0 0 0;
     border-left: 1px solid var(--border);
 }
@@ -727,7 +729,8 @@ body {
 
     #activeConnectionsList,
     #internalNetworkList {
-        width: 50%;
+        width: 45%;
+        max-width: none;
         max-height: 45vh;
     }
 }
