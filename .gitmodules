@@ -1,0 +1,3 @@
+[submodule "modules/FritzDump"]
+	path = modules/FritzDump
+	url = git@github.com:arn-c0de/fritzdump.git
