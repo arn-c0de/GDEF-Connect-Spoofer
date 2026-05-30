@@ -29,6 +29,7 @@ import threading
 import types
 import traceback
 from contextlib import contextmanager
+from urllib.parse import urlsplit
 
 # --------------------------------------------------------------------------- #
 #  0)  Umgebung praeparieren  –  MUSS vor `import app` passieren
@@ -158,25 +159,35 @@ FAKE_GEO = {
 }
 
 
+def _url_host(url):
+    """Lowercased hostname of a URL ('' if it can't be parsed)."""
+    return (urlsplit(url).hostname or "").lower()
+
+
 def routing_fake_get(url, *args, **kwargs):
-    """Fake der je nach URL plausible Antworten liefert (fuer gezielte Tests)."""
-    if "api.ipify.org" in url:
+    """Fake der je nach Ziel-Host plausible Antworten liefert (fuer gezielte Tests).
+
+    Vergleicht exakt den Hostnamen (nicht per Substring), damit eine Test-URL
+    nicht versehentlich ueber einen Pfad-/Query-Treffer geroutet wird.
+    """
+    host = _url_host(url)
+    if host == "api.ipify.org":
         return FakeResponse(200, text="8.8.8.8")
-    if "ipinfo.io" in url:
+    if host == "ipinfo.io":
         return FakeResponse(200, payload={
             "ip": "8.8.8.8", "loc": "1.23,4.56", "city": "Testville",
             "country": "TC", "region": "TR", "org": "Test Org LLC",
         })
-    if "ip-api.com" in url:
+    if host == "ip-api.com":
         return FakeResponse(200, payload={
             "status": "success", "lat": 1.23, "lon": 4.56, "city": "Testville",
             "country": "TC", "regionName": "TR", "org": "Test Org LLC",
         })
-    if "api.macvendors.com" in url:
+    if host == "api.macvendors.com":
         return FakeResponse(200, text="Test Vendor Inc")
-    if "maclookup.app" in url:
+    if host == "maclookup.app":
         return FakeResponse(200, payload={"company": "Test Vendor Inc"})
-    if "raw.githubusercontent.com" in url:
+    if host == "raw.githubusercontent.com":
         return FakeResponse(200, text="1.2.3.4\n5.6.7.8\n# comment\n9.9.9.9")
     return FakeResponse(404, text="")
 

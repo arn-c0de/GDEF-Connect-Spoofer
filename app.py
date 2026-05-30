@@ -19,6 +19,7 @@ import os
 import json
 from contextlib import contextmanager
 from functools import wraps
+from urllib.parse import urlparse, urljoin
 import secrets
 
 # Logging Setup
@@ -102,6 +103,11 @@ def is_safe_redirect_target(target):
         return False
     # A control char or embedded scheme indicates an attempt to escape
     if '\\' in target or '\n' in target or '\r' in target:
+        return False
+    # Defense in depth: the target must be a pure path with no scheme/host of
+    # its own, so it can never point off-origin.
+    parsed = urlparse(target)
+    if parsed.scheme or parsed.netloc:
         return False
     return True
 
@@ -585,8 +591,10 @@ def login():
             session['authenticated'] = True
             target = request.args.get('next')
             if not is_safe_redirect_target(target):
-                target = url_for('index')
-            return redirect(target)
+                return redirect(url_for('index'))
+            # Pin the redirect to this origin: the host comes from our own
+            # request, only the (validated, host-free) path comes from 'next'.
+            return redirect(urljoin(request.host_url, target.lstrip('/')))
         login_register_failure(client_ip)
         logger.warning(f"Failed login attempt from {client_ip}")
         error = 'Invalid access token'
@@ -607,6 +615,101 @@ def get_trusted_organisations():
     except Exception as e:
         logger.error(f"Error loading trusted_organisations.json: {e}")
         return jsonify({"trusted_organisations": [], "suspicious_organisations": [], "dangerous_organisations": []}), 500
+
+
+@app.route('/api/stats')
+@login_required
+def api_stats():
+    """Current network counters: active IPs in the last hour, threat summary, total packets."""
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM ip_data WHERE last_seen > %s", (time.time() - 3600,))
+            active_hour = c.fetchone()[0]
+            c.execute("SELECT threat_level, COUNT(*) FROM ip_data GROUP BY threat_level")
+            threats = {row[0]: row[1] for row in c.fetchall()}
+            c.execute("SELECT COALESCE(SUM(incoming_count + outgoing_count), 0) FROM ip_data")
+            total_packets = c.fetchone()[0]
+        return jsonify({
+            "active_last_hour": active_hour,
+            "threat_summary": threats,
+            "total_packets": int(total_packets),
+        })
+    except Exception as e:
+        logger.error(f"Error in api_stats: {e}")
+        return jsonify({"error": "stats unavailable"}), 500
+
+
+@app.route('/api/export/csv')
+@login_required
+def api_export_csv():
+    """Download all tracked IPs as a CSV file."""
+    import io
+    import csv as csv_mod
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT ip, city, country, org, protocol,
+                       src_port, dst_port, incoming_count, outgoing_count,
+                       mac, vendor, hostname, os, last_seen
+                FROM ip_data ORDER BY last_seen DESC
+            """)
+            rows = c.fetchall()
+        buf = io.StringIO()
+        writer = csv_mod.writer(buf)
+        writer.writerow(['IP', 'City', 'Country', 'Organization', 'Protocol',
+                         'Src Port', 'Dst Port', 'Packets In', 'Packets Out',
+                         'MAC', 'Vendor', 'Hostname', 'OS', 'Last Seen'])
+        for row in rows:
+            *fields, last_seen = row
+            ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_seen)) if last_seen else ''
+            writer.writerow([*fields, ts])
+        from flask import Response
+        return Response(
+            buf.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': 'attachment; filename="connections.csv"'},
+        )
+    except Exception as e:
+        logger.error(f"Error in api_export_csv: {e}")
+        return "Export failed", 500
+
+
+@app.route('/api/organisations', methods=['GET', 'PUT'])
+@login_required
+def api_organisations():
+    """Read (GET) or overwrite (PUT) the trusted/suspicious/dangerous organisation lists."""
+    if request.method == 'GET':
+        try:
+            with open(TRUSTED_ORGS_PATH, 'r') as f:
+                return jsonify(json.load(f))
+        except Exception as e:
+            logger.error(f"Error reading organisations: {e}")
+            return jsonify({"error": "read failed"}), 500
+
+    # PUT — validate and overwrite
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "JSON body required"}), 400
+    allowed = {'trusted_organisations', 'suspicious_organisations', 'dangerous_organisations'}
+    if not allowed.issuperset(data.keys()):
+        return jsonify({"error": "unexpected keys"}), 400
+    for key in allowed:
+        if key in data and not isinstance(data[key], list):
+            return jsonify({"error": f"{key} must be a list"}), 400
+    try:
+        with open(TRUSTED_ORGS_PATH, 'r') as f:
+            existing = json.load(f)
+        existing.update(data)
+        with open(TRUSTED_ORGS_PATH, 'w') as f:
+            json.dump(existing, f, indent=4)
+        logger.info(f"Organisation lists updated by {request.remote_addr}")
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        logger.error(f"Error updating organisations: {e}")
+        return jsonify({"error": "write failed"}), 500
+
 
 # mDNS Listener
 #
