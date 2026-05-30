@@ -6,6 +6,9 @@ venv/
 app.log
 app.pid
 
+# Dev-mode marker (set by ./run.sh dev, cleared by start/stop)
+.dev-mode
+
 # Python artifacts
 __pycache__/
 *.py[cod]
