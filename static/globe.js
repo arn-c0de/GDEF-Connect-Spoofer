@@ -785,6 +785,24 @@ async function initializeGlobe(myIpCoords) {
         }
     });
 
+    socket.on('mac_vendor_update', (data) => {
+        if (!data || !data.mac || !data.vendor) return;
+        let changed = false;
+        for (const ip in points) {
+            if (points[ip].mac === data.mac && points[ip].vendor !== data.vendor) {
+                points[ip].vendor = data.vendor;
+                changed = true;
+            }
+        }
+        for (const ip in internalPackets) {
+            if (internalPackets[ip].mac === data.mac && internalPackets[ip].vendor !== data.vendor) {
+                internalPackets[ip].vendor = data.vendor;
+                changed = true;
+            }
+        }
+        if (changed) refreshViews();
+    });
+
     socket.on('ip_pinned_update', (data) => {
         const { ip, isPinned, packet_count } = data;
         console.log(`Received ip_pinned_update for IP ${ip}, isPinned: ${isPinned}, packet_count: ${packet_count}`);

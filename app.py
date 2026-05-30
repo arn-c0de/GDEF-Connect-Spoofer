@@ -13,8 +13,7 @@ from flask_socketio import SocketIO, disconnect
 from uuid import uuid4
 import logging
 from multiprocessing import Process, Manager, Queue
-from queue import Empty
-from multiprocessing.queues import Full
+from queue import Empty, Full, Queue as ThreadQueue
 import os
 import json
 from contextlib import contextmanager
@@ -153,6 +152,37 @@ active_clients_lock = threading.Lock()
 db_lock = threading.Lock()
 pinned_ips_cache = {}
 
+# Per-SID Socket.IO rate limiting (sliding window). Caps how often a single
+# client may invoke state-changing events such as pin_ip / reset_packet_count,
+# preventing a connected client from flooding the server with DB writes.
+SOCKET_RATE_LIMIT = int(os.environ.get('SOCKET_RATE_LIMIT', '5'))        # events per window
+SOCKET_RATE_WINDOW = float(os.environ.get('SOCKET_RATE_WINDOW', '1.0'))  # window length (seconds)
+_socket_event_times = {}   # (sid, event_name) -> [timestamps]
+_socket_rate_lock = threading.Lock()
+
+def socket_rate_limited(event_name):
+    """Return True if `request.sid` has exceeded the rate for `event_name`."""
+    try:
+        sid = request.sid
+    except Exception:
+        return False
+    now = time.time()
+    key = (sid, event_name)
+    with locked(_socket_rate_lock):
+        times = [t for t in _socket_event_times.get(key, []) if now - t < SOCKET_RATE_WINDOW]
+        if len(times) >= SOCKET_RATE_LIMIT:
+            _socket_event_times[key] = times
+            return True
+        times.append(now)
+        _socket_event_times[key] = times
+        return False
+
+def socket_rate_forget(sid):
+    """Drop all rate-limit bookkeeping for a disconnected SID."""
+    with locked(_socket_rate_lock):
+        for key in [k for k in _socket_event_times if k[0] == sid]:
+            del _socket_event_times[key]
+
 # Constants for DoS protection
 MAX_KNOWN_IPS = 10000
 MAX_CACHE_SIZE = 5000
@@ -227,6 +257,74 @@ def get_mac_vendor(mac):
     except requests.RequestException as e:
         logger.warning(f"Error at maclookup.app for MAC {mac}: {e}")
     return "Unknown"
+
+def get_mac_vendor_cached(mac):
+    """Non-blocking vendor lookup: return the cached vendor or None on a miss.
+
+    Used inside the packet-capture callbacks so capture is never blocked by an
+    outbound HTTP lookup. Cache misses are resolved later by the background
+    enrichment worker (see mac_enrichment_worker)."""
+    if not mac:
+        return None
+    with locked(db_lock):
+        try:
+            with sqlite3.connect(DATABASE_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT vendor FROM mac_cache WHERE mac = ?", (mac,))
+                result = c.fetchone()
+                return result[0] if result else None
+        except sqlite3.Error as e:
+            logger.error(f"Error reading mac_cache for MAC {mac}: {e}")
+            return None
+
+# Background MAC-vendor enrichment. The capture path emits packets immediately
+# with a "Unknown" vendor on a cache miss; this worker resolves the vendor in
+# the background and pushes a 'mac_vendor_update' to clients once known.
+mac_enrich_queue = ThreadQueue(maxsize=10000)
+mac_enrich_inflight = set()
+mac_enrich_lock = threading.Lock()
+
+def queue_mac_enrichment(mac):
+    """Schedule a background vendor lookup for `mac` (deduplicated, non-blocking)."""
+    if not mac:
+        return
+    with locked(mac_enrich_lock):
+        if mac in mac_enrich_inflight:
+            return
+        mac_enrich_inflight.add(mac)
+    try:
+        mac_enrich_queue.put_nowait(mac)
+    except Full:
+        with locked(mac_enrich_lock):
+            mac_enrich_inflight.discard(mac)
+
+def mac_enrichment_worker():
+    while True:
+        try:
+            mac = mac_enrich_queue.get()
+        except Exception as e:
+            logger.error(f"Error reading mac enrichment queue: {e}")
+            time.sleep(0.1)
+            continue
+        try:
+            vendor = get_mac_vendor(mac)  # network lookup; also writes mac_cache
+            if vendor and vendor != "Unknown":
+                with locked(db_lock):
+                    try:
+                        with sqlite3.connect(DATABASE_PATH) as conn:
+                            conn.execute(
+                                "UPDATE ip_data SET vendor = ? WHERE mac = ? AND (vendor IS NULL OR vendor = 'Unknown')",
+                                (vendor, mac),
+                            )
+                            conn.commit()
+                    except sqlite3.Error as e:
+                        logger.error(f"Error updating vendor for MAC {mac}: {e}")
+                socketio.emit('mac_vendor_update', {'mac': mac, 'vendor': vendor})
+        except Exception as e:
+            logger.error(f"Error enriching MAC {mac}: {e}")
+        finally:
+            with locked(mac_enrich_lock):
+                mac_enrich_inflight.discard(mac)
 
 def load_pinned_ips():
     global pinned_ips_cache
@@ -591,23 +689,43 @@ def update_threat_list():
     }
 
     batch_size = 1000
+
+    # Fetch ALL threat data over the network first, WITHOUT holding db_lock.
+    # Network I/O here can take many seconds per source; holding the lock (and an
+    # already-emptied table) for that long would block every other DB user and
+    # leave the threat_list empty mid-update. Collect everything, then swap.
+    collected = []  # list of (ip, threat_level, source)
+    for source, (threat_level, url) in threat_sources.items():
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                ips = [ip for ip in response.text.splitlines() if ip and not ip.startswith("#")]
+                collected.extend((ip, threat_level, source) for ip in ips)
+                logger.info(f"Threat list fetched: {source} ({len(ips)} entries)")
+            else:
+                logger.warning(f"Threat list {source} returned HTTP {response.status_code}; skipping")
+        except Exception as e:
+            logger.error(f"Error fetching threat list {source}: {e}")
+
+    if not collected:
+        # Nothing fetched (e.g. offline). Keep the existing table rather than
+        # wiping it and leaving the system with no threat intelligence.
+        logger.warning("No threat data fetched; leaving existing threat_list unchanged")
+        return
+
+    # Only now take the lock, and only to clear and re-populate the table.
     with locked(db_lock):
         try:
             with sqlite3.connect(DATABASE_PATH) as conn:
                 c = conn.cursor()
                 c.execute("DELETE FROM threat_list")
-                for source, (threat_level, url) in threat_sources.items():
-                    try:
-                        response = requests.get(url, timeout=10)
-                        if response.status_code == 200:
-                            ips = [ip for ip in response.text.splitlines() if ip and not ip.startswith("#")]
-                            for i in range(0, len(ips), batch_size):
-                                batch = [(ip, threat_level, source) for ip in ips[i:i + batch_size]]
-                                c.executemany("INSERT OR IGNORE INTO threat_list (ip, threat_level, source) VALUES (?, ?, ?)", batch)
-                            logger.info(f"Threat list updated: {source}")
-                        conn.commit()
-                    except Exception as e:
-                        logger.error(f"Error fetching threat list {source}: {e}")
+                for i in range(0, len(collected), batch_size):
+                    c.executemany(
+                        "INSERT OR IGNORE INTO threat_list (ip, threat_level, source) VALUES (?, ?, ?)",
+                        collected[i:i + batch_size],
+                    )
+                conn.commit()
+            logger.info(f"Threat list updated: {len(collected)} entries from {len(threat_sources)} sources")
         except sqlite3.Error as e:
             logger.error(f"Error updating threat list: {e}")
 
@@ -1012,10 +1130,13 @@ def parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=True):
     if Ether in packet:
         src_mac = packet[Ether].src
         dst_mac = packet[Ether].dst
+        # Non-blocking: only consult the local cache here so packet capture is
+        # never stalled by an HTTP vendor lookup. Misses stay "Unknown" and are
+        # resolved asynchronously by the background enrichment worker.
         if lookup_private_macs or not is_private_ip(ip_src):
-            src_vendor = get_mac_vendor(src_mac)
+            src_vendor = get_mac_vendor_cached(src_mac) or "Unknown"
         if lookup_private_macs or not is_private_ip(ip_dst):
-            dst_vendor = get_mac_vendor(dst_mac)
+            dst_vendor = get_mac_vendor_cached(dst_mac) or "Unknown"
 
     stats['total_bytes'] += len(packet)
     return {
@@ -1227,6 +1348,8 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
             try:
                 if 'ip' in packet_data:
                     ip = packet_data["ip"]
+                    if not packet_data.get("vendor") or packet_data.get("vendor") == "Unknown":
+                        queue_mac_enrichment(packet_data.get("mac"))
                     if is_private_ip(ip) and not is_internal_search_active.value:
                         with locked(db_lock):
                             with sqlite3.connect(DATABASE_PATH) as conn:
@@ -1260,6 +1383,10 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
                     dst_mac = packet_data["dst_mac"]
                     src_vendor = packet_data.get("src_vendor", "Unknown")
                     dst_vendor = packet_data.get("dst_vendor", "Unknown")
+                    if not src_vendor or src_vendor == "Unknown":
+                        queue_mac_enrichment(src_mac)
+                    if not dst_vendor or dst_vendor == "Unknown":
+                        queue_mac_enrichment(dst_mac)
                     direction = packet_data["direction"]
                     ttl = packet_data.get("ttl")
                     hostname_src = packet_data.get("hostname_src")
@@ -1328,6 +1455,7 @@ def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_li
     threading.Thread(target=cleanup_expired_ips, args=(stats,), daemon=True).start()
     threading.Thread(target=send_network_stats, args=(stats,), daemon=True).start()
     threading.Thread(target=process_packets, args=(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener), daemon=True).start()
+    threading.Thread(target=mac_enrichment_worker, daemon=True).start()
     while True:
         try:
             sniff(iface=NETWORK_INTERFACE, prn=lambda pkt: external_packet_callback(pkt, my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets),
@@ -1404,6 +1532,7 @@ if __name__ == "__main__":
             with active_clients_lock:
                 active_clients.discard(sid)
                 count = len(active_clients)
+            socket_rate_forget(sid)
             logger.info(f"Client disconnected, SID: {sid}, Active clients: {count}")
         except Exception as e:
             logger.error(f"Error on client disconnect: {e}")
@@ -1457,6 +1586,9 @@ if __name__ == "__main__":
     def handle_pin_ip(data):
         if not session.get('authenticated'):
             return
+        if socket_rate_limited('pin_ip'):
+            logger.warning(f"Rate limit exceeded for pin_ip from SID {request.sid}")
+            return
         try:
             ip = data.get('ip')
             is_pinned = data.get('isPinned', False)
@@ -1472,6 +1604,9 @@ if __name__ == "__main__":
     @socketio.on('reset_packet_count')
     def handle_reset_packet_count(data):
         if not session.get('authenticated'):
+            return
+        if socket_rate_limited('reset_packet_count'):
+            logger.warning(f"Rate limit exceeded for reset_packet_count from SID {request.sid}")
             return
         try:
             ip = data.get('ip')
