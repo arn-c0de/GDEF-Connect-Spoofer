@@ -1332,10 +1332,18 @@ def flush_ip_writes():
                     logger.error(f"Error flushing IP writes: {ex}")
                     continue
             # Broadcast after releasing db_lock so emit never blocks the writer.
+            # A5: collapse the whole interval's per-IP updates into ONE batched
+            # Socket.IO message per client instead of N separate emits, cutting
+            # fan-out from (IPs x clients) frames to (1 x clients) per interval.
+            messages = []
             for e, inc, out, threat_level in broadcasts:
-                send_ip_to_clients(e["geo_ip"], e["lat"], e["lon"], e["city"], e["country"], e["region"],
-                                   e.get("org", "Unknown"), e["last_seen"], e["protocol"], e["src_port"], e["dst_port"],
-                                   e["mac"], e["vendor"], inc, out, 0, e["hostname"], e["os"], threat_level)
+                m = build_ip_message(e["geo_ip"], e["lat"], e["lon"], e["city"], e["country"], e["region"],
+                                     e.get("org", "Unknown"), e["last_seen"], e["protocol"], e["src_port"], e["dst_port"],
+                                     e["mac"], e["vendor"], inc, out, 0, e["hostname"], e["os"], threat_level)
+                if m is not None:
+                    messages.append(m)
+            if messages:
+                socketio.emit('ip_update_batch', messages)
         except Exception as ex:
             logger.error(f"Error in flush_ip_writes: {ex}")
             time.sleep(IP_WRITE_FLUSH_INTERVAL)
@@ -1536,13 +1544,14 @@ def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
             "hostname": ip_dst
         })
 
-def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat"):
+def build_ip_message(ip, lat, lon, city, country, region, org, last_seen, protocol, src_port, dst_port, mac, vendor, incoming_count, outgoing_count, packet_count=0, hostname="Unknown", os="Unknown", threat_level="No Threat"):
+    """Validate and assemble an ip_update payload, or return None if invalid."""
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         logger.warning(f"Invalid coordinates for IP {ip}: lat={lat}, lon={lon}")
-        return
+        return None
     if lat < -90 or lat > 90 or lon < -180 or lon > 180:
         logger.warning(f"Coordinates out of valid range for IP {ip}: lat={lat}, lon={lon}")
-        return
+        return None
 
     valid_threat_levels = ["High", "Medium", "Low", "No Threat"]
     if threat_level not in valid_threat_levels:
@@ -1553,7 +1562,7 @@ def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, prot
         logger.warning(f"Invalid OS for IP {ip}: {os}. Setting to 'Unknown'.")
         os = "Unknown"
 
-    message = {
+    return {
         "ip": ip,
         "lat": lat,
         "lon": lon,
@@ -1574,8 +1583,11 @@ def send_ip_to_clients(ip, lat, lon, city, country, region, org, last_seen, prot
         "os": os,
         "threat_level": threat_level
     }
-    logger.debug(f"Sending IP data to {len(active_clients)} clients: {ip}, OS: {os}, Threat Level: {threat_level}")
-    socketio.emit('ip_update', message)
+
+def send_ip_to_clients(*args, **kwargs):
+    message = build_ip_message(*args, **kwargs)
+    if message is not None:
+        socketio.emit('ip_update', message)
 
 def send_all_ips_to_client(sid=None):
     with locked(db_lock):
