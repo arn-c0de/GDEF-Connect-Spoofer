@@ -28,6 +28,20 @@ cd /d "%PROJECT_PATH%" || (
     exit /b
 )
 
+:: Harden the data directory before anything writes to it. The database folder
+:: holds the access token (database\access_token.txt) and the SQLite DB, so it
+:: must not be readable by other local users. Remove inherited ACLs and grant
+:: full control only to the Administrators group (well-known SID S-1-5-32-544,
+:: locale-independent) and the current user.
+if not exist "%PROJECT_PATH%\database" mkdir "%PROJECT_PATH%\database"
+icacls "%PROJECT_PATH%\database" /inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F /grant:r "%USERNAME%":(OI)(CI)F >/dev/null 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo [WARNING] Could not harden permissions on the database folder.
+) else (
+    echo [INFO] Hardened database folder permissions ^(Administrators + %USERNAME% only^).
+)
+echo.
+
 :: Prefer uv when available; fall back to pip for older environments.
 where uv >nul 2>&1
 if %ERRORLEVEL%==0 (
