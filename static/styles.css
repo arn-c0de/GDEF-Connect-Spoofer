@@ -797,6 +797,9 @@ body {
     padding: 2px 5px;
 }
 .device-btn:hover { background: var(--bg-active); }
+/* FritzDump module Start/Stop: green when stopped (Start), red while running (Stop). */
+.device-startstop { white-space: nowrap; border-color: #2e7d32; color: #66bb6a; }
+.device-startstop.running { border-color: #c62828; color: #ef5350; }
 
 /* ── Modular stats panel ───────────────────────────────────────────────── */
 .stat-head { display: flex; align-items: center; gap: 6px; }

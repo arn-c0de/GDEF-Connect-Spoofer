@@ -139,6 +139,29 @@ size-capped) and a session-authenticated device API (`/api/devices…`). Ingesti
 limits are tunable via `INGEST_MAX_AGE`, `INGEST_MAX_EVENTS`, `INGEST_MAX_BODY`
 and `INGEST_RATE_LIMIT`.
 
+### FritzDump module (capture from pcap files)
+
+Besides live capture from a NIC, the hub can use the **FritzDump** module as a
+capture *source*: instead of sniffing an interface, it **tails the pcap files**
+that [`modules/FritzDump`](modules/FritzDump/README.md) writes from a FRITZ!Box
+capture (`modules/FritzDump/dumps/`). This lets a hub with no usable capture
+interface (or no `CAP_NET_RAW`) still see real traffic.
+
+- FritzDump appears in **Devices** as a built-in `module` device with its own
+  colour. Use its **▶ Start / ■ Stop** button to switch capture to/from the pcap
+  source live — no restart. Start makes FritzDump the active interface; Stop
+  returns to live capture.
+- Point FritzDump at your box (see its README), run it (e.g. `./run.sh home`),
+  then press **Start**. New packets appended to the dumps are picked up within
+  ~1 s; sub-directories (FritzDump's `home` mode) are discovered automatically.
+- The reader honours the device **on/off** toggle and the capture-source switch,
+  so disabling the FritzDump device stops it being used while live capture (or
+  other devices) keep running.
+
+Override the watched directory with `FRITZDUMP_DIR` and the device's display name
+with `FRITZDUMP_DEVICE_NAME`. The active source is the `capture_source` setting
+(`live` | `fritzdump` | `both`), persisted in the DB and toggled from the UI.
+
 ## Security & Privacy
 
 ConnectSpoofer is built with a **Security-First** approach:
@@ -168,6 +191,9 @@ ConnectSpoofer is built with a **Security-First** approach:
 | `INGEST_MAX_AGE` | `300` | Reject sensor batches older than this many seconds (replay window) |
 | `INGEST_MAX_EVENTS` | `5000` | Max connection events accepted per ingest batch |
 | `INGEST_MAX_BODY` | `8388608` | Max encrypted ingest body size in bytes |
+| `FRITZDUMP_DIR` | `modules/FritzDump/dumps` | Directory the FritzDump pcap source tails |
+| `FRITZDUMP_DEVICE_NAME` | `FritzBox` | Display name of the built-in FritzDump module device |
+| `FRITZDUMP_POLL_INTERVAL` | `1.0` | Seconds between FritzDump pcap polls when idle |
 
 Sensor-side configuration (`CENTRAL_URL`, `DEVICE_ID`, `DEVICE_KEY`,
 `NETWORK_INTERFACE`, and tuning knobs) is documented in
@@ -202,8 +228,10 @@ Application state (live IPs, pinned IPs, settings, MAC cache, threat list) is st
 ConnectSpoofer/
 ├── app.py                           # Flask hub: capture, ingestion, devices, Socket.IO
 ├── capture_core.py                  # Shared packet classification (hub + sensor)
+├── capture_sources.py               # Pcap-file capture sources (FritzDump tailing)
 ├── device_crypto.py                 # Shared sensor↔hub encrypted batch framing (Fernet)
 ├── sensor/                          # Standalone remote sensor worker (see sensor/README.md)
+├── modules/FritzDump/               # FRITZ!Box pcap capture helper (own repo)
 ├── db.py                            # PostgreSQL connection-pool layer (fork-aware)
 ├── Dockerfile                       # App/sniffer container image
 ├── docker-compose.yml              # App + PostgreSQL stack

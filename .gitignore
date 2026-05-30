@@ -34,3 +34,7 @@ database/access_token.txt
 database/secret_key
 # Per-device sensor Fernet keys (0600, issued on device registration)
 database/devices/
+
+# FritzDump capture module: cloned/installed separately (its own git repo), and
+# its pcap dumps must never be committed.
+modules/
