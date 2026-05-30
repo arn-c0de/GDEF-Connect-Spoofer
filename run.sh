@@ -35,6 +35,10 @@ PID_FILE="$PROJECT_DIR/app.pid"
 APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-8000}"
 SOCKETIO_CORS_ORIGINS="${SOCKETIO_CORS_ORIGINS:-}"
+# Default to HTTPS-only geolocation: disable the unencrypted HTTP fallback
+# (ip-api.com) unless the operator explicitly opts back in. Exported so the
+# config-forwarding loop below picks it up like any other set variable.
+export ALLOW_INSECURE_GEO_API="${ALLOW_INSECURE_GEO_API:-0}"
 COMMAND="${1:-start}"
 
 die() {
