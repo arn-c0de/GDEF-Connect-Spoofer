@@ -147,6 +147,84 @@ export function setupStats(app) {
         return noOrg && noHost;
     }
 
+    // ── Per-LAN-device aggregation ────────────────────────
+    // Flip the usual "external IP -> which LAN hosts" view around: group the
+    // visible connections by local (LAN) device so the operator can see which
+    // host on their own network is busiest — its combined packet rate, how many
+    // distinct external endpoints it talks to, total packets and threat mix.
+    // An external IP reached by several LAN hosts contributes to each of them
+    // (we have no per-host packet split), so rates are an upper-bound attribution;
+    // the distinct-connection count is exact.
+    function lanAggregate(cs) {
+        const map = new Map();
+        for (const p of cs) {
+            const peers = app.localPeers(p);
+            if (!peers.length) continue;
+            const rate = pointRate(p);
+            const pkts = (p.incoming_count || 0) + (p.outgoing_count || 0);
+            for (const lip of peers) {
+                let e = map.get(lip);
+                if (!e) { e = { ip: lip, rate: 0, packets: 0, conns: new Set(), high: 0, med: 0, low: 0, last: 0 }; map.set(lip, e); }
+                e.rate += rate;
+                e.packets += pkts;
+                e.conns.add(p.ip);
+                if (p.threat_level === 'High') e.high++;
+                else if (p.threat_level === 'Medium') e.med++;
+                else if (p.threat_level === 'Low') e.low++;
+                if ((p.last_seen || 0) > e.last) e.last = p.last_seen || 0;
+            }
+        }
+        return Array.from(map.values());
+    }
+
+    const LAN_SORT_MODES = [['rate', 'Top by rate'], ['conns', 'Most connections'], ['packets', 'Most packets']];
+    const lanSortKey = { rate: e => e.rate, conns: e => e.conns.size, packets: e => e.packets };
+
+    function renderLanList(container, cs) {
+        const mode = app.lanSortMode;
+        const keyFn = lanSortKey[mode] || lanSortKey.rate;
+        const rows = lanAggregate(cs).sort((a, b) => keyFn(b) - keyFn(a)).slice(0, 50);
+        const seg = LAN_SORT_MODES.map(([id, label]) =>
+            `<button class="seg${id === mode ? ' active' : ''}" data-lan="${id}">${label}</button>`).join('');
+        const threatCell = e => {
+            const parts = [];
+            if (e.high) parts.push(`<span class="threat-badge threat-high">${e.high}</span>`);
+            if (e.med) parts.push(`<span class="threat-badge threat-medium">${e.med}</span>`);
+            if (e.low) parts.push(`<span class="threat-badge threat-low">${e.low}</span>`);
+            return parts.join(' ') || '<span class="muted">—</span>';
+        };
+        const tbody = rows.length ? rows.map((e, i) =>
+            `<tr class="sl-row lan-row" data-lan-ip="${escapeHTML(e.ip)}">` +
+                `<td class="sl-rank">${i + 1}</td>` +
+                `<td><span class="sl-ip">${escapeHTML(app.ipDisplay(e.ip))}</span></td>` +
+                `<td class="sl-metric ${mode === 'conns' ? 'm-num' : ''}">${formatNum(e.conns.size)}</td>` +
+                `<td class="sl-metric ${mode === 'rate' ? 'm-rate' : ''}">${e.rate.toFixed(1)}/s</td>` +
+                `<td class="sl-metric ${mode === 'packets' ? 'm-num' : ''}">${formatNum(e.packets)}</td>` +
+                `<td>${threatCell(e)}</td></tr>`).join('')
+            : '<tr><td colspan="6" class="sl-empty muted">no LAN data</td></tr>';
+        container.innerHTML =
+            `<div class="seg-ctrl">${seg}</div>` +
+            '<div class="conn-table-wrap"><table class="conn-table sl-table"><thead><tr>' +
+            `<th class="sl-rank">#</th><th>LAN device</th><th>Connections</th>` +
+            `<th>Pkts/s</th><th>Packets</th><th>Threats</th>` +
+            `</tr></thead><tbody>${tbody}</tbody></table></div>`;
+        container.querySelectorAll('.seg').forEach(b => b.addEventListener('click', () => {
+            app.lanSortMode = b.dataset.lan;
+            localStorage.setItem('lanSortMode', app.lanSortMode);
+            renderLanList(container, cs);
+        }));
+        // Clicking a LAN row filters the live lists / globe focus to that host's
+        // busiest external endpoint so the two views stay connected.
+        container.querySelectorAll('.lan-row').forEach(tr => tr.addEventListener('click', () => {
+            const lip = tr.dataset.lanIp;
+            const peerPoints = cs.filter(p => app.localPeers(p).includes(lip));
+            if (!peerPoints.length) return;
+            const top = peerPoints.sort((a, b) => pointRate(b) - pointRate(a))[0];
+            app.showDataList(top);
+            if (isValidCoord(top.lat, top.lng)) app.globe.pointOfView({ lat: top.lat, lng: top.lng, altitude: 2.5 }, 1000);
+        }));
+    }
+
     function statListRows(mode, cs) {
         const top = (arr) => arr.slice(0, 50);
         if (mode === 'rate') {
@@ -223,8 +301,10 @@ export function setupStats(app) {
         const s = statsFor(dev);
         const totalRate = conns.reduce((sum, p) => sum + pointRate(p), 0);
         const suspicious = conns.filter(p => SEV_RANK[p.threat_level]).length;
+        const lanRows = lanAggregate(conns);
         const kpis = [
             ['Connections', formatNum(conns.length), ''],
+            ['LAN devices', formatNum(lanRows.length), ''],
             ['Active', formatNum(s.active || 0), ''],
             ['Pkts/s', totalRate.toFixed(1), 'accent'],
             ['TCP', formatNum(s.tcp || 0), ''],
@@ -261,9 +341,13 @@ export function setupStats(app) {
                     `<div class="chart-card wide"><h5>Top countries</h5>${countries.length ? svgBars(countries, '#3b82f6') : '<p class="muted">no data</p>'}</div>` +
                 '</div>' +
             '</div>' +
+            '<div class="stat-section"><h4 class="stat-section-title">LAN devices</h4>' +
+                '<div id="lanListHost"></div>' +
+            '</div>' +
             '<div class="stat-section"><h4 class="stat-section-title">Live lists</h4>' +
                 '<div id="statListHost"></div>' +
             '</div>';
+        renderLanList(body.querySelector('#lanListHost'), conns);
         renderStatList(body.querySelector('#statListHost'), conns);
     }
 

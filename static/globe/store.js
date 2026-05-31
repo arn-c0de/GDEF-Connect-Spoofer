@@ -91,6 +91,12 @@ export function createApp(myIpCoords) {
         internalPackets: {},
         pinnedIPs: {},
         EXPIRATION_SECONDS: 300,
+        // Arcs (the connection lines) are a *live* indicator: they're drawn only
+        // while packets are actively arriving for that connection, and disappear
+        // this many seconds after the last packet — leaving just the dot, which
+        // lingers and fades until EXPIRATION_SECONDS. So a visible, animating arc
+        // means "data is flowing right now".
+        ARC_LIVE_SECONDS: 5,
         INTERNAL_EXPIRATION_SECONDS: 600,
         MAX_POINTS: 1000,
         MAX_INTERNAL_PACKETS: 500,
@@ -104,6 +110,7 @@ export function createApp(myIpCoords) {
         // ── Statistics preferences ────────────────────────────
         statsDevice: localStorage.getItem('statsDevice') || 'all',
         statsListMode: localStorage.getItem('statsListMode') || 'rate',
+        lanSortMode: localStorage.getItem('lanSortMode') || 'rate',
         enabledWidgets: [],  // populated by setupStats()
     };
 
