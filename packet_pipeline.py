@@ -41,15 +41,36 @@ class PacketQueue:
         except Full:
             logger.warning("Queue full, packet dropped")
 
+    # Idle poll interval (seconds). Reached only when BOTH lanes are empty (see
+    # get): bounds how soon a low-lane packet that lands during true idle is
+    # noticed, after which that lane drains at full speed. It never delays a
+    # high-priority packet — the blocking high.get wakes the instant one arrives
+    # — so a coarse interval just trades idle latency for far fewer idle CPU
+    # wakeups (~10/s here vs ~100/s at the old 10ms).
+    _POLL_INTERVAL = 0.1
+
     def get(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
+            # Drain ready items first, high lane before low, WITHOUT blocking, so a
+            # backlog on either lane is serviced at full throughput. (Blocking on
+            # the high lane first — as this used to — made every low-lane packet
+            # pay the poll interval whenever the high lane was idle, capping
+            # internal-traffic throughput at ~1/interval.)
+            try:
+                return self.high.get_nowait()
+            except Empty:
+                pass
+            try:
+                return self.low.get_nowait()
+            except Empty:
+                pass
             if timeout == 0:
-                try:
-                    return self.high.get_nowait()
-                except Empty:
-                    return self.low.get_nowait()
-            high_wait = 0.01
+                raise Empty
+            # Both lanes empty: block on the high lane so an external packet wakes
+            # us immediately; a low-lane arrival is picked up within one interval
+            # by the get_nowait above on the next pass.
+            high_wait = self._POLL_INTERVAL
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -57,10 +78,6 @@ class PacketQueue:
                 high_wait = min(high_wait, remaining)
             try:
                 return self.high.get(timeout=high_wait)
-            except Empty:
-                pass
-            try:
-                return self.low.get_nowait()
             except Empty:
                 pass
             if deadline is not None and time.monotonic() >= deadline:
