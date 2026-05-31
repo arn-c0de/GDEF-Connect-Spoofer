@@ -189,10 +189,17 @@ export function setupSocket(app) {
             arc.outgoing_count = data.outgoing_count || 0;
             arc.last_seen      = data.last_seen;
             // Fly one comet whenever fresh packets actually arrive (the count
-            // grew) or on first sighting — triggerArc queues at most one replay if
-            // a comet is already in flight, so a moving arc means "flowing now".
+            // grew) or a brand-new IP shows up live — triggerArc queues at most one
+            // replay if a comet is already in flight, so a moving arc means
+            // "flowing now". Crucially this is gated on initialLoadDone: the bulk
+            // batch restored on a page refresh carries every DB row with an
+            // undefined baseline, which would otherwise fire an arc at once for ALL
+            // of them (traffic that happened minutes ago) — the "arc storm" that
+            // only cleared after the 5s linger. During that first batch we just
+            // seed the per-arc baseline so the first genuinely live packet triggers.
             const arcTotal = data.packet_count || ((data.incoming_count || 0) + (data.outgoing_count || 0));
-            if (arc.packet_count === undefined || arcTotal > arc.packet_count) app.triggerArc(arc);
+            const arcGrew  = arc.packet_count === undefined || arcTotal > arc.packet_count;
+            if (app.initialLoadDone && arcGrew) app.triggerArc(arc);
             arc.packet_count   = arcTotal;
             arc.hostname       = data.hostname || 'Unknown';
             arc.os             = data.os       || 'Unknown';

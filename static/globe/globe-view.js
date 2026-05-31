@@ -22,11 +22,41 @@ export function setupGlobe(app) {
     const ARC_GAP_LEN = 0.2;
     const ARC_FADE_MS = 1200;
 
+    // ── Co-located point clustering ───────────────────────
+    // External/LAN IPs frequently geolocate to identical coordinates (one city, a
+    // shared datacenter, a CDN). Drawn raw they stack on the exact same spot and —
+    // once they swell with traffic — bury each other. We merge each such pile into
+    // ONE cluster marker carrying a count badge. The grid cell size scales with the
+    // camera altitude so piles split as you zoom in; clicking a cluster fans its
+    // members out (app.expandedClusters). Cluster objects are cached by cell key so
+    // their refs stay stable across refreshes (no marker re-add flash).
+    const CLUSTER_CELL_BASE = 0.5;   // grid cell size (deg) per unit camera altitude
+    const CLUSTER_CELL_MIN  = 0.15;  // finest grid (zoomed all the way in)
+    const CLUSTER_CELL_MAX  = 6;     // coarsest grid (zoomed all the way out)
+    const CLUSTER_MIN_SIZE  = 2;     // a "pile" worth merging into one marker
+
+    const THREAT_RANK = { High: 3, Medium: 2, Low: 1 };
+    const threatRank  = t => THREAT_RANK[t] || 0;
+
+    // Grid cell size in degrees for the current zoom: coarse when far out (more
+    // merging), fine when zoomed in (piles split into individual dots).
+    function clusterCellDeg() {
+        const alt = globe.pointOfView().altitude || 2.5;
+        return Math.max(CLUSTER_CELL_MIN, Math.min(CLUSTER_CELL_MAX, alt * CLUSTER_CELL_BASE));
+    }
+
     // ── Globe point radius ────────────────────────────────
     // Size reflects the *recent* packet rate (packets in the last
     // RATE_WINDOW_SECONDS), so a connection pushing lots of data swells up and
-    // shrinks back down once the traffic dies off.
+    // shrinks back down once the traffic dies off. A cluster is bigger still,
+    // growing with how many IPs it hides and their combined live rate.
     function getMarkerRadius(point) {
+        if (point.isCluster) {
+            // Only modestly bigger than a single dot — the count badge conveys the
+            // size, the radius shouldn't dominate the globe.
+            return Math.min(0.45 + Math.log10(point.count + 1) * 0.4
+                                 + Math.log10((point._recent || 0) + 1) * 0.2, 1.5);
+        }
         const recent = recentPacketCount(point, Date.now() / 1000);
         if (recent <= 0) return 0.3;
         return Math.min(0.3 + Math.log10(recent + 1) * 0.6, 3.0);
@@ -68,17 +98,33 @@ export function setupGlobe(app) {
         .pointOfView({ lat: myIpCoords.lat, lng: myIpCoords.lng, altitude: 2.5 }, 0)
         .pointRadius(getMarkerRadius)
         .pointColor(point => {
+            // A cluster takes the colour of its highest-threat member (so a single
+            // High in a pile still reads red); otherwise origin colour / threat.
             const base = point.isOrigin
                 ? (point.color || '#FFFF00')
                 : getCircleColor(point.threat_level, point.org);
-            // Dots linger and fade over EXPIRATION_SECONDS (origins stay solid).
+            // Dots/clusters linger and fade over EXPIRATION_SECONDS (origins solid).
             return toRGBA(base, freshnessAlpha(point, app.EXPIRATION_SECONDS));
         })
-        .pointLabel(point => point.isOrigin
-            ? `<div>${escapeHTML(point.label || 'Device')}</div>`
-            : `<div>${escapeHTML(point.ip) || 'N/A'} — ${escapeHTML(point.org) || 'N/A'}</div>`)
-        .pointLat('lat')
-        .pointLng('lng')
+        .pointLabel(point => {
+            if (point.isCluster) {
+                const names = point.members.slice()
+                    .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0))
+                    .slice(0, 6)
+                    .map(m => `${escapeHTML(m.ip)} — ${escapeHTML(m.org || 'N/A')}`)
+                    .join('<br>');
+                const more = point.count > 6 ? `<br>…+${point.count - 6} more` : '';
+                return `<div><b>${point.count} connections here</b><br>${names}${more}` +
+                       `<br><i>click to expand</i></div>`;
+            }
+            return point.isOrigin
+                ? `<div>${escapeHTML(point.label || 'Device')}</div>`
+                : `<div>${escapeHTML(point.ip) || 'N/A'} — ${escapeHTML(point.org) || 'N/A'}</div>`;
+        })
+        // Members of an opened cluster carry a fan-out offset (_dispLat/_dispLng);
+        // everything else renders at its true coordinate.
+        .pointLat(d => d._dispLat ?? d.lat)
+        .pointLng(d => d._dispLng ?? d.lng)
         .pointAltitude(0.1)
         .arcColor(arc => {
             // "Colour by device" makes each device's arcs its own colour; "by
@@ -112,11 +158,29 @@ export function setupGlobe(app) {
         .arcDashAnimateTime(0)
         // No built-in grow-in tween — our dashOffset ramp is the whole animation.
         .arcsTransitionDuration(0)
-        .labelSize(0.5)
-        .labelDotRadius(0.3)
-        .labelColor(() => 'white')
-        .labelLabel('label')
+        // The labels layer is fed ONLY the cluster render objects (see
+        // updateGlobeData): each shows how many IPs the pile hides, floated just
+        // above the marker so the count reads clearly.
+        .labelLat(d => d.lat)
+        .labelLng(d => d.lng)
+        .labelText(d => String(d.count))
+        .labelSize(1.0)
+        // The badge dims in lock-step with its cluster dot (same freshness fade,
+        // same 0.25 floor) so the number never bows out while the pile is still
+        // drawn — and the layer's default fade-in/out transition is off so a badge
+        // appears/vanishes exactly with its cluster, not a beat behind it.
+        .labelColor(d => toRGBA('#FFFFFF', freshnessAlpha(d, app.EXPIRATION_SECONDS)))
+        .labelsTransitionDuration(0)
+        .labelResolution(2)
+        .labelAltitude(0.13)
+        .labelIncludeDot(false)
         .onPointClick(point => {
+            // A cluster isn't a single connection — open the detail popup with one
+            // tab per IP in the pile, so each member's full info is switchable.
+            if (point.isCluster) {
+                app.showClusterDetail(point);
+                return;
+            }
             // Origin markers are devices, not connections — don't open the IP
             // detail panel full of N/A; just show a small device tooltip.
             if (point.isOrigin) {
@@ -125,15 +189,12 @@ export function setupGlobe(app) {
             }
             app.showDataList(point, () => {
                 globe.pointRadius(getMarkerRadius);
-                globe.labelSize(0.5);
             });
             globe.pointRadius(d => d === point ? getMarkerRadius(d) * 1.5 : getMarkerRadius(d));
-            globe.labelSize(d => d === point ? 0.8 : 0.5);
         })
         .onGlobeClick(() => {
             dataList.style.display = 'none';
             globe.pointRadius(getMarkerRadius);
-            globe.labelSize(0.5);
         })
         (document.getElementById('globeViz'));
     app.globe = globe;
@@ -155,6 +216,13 @@ export function setupGlobe(app) {
         if (_povSaveTimer) clearTimeout(_povSaveTimer);
         _povSaveTimer = setTimeout(() => {
             try { localStorage.setItem(SAVED_POV_KEY, JSON.stringify(pov)); } catch (_) { /* quota */ }
+            // Pile sizes track the zoom level, so re-cluster once the view settles.
+            // A fresh view also drops any hand-expanded piles (they re-form for the
+            // new altitude). Skipped while nothing is on the globe yet.
+            if (app.updateGlobeData) {
+                if (app.expandedClusters.size) app.expandedClusters.clear();
+                app.updateGlobeData();
+            }
         }, 400);
     });
 
@@ -289,19 +357,95 @@ export function setupGlobe(app) {
     }
     function ensureArcLoop() { if (!app._arcRAF) app._arcRAF = requestAnimationFrame(tickArcs); }
 
-    // ── Globe data (points only; arcs are driven by tickArcs) ──
+    // Fan members of an opened pile that sit on (almost) the same coordinate out
+    // into a small ring so each is separately visible and clickable; members at
+    // genuinely distinct coords keep their true position.
+    function spreadColocated(members) {
+        const sub = new Map();
+        for (const p of members) {
+            const k = `${p.lat.toFixed(2)}|${p.lng.toFixed(2)}`;
+            (sub.get(k) || sub.set(k, []).get(k)).push(p);
+        }
+        for (const g of sub.values()) {
+            if (g.length === 1) continue;
+            const R = Math.min(0.6 + g.length * 0.25, 5);   // ring radius (degrees)
+            g.forEach((p, i) => {
+                const ang = (2 * Math.PI * i) / g.length;
+                p._dispLat = p.lat + R * Math.sin(ang);
+                p._dispLng = p.lng + R * Math.cos(ang);
+            });
+        }
+    }
+
+    // Build (or reuse) the cached cluster marker for one grid cell. Reusing the
+    // object across refreshes keeps its globe reference stable, so a busy pile
+    // doesn't flicker (re-add) every update.
+    function makeCluster(key, members, nowSec) {
+        let lat = 0, lng = 0, lastSeen = 0, recent = 0, top = members[0];
+        for (const m of members) {
+            lat += m.lat; lng += m.lng;
+            if ((m.last_seen || 0) > lastSeen) lastSeen = m.last_seen || 0;
+            recent += recentPacketCount(m, nowSec);
+            if (threatRank(m.threat_level) > threatRank(top.threat_level)) top = m;
+        }
+        const c = app._clusterCache[key] || (app._clusterCache[key] = { isCluster: true, cellKey: key });
+        c.lat = lat / members.length;
+        c.lng = lng / members.length;
+        c.last_seen    = lastSeen;
+        c.count        = members.length;
+        c.members      = members;
+        c._recent      = recent;
+        c.threat_level = top.threat_level;   // highest-threat member drives the colour
+        c.org          = top.org;
+        c.ip           = top.ip;             // representative (for trusted-org colour)
+        return c;
+    }
+
+    // ── Globe data (points + cluster badges; arcs are driven by tickArcs) ──
     app.updateGlobeData = () => {
+        const nowSec = Date.now() / 1000;
         const visiblePoints = Object.values(app.points).filter(p =>
             !p.expired && app.pointDeviceVisible(p) &&
             (app.showTCPOnly ? p.protocol === 'TCP' : true) &&
             ((app.showLocalNetwork    && isLocalNetwork(p.ip, p.org)) ||
              (app.showExternalNetwork && !isLocalNetwork(p.ip, p.org)))
         );
-        // One home point per visible device.
+        // Clear any fan-out offset from a previous expand; re-applied below only
+        // for members of a pile the user has opened.
+        for (const p of visiblePoints) { p._dispLat = undefined; p._dispLng = undefined; }
+
+        // Bucket points into a lat/lng grid whose cell size tracks the zoom level.
+        const cellDeg = clusterCellDeg();
+        const cells = new Map();   // cellKey -> point[]
+        for (const p of visiblePoints) {
+            if (!isValidCoord(p.lat, p.lng)) continue;
+            const key = `${Math.round(p.lat / cellDeg)}|${Math.round(p.lng / cellDeg)}`;
+            (cells.get(key) || cells.set(key, []).get(key)).push(p);
+        }
+
+        const render = [];
+        const liveClusterKeys = new Set();
+        for (const [key, members] of cells) {
+            if (members.length < CLUSTER_MIN_SIZE || app.expandedClusters.has(key)) {
+                spreadColocated(members);            // draw the pile's members individually
+                for (const p of members) render.push(p);
+            } else {
+                liveClusterKeys.add(key);            // merge the pile into one badge
+                render.push(makeCluster(key, members, nowSec));
+            }
+        }
+        // Forget cached clusters whose cell no longer exists, so the cache can't
+        // grow unbounded as IPs come and go.
+        for (const k in app._clusterCache) if (!liveClusterKeys.has(k)) delete app._clusterCache[k];
+
+        // One home point per visible device (origins are never clustered).
         for (const id in app.origins) {
             const o = app.origins[id];
-            if (app.isDeviceVisible(id) && isValidCoord(o.lat, o.lng)) visiblePoints.push(o);
+            if (app.isDeviceVisible(id) && isValidCoord(o.lat, o.lng)) render.push(o);
         }
-        globe.pointsData(visiblePoints);
+
+        globe.pointsData(render);
+        // The count badge layer carries only the clusters.
+        globe.labelsData(render.filter(d => d.isCluster));
     };
 }
