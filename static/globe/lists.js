@@ -460,10 +460,19 @@ export function setupLists(app) {
             members.forEach((m, i) => {
                 const tab = document.createElement('button');
                 tab.className = 'detail-tab' + (i === activeIdx ? ' active' : '');
+                // Tint the tab by its IP's threat colour (red/orange/yellow/green),
+                // matching the dot/arc, so a suspicious IP's tab is obviously
+                // orange at a glance. White (no-threat) keeps the neutral default.
+                const threatColor = getCircleColor(m.threat_level, m.org);
+                if (threatColor !== 'white') {
+                    tab.style.borderColor = threatColor;
+                    tab.style.borderLeftWidth = '3px';
+                }
                 // Two lines per tab: the IP (or its label) and, beneath it, the
                 // vendor (falling back to org when no MAC vendor is known).
                 const ipEl = document.createElement('span');
                 ipEl.className = 'detail-tab-ip';
+                if (threatColor !== 'white') ipEl.style.color = threatColor;
                 ipEl.textContent = app.ipLabel(m.ip) || m.ip;
                 const venEl = document.createElement('span');
                 venEl.className = 'detail-tab-vendor';
