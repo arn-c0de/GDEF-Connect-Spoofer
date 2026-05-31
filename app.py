@@ -49,7 +49,7 @@ from config import (
     TRUSTED_ORGS_PATH, IP_LABELS_PATH,
     LOCAL_DEVICE_ID, LOCAL_DEVICE_COLOR, HUB_DEVICE_NAME, DEVICE_KEYS_DIR,
     FRITZDUMP_DEVICE_ID, FRITZDUMP_ENABLED, FRITZDUMP_DEVICE_NAME,
-    FRITZDUMP_DEVICE_COLOR, FRITZDUMP_DIR, FRITZDUMP_POLL_INTERVAL,
+    FRITZDUMP_DEVICE_COLOR, FRITZDUMP_REDACT, FRITZDUMP_DIR, FRITZDUMP_POLL_INTERVAL,
     FRITZDUMP_WORKER_DIR, FRITZDUMP_WORKER_CMD,
     FRITZDUMP_AUTOSTART, FRITZDUMP_WORKER_MIN_UPTIME, FRITZDUMP_WORKER_BACKOFF,
     FRITZDUMP_WORKER_LOG,
@@ -2596,13 +2596,19 @@ def _spawn_fritzdump_worker():
             logf.write(f"\n=== starting {' '.join(FRITZDUMP_WORKER_CMD)} (cwd {FRITZDUMP_WORKER_DIR}) ===\n".encode())
         except OSError:
             logf = None
+        # Force the worker into redacted/full-payload mode per the hub's policy.
+        # fritzdump.py reads FRITZ_REDACT from its environment in preference to
+        # its own .env, so injecting it here makes FRITZDUMP_REDACT the single
+        # authoritative switch (default: redacted -> no real payloads on disk).
+        worker_env = dict(os.environ)
+        worker_env['FRITZ_REDACT'] = 'true' if FRITZDUMP_REDACT else 'false'
         proc = subprocess.Popen(
-            FRITZDUMP_WORKER_CMD, cwd=FRITZDUMP_WORKER_DIR,
+            FRITZDUMP_WORKER_CMD, cwd=FRITZDUMP_WORKER_DIR, env=worker_env,
             stdout=(logf or subprocess.DEVNULL),
             stderr=(subprocess.STDOUT if logf else subprocess.DEVNULL),
             stdin=subprocess.DEVNULL, start_new_session=True)
         logger.info(f"Started FritzDump worker (pid {proc.pid}): {' '.join(FRITZDUMP_WORKER_CMD)} "
-                    f"(output -> {FRITZDUMP_WORKER_LOG})")
+                    f"(redact={'on' if FRITZDUMP_REDACT else 'OFF'}, output -> {FRITZDUMP_WORKER_LOG})")
         return proc
     except Exception as e:
         logger.error(f"Could not start FritzDump worker: {e}")
