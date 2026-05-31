@@ -30,7 +30,8 @@ import secrets
 # hold no globals and start no threads, so importing them here is side-effect-free.
 from secret_files import write_secret_file
 from netutils import (
-    is_safe_redirect_target, get_local_ip, is_admin, auto_detect_interface,
+    is_safe_redirect_target, get_local_ip, has_net_capabilities, is_admin,
+    auto_detect_interface,
 )
 from validators import (
     sanitize_mdns_hostname, _clamp_int, _valid_port, _short_str,
