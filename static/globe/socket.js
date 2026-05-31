@@ -188,11 +188,11 @@ export function setupSocket(app) {
             arc.incoming_count = data.incoming_count || 0;
             arc.outgoing_count = data.outgoing_count || 0;
             arc.last_seen      = data.last_seen;
-            // Mark the arc "live" whenever fresh packets actually arrive (its
-            // count grew) or on first sighting. updateGlobeData only draws an arc
-            // while this stamp is recent, so the line is a true live indicator.
+            // Fly one comet whenever fresh packets actually arrive (the count
+            // grew) or on first sighting — triggerArc queues at most one replay if
+            // a comet is already in flight, so a moving arc means "flowing now".
             const arcTotal = data.packet_count || ((data.incoming_count || 0) + (data.outgoing_count || 0));
-            if (arc.packet_count === undefined || arcTotal > arc.packet_count) arc._lastActive = nowSec;
+            if (arc.packet_count === undefined || arcTotal > arc.packet_count) app.triggerArc(arc);
             arc.packet_count   = arcTotal;
             arc.hostname       = data.hostname || 'Unknown';
             arc.os             = data.os       || 'Unknown';
