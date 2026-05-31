@@ -78,6 +78,38 @@
     font-weight: 600;
 }
 
+/* Cluster popup: one tab per co-located IP. Wraps to several rows and scrolls if
+   the pile is large, so every member stays reachable. */
+.detail-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 12px;
+    max-height: 96px;
+    overflow-y: auto;
+}
+
+.detail-tab {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--text-dim);
+    font-family: monospace;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.detail-tab:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+
+.detail-tab.active {
+    color: #fff;
+    background: var(--blue);
+    border-color: var(--blue);
+}
+
 /* ============================================================
    Connection list panels (shared)
    ============================================================ */

@@ -90,6 +90,16 @@ export function createApp(myIpCoords) {
         arcs: {},
         internalPackets: {},
         pinnedIPs: {},
+        // Co-located external/LAN IPs (one city, a shared datacenter, a CDN) merge
+        // into ONE cluster marker with a count badge instead of stacking on the
+        // exact same spot and burying each other as they swell with traffic. The
+        // grid cell size tracks the camera altitude so piles split as you zoom in;
+        // clicking a cluster fans its members out (expandedClusters). Cluster
+        // render objects are cached by cell key so their refs stay stable across
+        // refreshes (no marker re-add flash). See buildRenderPoints in
+        // globe-view.js.
+        expandedClusters: new Set(),
+        _clusterCache: {},
         EXPIRATION_SECONDS: 300,
         // Arcs are a *live* indicator: each arriving packet sweeps a gap along the
         // route from origin to destination over ARC_ANIM_MS, then the line lingers

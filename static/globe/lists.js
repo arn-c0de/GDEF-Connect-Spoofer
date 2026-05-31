@@ -387,16 +387,12 @@ export function setupLists(app) {
         ul.appendChild(li);
     }
 
-    app.showDataList = (packet, onClose = null) => {
-        const dataList = app.dataList;
-        // Flag the click that's opening the panel so the document-level
-        // outside-click handler (which fires as this same click bubbles up,
-        // whether from a globe point or a list row) doesn't immediately close it.
-        app._detailJustOpened = true;
+    // The <ul> of one IP's details — reused for both the single-IP popup and each
+    // tab of the cluster popup.
+    function buildDetailBody(packet) {
         const svc = PORT_SERVICES[packet.dst_port];
         const dstPortLabel = packet.dst_port
             ? `${packet.dst_port}${svc ? ' (' + svc + ')' : ''}` : 'N/A';
-
         const details = [
             // Which device(s) in the local network this external IP is talking to
             // (the LAN-side endpoint). Surfaced first + highlighted so the popup
@@ -419,13 +415,22 @@ export function setupLists(app) {
             ['Total Packets',    formatNum(packet.packet_count)],
             ['Threat Level',     packet.threat_level || 'No Threat'],
         ];
+        const ul = document.createElement('ul');
+        details.forEach(([label, value, cls]) => appendDetailItem(ul, label, value, cls));
+        return ul;
+    }
 
-        const header  = document.createElement('div');
+    // Render the detail panel for one of `members`, with a tab strip across the
+    // top when there's more than one (a clicked cluster) so the operator can
+    // switch between every IP in the pile, each with its full details.
+    function renderDetailPanel(members, activeIdx, onClose) {
+        const dataList = app.dataList;
+        const packet   = members[activeIdx];
+
+        const header = document.createElement('div');
         header.className = 'detail-header';
-
-        const title   = document.createElement('h3');
+        const title = document.createElement('h3');
         title.textContent = `IP: ${packet.ip || 'N/A'}`;
-
         const closeBtn = document.createElement('button');
         closeBtn.id    = 'closeDataList';
         closeBtn.title = 'Close';
@@ -434,14 +439,44 @@ export function setupLists(app) {
             dataList.style.display = 'none';
             if (onClose) onClose();
         });
-
-        const ul = document.createElement('ul');
-        details.forEach(([label, value, cls]) => appendDetailItem(ul, label, value, cls));
-
         header.appendChild(title);
         header.appendChild(closeBtn);
-        dataList.replaceChildren(header, ul);
+
+        const children = [header];
+        if (members.length > 1) {
+            const tabs = document.createElement('div');
+            tabs.className = 'detail-tabs';
+            members.forEach((m, i) => {
+                const tab = document.createElement('button');
+                tab.className = 'detail-tab' + (i === activeIdx ? ' active' : '');
+                tab.textContent = app.ipLabel(m.ip) || m.ip;
+                tab.title = m.org || '';
+                // Switch tab in place; this click is inside #dataList so the
+                // outside-click closer ignores it.
+                tab.addEventListener('click', () => renderDetailPanel(members, i, onClose));
+                tabs.appendChild(tab);
+            });
+            children.push(tabs);
+        }
+        children.push(buildDetailBody(packet));
+        dataList.replaceChildren(...children);
         dataList.style.display = 'block';
+    }
+
+    app.showDataList = (packet, onClose = null) => {
+        // Flag the click that's opening the panel so the document-level
+        // outside-click handler (which fires as this same click bubbles up,
+        // whether from a globe point or a list row) doesn't immediately close it.
+        app._detailJustOpened = true;
+        renderDetailPanel([packet], 0, onClose);
+    };
+
+    // A clicked cluster: one popup, newest IP first, every member on its own tab.
+    app.showClusterDetail = (cluster, onClose = null) => {
+        app._detailJustOpened = true;
+        const members = cluster.members.slice()
+            .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0));
+        renderDetailPanel(members, 0, onClose);
     };
 
     loadIpLabels();
