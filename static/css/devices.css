@@ -1,0 +1,78 @@
+/* ── Multi-device legend + colour toggle (injected by globe/devices.js) ──── */
+.color-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+.color-mode-row .toggle-button { padding: 2px 8px; }
+
+.device-legend { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.device-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    border-radius: 4px;
+    background: var(--bg-secondary);
+}
+.device-row input[type="checkbox"] { margin: 0; flex: none; }
+.device-swatch {
+    width: 20px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: none;
+    cursor: pointer;
+    flex: none;
+}
+.device-name {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.85rem;
+}
+.device-name.device-online::before  { content: "● "; color: #4caf50; }
+.device-name.device-offline::before { content: "● "; color: #777; }
+.device-kind { color: var(--text-dim); font-size: 0.7rem; flex: none; }
+.device-btn {
+    flex: none;
+    background: var(--bg-hover);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    line-height: 1;
+    padding: 2px 5px;
+}
+.device-btn:hover { background: var(--bg-active); }
+/* FritzDump module Start/Stop: green when stopped (Start), red while running (Stop). */
+.device-startstop { white-space: nowrap; border-color: #2e7d32; color: #66bb6a; }
+.device-startstop.running { border-color: #c62828; color: #ef5350; }
+
+/* ── Modular stats panel ───────────────────────────────────────────────── */
+.stat-head { display: flex; align-items: center; gap: 6px; }
+.stat-head h4 { margin: 0; flex: 1 1 auto; }
+.stat-device-sel {
+    background: var(--bg-secondary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    max-width: 45%;
+    padding: 2px 4px;
+}
+.stat-cfg {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px;
+    margin: 6px 0;
+}
+.stat-cfg-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 0.8rem; }
+.stat-cfg-row span { flex: 1 1 auto; }
