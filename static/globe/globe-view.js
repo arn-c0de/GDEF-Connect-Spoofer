@@ -125,7 +125,11 @@ export function setupGlobe(app) {
         // everything else renders at its true coordinate.
         .pointLat(d => d._dispLat ?? d.lat)
         .pointLng(d => d._dispLng ?? d.lng)
-        .pointAltitude(0.1)
+        // Lift threatening points (Low/Medium/High) off the surface, higher the
+        // more severe, so suspicious/dangerous dots stand proud of the plain ones
+        // instead of being buried among them. No-threat dots and origins stay flat.
+        // Clusters lift by their worst member's threat (carried on threat_level).
+        .pointAltitude(d => 0.1 + threatRank(d.threat_level) * 0.06)
         .arcColor(arc => {
             // "Colour by device" makes each device's arcs its own colour.
             let base;
