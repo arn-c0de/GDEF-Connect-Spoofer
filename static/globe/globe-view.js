@@ -343,18 +343,23 @@ export function setupGlobe(app) {
             if (e >= SWEEP + LINGER) { a._t0 = undefined; changed = true; continue; }  // life over
             anyAlive = true;
             if (!app.showArcs || !arcPassesFilters(a)) continue;  // age out but don't draw
+            // Always a single gap walking start -> end via a NEGATIVE dashOffset
+            // ramp (three-globe only renders this direction as a continuous line
+            // with one moving hole; a positive ramp wrongly animates the whole
+            // line). The travel DIRECTION is set by the geometry, not the sign:
+            // socket.js swaps which endpoint is start vs end based on the arc's
+            // actual traffic direction (outgoing vs incoming), so the same proven
+            // sweep visibly runs the opposite way for each. Co-located arcs of
+            // different directions therefore stay distinct (no averaging).
             let gap, alpha;
             if (e < SWEEP) {
-                // Sweeping: a single gap walks home -> external. The arc's start is
-                // the external IP and its end the home origin (see socket.js), so
-                // dashOffset 0 -> -(1+gap) moves the gap from the home origin (the
-                // sender) out to the target; the rest of the route stays drawn so
-                // its source is always visible.
+                // Sweeping: the gap walks from the start endpoint toward the end;
+                // the rest of the route stays drawn so the source is always visible.
                 gap = -(e / SWEEP) * (1 + ARC_GAP_LEN);
                 alpha = 1;
             } else {
-                // Lingering: whole route drawn (gap parked just off the external
-                // end), then fades over the last ARC_FADE_MS before removal.
+                // Lingering: whole route drawn (gap parked just off the end), then
+                // fades over the last ARC_FADE_MS before removal.
                 gap = -(1 + ARC_GAP_LEN);
                 const held = e - SWEEP;
                 alpha = held < LINGER - ARC_FADE_MS

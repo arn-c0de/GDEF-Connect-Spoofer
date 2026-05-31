@@ -175,10 +175,6 @@ export function setupSocket(app) {
             const endLng = isValidCoord(origin.lat, origin.lng) ? origin.lng : app.origins[LOCAL_ID].lng;
             const ack      = app.ckey(deviceId, ip);
             const arc = app.arcs[ack] || (app.arcs[ack] = {});
-            arc.startLat       = data.lat;
-            arc.startLng       = data.lon;
-            arc.endLat         = endLat;
-            arc.endLng         = endLng;
             arc.ip             = data.ip;
             arc.device_id      = deviceId;
             arc.city           = data.city;
@@ -188,8 +184,33 @@ export function setupSocket(app) {
             // if the point is evicted from app.points (see arcColor in globe-view).
             arc.threat_level   = data.threat_level || 'No Threat';
             arc.protocol       = data.protocol;
-            arc.incoming_count = data.incoming_count || 0;
-            arc.outgoing_count = data.outgoing_count || 0;
+            // Travel direction of THIS burst: compare the new counters against the
+            // arc's previous ones so the comet flies the way the just-arrived
+            // packets actually went (outgoing = your LAN → external, incoming =
+            // external → your LAN). Sticky on a tie / no change, and on first sight
+            // fall back to whichever counter dominates, so an arc always has a
+            // stable direction. Read deltas BEFORE overwriting the stored counts.
+            const _newIn  = data.incoming_count || 0;
+            const _newOut = data.outgoing_count || 0;
+            const _dIn    = _newIn  - (arc.incoming_count || 0);
+            const _dOut   = _newOut - (arc.outgoing_count || 0);
+            if (_dOut > _dIn)      arc.dir = 'outgoing';
+            else if (_dIn > _dOut) arc.dir = 'incoming';
+            else if (!arc.dir)     arc.dir = _newOut >= _newIn ? 'outgoing' : 'incoming';
+            arc.incoming_count = _newIn;
+            arc.outgoing_count = _newOut;
+            // The comet always sweeps start -> end (the only direction three-globe
+            // renders cleanly, see tickArcs), so the TRAVEL direction is encoded in
+            // which endpoint is the start: incoming flies external -> home, outgoing
+            // flies home -> external. Both ends are the same two points, so swapping
+            // them only reverses the animation — the drawn line stays put.
+            if (arc.dir === 'outgoing') {
+                arc.startLat = endLat;   arc.startLng = endLng;   // home is the source
+                arc.endLat   = data.lat; arc.endLng   = data.lon; // external is the target
+            } else {
+                arc.startLat = data.lat; arc.startLng = data.lon; // external is the source
+                arc.endLat   = endLat;   arc.endLng   = endLng;   // home is the target
+            }
             arc.last_seen      = data.last_seen;
             // Fly one comet whenever fresh packets actually arrive (the count
             // grew) or a brand-new IP shows up live — triggerArc queues at most one
