@@ -19,6 +19,7 @@ import logging
 from multiprocessing import Process, Manager
 from queue import Empty, Full, Queue as ThreadQueue
 import os
+import errno
 import json
 import signal
 import subprocess
@@ -103,11 +104,32 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get('authenticated'):
-            return redirect(url_for('login', next=request.url))
+            next_path = request.full_path.rstrip('?')
+            return redirect(url_for('login', next=next_path))
         return f(*args, **kwargs)
     return decorated_function
 
 # is_safe_redirect_target lives in netutils.py (imported above).
+
+
+def safe_post_login_url(target):
+    """Return a same-origin app URL for a validated post-login target.
+
+    The redirect sink only receives URLs produced by url_for().  The user
+    supplied value is used only to choose a route that Flask already knows
+    about, never as the redirect URL itself.
+    """
+    if not is_safe_redirect_target(target):
+        return url_for('index')
+    try:
+        path = target.split('?', 1)[0] or '/'
+        adapter = app.url_map.bind('')
+        endpoint, values = adapter.match(path, method='GET')
+    except Exception:
+        return url_for('index')
+    if endpoint in ('login', 'static'):
+        return url_for('index')
+    return url_for(endpoint, **values)
 
 # Brute-force protection for the login form (simple in-memory limiter).
 # LOGIN_MAX_ATTEMPTS / LOGIN_LOCKOUT_SECONDS live in config.py (imported above).
@@ -631,12 +653,7 @@ def login():
             session.clear()
             session['authenticated'] = True
             target = request.args.get('next')
-            if not is_safe_redirect_target(target):
-                return redirect(url_for('index'))
-            # is_safe_redirect_target guarantees a rooted, host-free local path
-            # ('/...'), so redirecting to it verbatim stays same-origin — a
-            # relative path carries no scheme/host and can never point off-site.
-            return redirect(target)
+            return redirect(safe_post_login_url(target))
         login_register_failure(client_ip)
         logger.warning(f"Failed login attempt from {client_ip}")
         error = 'Invalid access token'
@@ -1770,6 +1787,19 @@ _DEVICE_COLS = ("device_id", "name", "color", "kind", "public_ip", "lat", "lon",
                 "enabled", "seq", "last_seen", "created_at")
 _DEVICE_SELECT = ("SELECT device_id, name, color, kind, public_ip, lat, lon, "
                   "enabled, seq, last_seen, created_at FROM devices")
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def device_key_filename(device_id):
+    """Return the validated filename for a device key."""
+    if not _valid_device_id(device_id):
+        raise ValueError(f"invalid device id: {device_id!r}")
+    return os.path.basename(f"{device_id}.key")
+
+
+def open_device_keys_dir():
+    """Open the device key directory for dir_fd-relative file operations."""
+    return os.open(DEVICE_KEYS_DIR, os.O_RDONLY)
 
 
 def device_key_path(device_id):
@@ -1782,10 +1812,8 @@ def device_key_path(device_id):
     DEVICE_KEYS_DIR. An id that fails either check raises rather than escaping
     the key directory.
     """
-    if not _valid_device_id(device_id):
-        raise ValueError(f"invalid device id: {device_id!r}")
     base = os.path.normpath(DEVICE_KEYS_DIR)
-    path = os.path.normpath(os.path.join(base, f"{device_id}.key"))
+    path = os.path.normpath(os.path.join(base, device_key_filename(device_id)))
     if os.path.dirname(path) != base:
         raise ValueError(f"device key path escapes key directory: {device_id!r}")
     return path
@@ -1796,19 +1824,28 @@ def load_device_key(device_id):
     symlink so a planted link can't redirect the read to another file."""
     if not _valid_device_id(device_id):
         return None
-    path = device_key_path(device_id)
+    filename = device_key_filename(device_id)
+    dir_fd = None
     try:
-        if os.path.islink(path):
-            logger.warning(f"Device key path is a symlink, refusing to read: {path}")
-            return None
-        with open(path, 'r') as f:
+        dir_fd = open_device_keys_dir()
+        fd = os.open(filename, os.O_RDONLY | _O_NOFOLLOW, dir_fd=dir_fd)
+        with os.fdopen(fd, 'r') as f:
             key = f.read().strip()
         return key or None
     except FileNotFoundError:
         return None
     except OSError as e:
+        if getattr(e, "errno", None) == errno.ELOOP:
+            logger.warning(f"Device key path is a symlink, refusing to read: {filename}")
+            return None
         logger.error(f"Error reading device key for {device_id}: {e}")
         return None
+    finally:
+        if dir_fd is not None:
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
 
 
 def save_device_key(device_id, key):
@@ -1823,12 +1860,21 @@ def save_device_key(device_id, key):
 def delete_device_key(device_id):
     if not _valid_device_id(device_id):
         return
+    filename = device_key_filename(device_id)
+    dir_fd = None
     try:
-        os.unlink(device_key_path(device_id))
+        dir_fd = open_device_keys_dir()
+        os.unlink(filename, dir_fd=dir_fd)
     except FileNotFoundError:
         pass
     except OSError as e:
         logger.error(f"Error deleting device key for {device_id}: {e}")
+    finally:
+        if dir_fd is not None:
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
 
 
 def _device_row_to_dict(row):
@@ -2258,25 +2304,35 @@ def cleanup_expired_ips(stats):
             with locked(db_lock):
                 with db.get_connection() as conn:
                     c = conn.cursor()
-                    c.execute('''DELETE FROM ip_data WHERE last_seen < %s AND ip NOT IN (SELECT ip FROM pinned_ips)''',
+                    # Never expire pinned IPs, nor any IP carrying a threat level
+                    # (High/Medium/Low — i.e. suspicious or worse): those are kept
+                    # indefinitely so the record of a threat is never silently lost.
+                    c.execute('''DELETE FROM ip_data
+                                 WHERE last_seen < %s
+                                   AND ip NOT IN (SELECT ip FROM pinned_ips)
+                                   AND (threat_level IS NULL OR threat_level NOT IN ('High', 'Medium', 'Low'))''',
                               (now - RETENTION_SECONDS,))
                     conn.commit()
 
-                    # Hard row cap: even within the expiration window a spoofing
-                    # flood could pile up enough rows to fill the disk. Keep the
-                    # newest MAX_IP_ROWS unpinned rows and drop the oldest beyond it.
+                    # Hard row cap: even within the retention window a spoofing
+                    # flood could pile up enough rows to fill the disk. Trim the
+                    # oldest rows beyond the cap, but — like the time-based expiry —
+                    # never the pinned or threat-flagged ones. (If protected rows
+                    # alone exceed the cap the table may stay above it; that is the
+                    # intended trade-off for "never delete a threat".)
                     c.execute("SELECT COUNT(*) FROM ip_data")
                     if c.fetchone()[0] > MAX_IP_ROWS:
                         c.execute('''DELETE FROM ip_data WHERE ip IN (
                                          SELECT ip FROM ip_data
                                          WHERE ip NOT IN (SELECT ip FROM pinned_ips)
+                                           AND (threat_level IS NULL OR threat_level NOT IN ('High', 'Medium', 'Low'))
                                          ORDER BY last_seen DESC
                                          OFFSET %s)''', (MAX_IP_ROWS,))
                         trimmed = c.rowcount
                         conn.commit()
                         if trimmed > 0:
                             logger.warning(f"ip_data exceeded MAX_IP_ROWS ({MAX_IP_ROWS}); "
-                                           f"trimmed {trimmed} oldest unpinned rows")
+                                           f"trimmed {trimmed} oldest unpinned non-threat rows")
             with cache_lock:
                 # Cleanup geo_cache
                 for ip in list(geo_cache.keys()):
