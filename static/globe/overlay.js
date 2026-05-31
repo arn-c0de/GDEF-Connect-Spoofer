@@ -1,7 +1,7 @@
 // static/globe/overlay.js
 //
 // The unified modal overlay (Statistics · Connections · Devices · Settings)
-// with its left tab rail, plus the ⚙ menu button entry point and the
+// with its left tab rail, plus the gear menu button entry point and the
 // organisation-list editor. The settings controls from the old sidebar are
 // relocated here so the whole app config lives on one modern surface.
 
@@ -12,13 +12,31 @@ import { STAT_WIDGETS } from './stats.js';
 export function setupOverlay(app) {
     // ── Settings entry point ──────────────────────────────
     // Settings live as a page inside the unified overlay (see buildOverlay).
-    // The ⚙ top-bar button opens that overlay straight to the Settings page.
+    // The gear top-bar button opens that overlay straight to the Settings page.
     const menuButton = document.getElementById('menuButton');
     let orgsLoaded   = false;
 
     menuButton.addEventListener('click', () => {
         if (!orgsLoaded) { loadOrgEditor(); orgsLoaded = true; }
         app.openOverlay();   // opens on the last-viewed page (Statistics by default)
+    });
+
+    const globeQuickMenu = document.getElementById('globeQuickMenu');
+    const globeQuickButton = document.getElementById('globeQuickButton');
+    globeQuickButton?.addEventListener('click', e => {
+        e.stopPropagation();
+        const open = !globeQuickMenu.classList.contains('open');
+        globeQuickMenu.classList.toggle('open', open);
+        app.syncNetworkFilterButtons?.();
+        app.syncGlobeDisplayToggles?.();
+    });
+    document.addEventListener('click', e => {
+        if (!globeQuickMenu?.classList.contains('open')) return;
+        if (globeQuickMenu.contains(e.target)) return;
+        globeQuickMenu.classList.remove('open');
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') globeQuickMenu?.classList.remove('open');
     });
 
     async function loadOrgEditor() {
@@ -62,8 +80,8 @@ export function setupOverlay(app) {
     });
 
     // ── Tabbed Statistics / Connections / Devices / Settings overlay ──
-    // One modal with a left tab rail. The ⚙ top-bar button opens it on Settings,
-    // the floating 📊 button on Statistics. The settings controls from the old
+    // One modal with a left tab rail. The gear top-bar button opens it on Settings,
+    // the floating stats button on Statistics. The settings controls from the old
     // sidebar (Display, Org lists, IP labels, Export) are relocated here so the
     // whole app config lives in a single modern surface.
     function buildOverlay() {

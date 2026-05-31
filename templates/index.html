@@ -177,6 +177,31 @@
         <!-- Globe -->
         <div id="globeViz"></div>
 
+        <!-- Fast globe controls -->
+        <div id="globeQuickMenu" class="globe-quick-menu">
+            <button id="globeQuickButton" class="globe-quick-button" title="Globe controls">Globe ▾</button>
+            <div id="globeQuickPanel" class="globe-quick-panel">
+                <div class="globe-quick-section">
+                    <h4>Filters</h4>
+                    <div class="globe-toggle-row">
+                        <button id="ovToggleLocalNetwork" class="toggle-button active" title="Toggle local network">Local</button>
+                        <button id="ovToggleExternalNetwork" class="toggle-button active" title="Toggle external network">Ext</button>
+                        <button id="ovToggleTCPOnly" class="toggle-button" title="TCP connections only">TCP</button>
+                        <button id="ovToggleAllUDPPackets" class="toggle-button" title="All UDP packets">UDP</button>
+                    </div>
+                </div>
+                <div class="globe-quick-section">
+                    <h4>Display</h4>
+                    <div class="globe-toggle-row">
+                        <button id="showLabels" class="toggle-button active" title="Show/hide cluster labels">Labels</button>
+                        <button id="showLabelsThroughGlobe" class="toggle-button" title="Allow labels behind the globe">Through</button>
+                        <button id="showBorders" class="toggle-button active" title="Show/hide country borders">Borders</button>
+                        <button id="showArcs" class="toggle-button active" title="Show/hide connection rays">Rays</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Settings button (opens the unified overlay on the Settings page) -->
         <button id="menuButton" title="Settings"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-gear"/></svg></button>
 
@@ -184,26 +209,6 @@
              into the unified overlay's Settings page (buildOverlay), keeping their IDs
              and wiring intact. This div is removed once relocated. -->
         <div id="sidebar">
-
-            <div class="sidebar-section">
-                <h4>Globe Filters</h4>
-                <div class="globe-toggle-row">
-                    <button id="ovToggleLocalNetwork" class="toggle-button active" title="Toggle local network">Local</button>
-                    <button id="ovToggleExternalNetwork" class="toggle-button active" title="Toggle external network">Ext</button>
-                    <button id="ovToggleTCPOnly" class="toggle-button" title="TCP connections only">TCP</button>
-                    <button id="ovToggleAllUDPPackets" class="toggle-button" title="All UDP packets">UDP</button>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <h4>Globe Display</h4>
-                <div class="globe-toggle-row">
-                    <button id="showLabels" class="toggle-button active" title="Show/hide cluster labels">Labels</button>
-                    <button id="showLabelsThroughGlobe" class="toggle-button" title="Allow labels behind the globe">Through</button>
-                    <button id="showBorders" class="toggle-button active" title="Show/hide country borders">Borders</button>
-                    <button id="showArcs" class="toggle-button active" title="Show/hide connection rays">Rays</button>
-                </div>
-            </div>
 
             <div class="sidebar-section">
                 <h4>Organisation Lists</h4>

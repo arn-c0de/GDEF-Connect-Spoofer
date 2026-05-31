@@ -317,6 +317,7 @@ export function setupGlobe(app) {
         app.showLabels = !app.showLabels;
         localStorage.setItem('showLabels', JSON.stringify(app.showLabels));
         app.syncGlobeDisplayToggles();
+        app._badgeRenderSig = null;
         app.updateGlobeData();
     });
 
@@ -324,6 +325,7 @@ export function setupGlobe(app) {
         app.showLabelsThroughGlobe = !app.showLabelsThroughGlobe;
         localStorage.setItem('showLabelsThroughGlobe', JSON.stringify(app.showLabelsThroughGlobe));
         app.syncGlobeDisplayToggles();
+        app._badgeRenderSig = null;
         app.updateGlobeData();
     });
 
@@ -545,11 +547,9 @@ export function setupGlobe(app) {
         // on individual points while the cluster count was already present.
         const badges = app.showLabels ? render.filter(d => d.isCluster && isFacingCamera(d)) : [];
         const badgeSig = badges.map(badgeKey).join('\n');
-        if (badgeSig !== app._badgeRenderSig) {
-            app._badgeRenderSig = badgeSig;
-            globe.labelsData([]);
-            globe.htmlElementsData(badges);
-        }
+        app._badgeRenderSig = badgeSig;
+        globe.labelsData([]);
+        globe.htmlElementsData(badges);
     };
 
     // Final de-overlap pass. Clustering already merges co-located *points*, but a

@@ -40,7 +40,7 @@ export function createApp(myIpCoords) {
         statsOverlayOpen: false,
         currentPage: 'stats',
         // Assigned by buildOverlay(); lets the top-bar buttons open the overlay
-        // on a specific page (⚙ → Settings, 📊 → Statistics).
+        // on a specific page (gear → Settings, chart → Statistics).
         openOverlay: () => {},
         connSort: { key: 'last_seen', dir: -1 },
 
