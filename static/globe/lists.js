@@ -487,17 +487,25 @@ export function setupLists(app) {
         dataList.style.display = 'block';
     }
 
-    app.showDataList = (packet, onClose = null) => {
-        // Flag the click that's opening the panel so the document-level
-        // outside-click handler (which fires as this same click bubbles up,
-        // whether from a globe point or a list row) doesn't immediately close it.
+    // Arm the "just opened" guard so the very click that opens the panel doesn't
+    // immediately close it via the document-level outside-click handler. The guard
+    // must only be live for that one opening click: a globe-point click doesn't
+    // reliably bubble to document, so relying on that handler to clear the guard
+    // left it armed and eating the user's first genuine outside click. Clearing it
+    // on the next tick guarantees it's only set during the opening click itself.
+    function armDetailGuard() {
         app._detailJustOpened = true;
+        setTimeout(() => { app._detailJustOpened = false; }, 0);
+    }
+
+    app.showDataList = (packet, onClose = null) => {
+        armDetailGuard();
         renderDetailPanel([packet], 0, onClose);
     };
 
     // A clicked cluster: one popup, newest IP first, every member on its own tab.
     app.showClusterDetail = (cluster, onClose = null) => {
-        app._detailJustOpened = true;
+        armDetailGuard();
         const members = cluster.members.slice()
             .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0));
         renderDetailPanel(members, 0, onClose);

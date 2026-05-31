@@ -127,16 +127,22 @@ export function setupGlobe(app) {
         .pointLng(d => d._dispLng ?? d.lng)
         .pointAltitude(0.1)
         .arcColor(arc => {
-            // "Colour by device" makes each device's arcs its own colour; "by
-            // threat" falls back to the destination IP's threat colour.
+            // "Colour by device" makes each device's arcs its own colour.
             let base;
             if (app.colorMode === 'device') {
                 base = app.deviceColor(arc.device_id);
-            } else if (arc.city === 'Unknown' || arc.country === 'Unknown' || arc.org === 'Not available') {
-                base = '#FFFFFF';
             } else {
+                // Threat mode: the arc takes the SAME colour as its destination dot
+                // — a suspicious IP (orange/Medium) or dangerous one (red/High)
+                // draws a matching arc, even when several IPs share one spot (each
+                // arc still resolves its own IP's threat). We deliberately do NOT
+                // override geographic-unknowns to white here: that used to mask the
+                // threat colour, so an orange dot got a white arc. getCircleColor
+                // already yields white for no-threat/unclassified. Falls back to the
+                // threat recorded on the arc itself if the point was evicted.
                 const pt = app.points[arc.ip];
-                base = pt ? getCircleColor(pt.threat_level, pt.org) : '#FFFFFF';
+                base = getCircleColor(pt ? pt.threat_level : arc.threat_level,
+                                      pt ? pt.org : arc.org);
             }
             // Each arc is one packet's flight (see tickArcs): _alpha fades it out
             // at the very end so it bows out cleanly, never pops.
