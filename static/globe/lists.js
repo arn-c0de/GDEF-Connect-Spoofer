@@ -444,16 +444,40 @@ export function setupLists(app) {
 
         const children = [header];
         if (members.length > 1) {
+            // The pile's shared location (its IPs geolocate to the same spot), so
+            // show city/country once above the tabs rather than per tab.
+            const loc = [packet.city, packet.country]
+                .filter(x => x && x !== 'N/A' && x !== 'Unknown').join(', ');
+            if (loc) {
+                const locEl = document.createElement('div');
+                locEl.className = 'detail-cluster-loc';
+                locEl.textContent = loc;
+                children.push(locEl);
+            }
+
             const tabs = document.createElement('div');
             tabs.className = 'detail-tabs';
             members.forEach((m, i) => {
                 const tab = document.createElement('button');
                 tab.className = 'detail-tab' + (i === activeIdx ? ' active' : '');
-                tab.textContent = app.ipLabel(m.ip) || m.ip;
+                // Two lines per tab: the IP (or its label) and, beneath it, the
+                // vendor (falling back to org when no MAC vendor is known).
+                const ipEl = document.createElement('span');
+                ipEl.className = 'detail-tab-ip';
+                ipEl.textContent = app.ipLabel(m.ip) || m.ip;
+                const venEl = document.createElement('span');
+                venEl.className = 'detail-tab-vendor';
+                venEl.textContent = (m.vendor && m.vendor !== 'Unknown') ? m.vendor : (m.org || 'Unknown');
+                tab.append(ipEl, venEl);
                 tab.title = m.org || '';
-                // Switch tab in place; this click is inside #dataList so the
-                // outside-click closer ignores it.
-                tab.addEventListener('click', () => renderDetailPanel(members, i, onClose));
+                // Switch tab in place. stopPropagation is essential: the re-render
+                // below detaches this very button, so without it the document-level
+                // outside-click handler would see the click target as "outside"
+                // #dataList and close the popup.
+                tab.addEventListener('click', e => {
+                    e.stopPropagation();
+                    renderDetailPanel(members, i, onClose);
+                });
                 tabs.appendChild(tab);
             });
             children.push(tabs);

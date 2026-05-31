@@ -12,9 +12,9 @@
     color: var(--text);
     padding: 16px 20px;
     border-radius: 8px;
-    min-width: 300px;
-    max-width: 420px;
-    max-height: 80vh;
+    min-width: 360px;
+    max-width: 620px;
+    max-height: 88vh;
     overflow-y: auto;
     z-index: 2500;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.8);
@@ -78,6 +78,13 @@
     font-weight: 600;
 }
 
+/* Cluster popup: the pile's shared location, shown once above the tabs. */
+.detail-cluster-loc {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+
 /* Cluster popup: one tab per co-located IP. Wraps to several rows and scrolls if
    the pile is large, so every member stays reachable. */
 .detail-tabs {
@@ -85,22 +92,28 @@
     flex-wrap: wrap;
     gap: 4px;
     margin-bottom: 12px;
-    max-height: 96px;
+    max-height: 300px;
     overflow-y: auto;
 }
 
 .detail-tab {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.12);
     color: var(--text-dim);
     font-family: monospace;
-    font-size: 11px;
-    padding: 3px 8px;
+    padding: 4px 8px;
     border-radius: 4px;
     cursor: pointer;
     white-space: nowrap;
     transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
+
+.detail-tab .detail-tab-ip     { font-size: 11px; }
+.detail-tab .detail-tab-vendor { font-size: 9px; opacity: 0.75; }
 
 .detail-tab:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
 
