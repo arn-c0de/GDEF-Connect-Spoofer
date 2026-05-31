@@ -14,6 +14,14 @@ import { escapeHTML, showToast, toRGBA } from './format.js';
 export function setupGlobe(app) {
     const myIpCoords = app.myIpCoords;
 
+    // The arc is drawn almost in full (so you can see the whole route, hence
+    // where the traffic goes); the animation is a single short GAP of this width
+    // (fraction of the arc) sweeping along it. After the sweep the line lingers
+    // for ARC_LINGER_MS, then fades over the last ARC_FADE_MS so it bows out
+    // cleanly instead of popping.
+    const ARC_GAP_LEN = 0.2;
+    const ARC_FADE_MS = 1200;
+
     // ── Globe point radius ────────────────────────────────
     // Size reflects the *recent* packet rate (packets in the last
     // RATE_WINDOW_SECONDS), so a connection pushing lots of data swells up and
@@ -84,14 +92,26 @@ export function setupGlobe(app) {
                 const pt = app.points[arc.ip];
                 base = pt ? getCircleColor(pt.threat_level, pt.org) : '#FFFFFF';
             }
-            // Solid + full opacity: an arc is only ever drawn while it's live
-            // (see updateGlobeData), so it should read as a clear "flowing now".
-            return base;
+            // Each arc is one packet's flight (see tickArcs): _alpha fades it out
+            // at the very end so it bows out cleanly, never pops.
+            return toRGBA(base, arc._alpha ?? 1);
         })
         .arcStroke(0.5)
-        .arcDashLength(0.8)
-        .arcDashGap(0.5)
-        .arcDashAnimateTime(1000)
+        // One packet = the whole route drawn with a single gap sweeping along it,
+        // driven manually: with arcDashAnimateTime(0) three-globe leaves
+        // dashTranslate at 0, so a fragment is drawn iff
+        // mod(d - dashOffset, dashLength+dashGap) <= dashLength. With dashLength=1
+        // (full arc) and a short dashGap, the only UNdrawn stretch is one gap of
+        // width dashGap; tickArcs ramps each arc's own dashOffset
+        // (arcDashInitialGap) so that gap walks from the home origin to the
+        // external target — per arc, no shared clock (which is why arcs used to
+        // start mid-route).
+        .arcDashLength(1)
+        .arcDashGap(ARC_GAP_LEN)
+        .arcDashInitialGap(arc => arc._dashGap ?? 0)
+        .arcDashAnimateTime(0)
+        // No built-in grow-in tween — our dashOffset ramp is the whole animation.
+        .arcsTransitionDuration(0)
         .labelSize(0.5)
         .labelDotRadius(0.3)
         .labelColor(() => 'white')
@@ -195,7 +215,81 @@ export function setupGlobe(app) {
     app.deleteArcsOfIp = ip => { for (const k in app.arcs) if (app.arcs[k].ip === ip) delete app.arcs[k]; };
     app.expireArcsOfIp = ip => { for (const k in app.arcs) if (app.arcs[k].ip === ip) app.arcs[k].expired = true; };
 
-    // ── Globe data ────────────────────────────────────────
+    // ── Live arc animation (one comet per packet) ─────────
+    // Arcs are no longer a time-windowed line: each arriving packet plays exactly
+    // one comet that flies from the origin to the destination, then fades out. No
+    // traffic means no arc at all — only the (fading) dot remains. So a moving
+    // arc always means "a packet flowed just now".
+    function arcPassesFilters(a) {
+        return !a.expired && app.isDeviceVisible(a.device_id) &&
+            (app.showTCPOnly ? a.protocol === 'TCP' : true) &&
+            ((app.showLocalNetwork    && isLocalNetwork(a.ip, a.org)) ||
+             (app.showExternalNetwork && !isLocalNetwork(a.ip, a.org)));
+    }
+
+    // Called on every fresh packet for an arc. If no comet is in flight, start
+    // one now; if one is already flying, remember at most ONE replay so a burst
+    // can't build an ever-growing backlog — the held packet flies once the
+    // current comet finishes (the user "waits until the current one is over").
+    app.triggerArc = arc => {
+        const now = Date.now();
+        if (arc._t0 !== undefined && (now - arc._t0) < app.ARC_ANIM_MS) {
+            arc._pending = true;
+        } else {
+            arc._t0 = now;
+            arc._pending = false;
+            ensureArcLoop();
+        }
+    };
+
+    // One animation frame: advance every arc through its sweep -> linger -> fade
+    // lifecycle, hand the globe the currently-visible arcs, and keep the rAF alive
+    // only while at least one arc is still alive (so an idle globe does no work).
+    // We only re-push to the globe when membership or a drawn value actually
+    // changes, so the multi-second linger hold costs nothing.
+    function tickArcs() {
+        app._arcRAF = null;
+        const now = Date.now();
+        const SWEEP = app.ARC_ANIM_MS, LINGER = app.ARC_LINGER_MS;
+        let anyAlive = false, changed = false;
+        const live = [];
+        for (const k in app.arcs) {
+            const a = app.arcs[k];
+            if (a._t0 === undefined) continue;
+            let e = now - a._t0;
+            // A packet held during the sweep starts a fresh sweep once it ends.
+            if (e >= SWEEP && a._pending) { a._t0 = now; a._pending = false; e = 0; }
+            if (e >= SWEEP + LINGER) { a._t0 = undefined; changed = true; continue; }  // life over
+            anyAlive = true;
+            if (!app.showArcs || !arcPassesFilters(a)) continue;  // age out but don't draw
+            let gap, alpha;
+            if (e < SWEEP) {
+                // Sweeping: a single gap walks home -> external. The arc's start is
+                // the external IP and its end the home origin (see socket.js), so
+                // dashOffset 0 -> -(1+gap) moves the gap from the home origin (the
+                // sender) out to the target; the rest of the route stays drawn so
+                // its source is always visible.
+                gap = -(e / SWEEP) * (1 + ARC_GAP_LEN);
+                alpha = 1;
+            } else {
+                // Lingering: whole route drawn (gap parked just off the external
+                // end), then fades over the last ARC_FADE_MS before removal.
+                gap = -(1 + ARC_GAP_LEN);
+                const held = e - SWEEP;
+                alpha = held < LINGER - ARC_FADE_MS
+                    ? 1 : Math.max(0, (LINGER - held) / ARC_FADE_MS);
+            }
+            if (gap !== a._dashGap || alpha !== a._alpha) { a._dashGap = gap; a._alpha = alpha; changed = true; }
+            live.push(a);
+        }
+        // Membership change (an arc dropped or newly drawn) also needs a re-push.
+        if (live.length !== app._arcShownCount) { changed = true; app._arcShownCount = live.length; }
+        if (changed) globe.arcsData(live);
+        if (anyAlive) app._arcRAF = requestAnimationFrame(tickArcs);
+    }
+    function ensureArcLoop() { if (!app._arcRAF) app._arcRAF = requestAnimationFrame(tickArcs); }
+
+    // ── Globe data (points only; arcs are driven by tickArcs) ──
     app.updateGlobeData = () => {
         const visiblePoints = Object.values(app.points).filter(p =>
             !p.expired && app.pointDeviceVisible(p) &&
@@ -209,18 +303,5 @@ export function setupGlobe(app) {
             if (app.isDeviceVisible(id) && isValidCoord(o.lat, o.lng)) visiblePoints.push(o);
         }
         globe.pointsData(visiblePoints);
-
-        // Arcs render ONLY while live — i.e. a packet arrived within the last
-        // ARC_LIVE_SECONDS. Once traffic stops the line drops off and just the
-        // (fading) dot remains, so an animating arc always means "data flowing
-        // right now". Pinned IPs keep their arc so a watched host stays drawn.
-        const nowSec = Date.now() / 1000;
-        globe.arcsData(app.showArcs ? Object.values(app.arcs).filter(a =>
-            !a.expired && app.isDeviceVisible(a.device_id) &&
-            (app.pinnedIPs[a.ip] || nowSec - (a._lastActive || 0) <= app.ARC_LIVE_SECONDS) &&
-            (app.showTCPOnly ? a.protocol === 'TCP' : true) &&
-            ((app.showLocalNetwork    && isLocalNetwork(a.ip, a.org)) ||
-             (app.showExternalNetwork && !isLocalNetwork(a.ip, a.org)))
-        ) : []);
     };
 }

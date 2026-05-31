@@ -91,12 +91,14 @@ export function createApp(myIpCoords) {
         internalPackets: {},
         pinnedIPs: {},
         EXPIRATION_SECONDS: 300,
-        // Arcs (the connection lines) are a *live* indicator: they're drawn only
-        // while packets are actively arriving for that connection, and disappear
-        // this many seconds after the last packet — leaving just the dot, which
-        // lingers and fades until EXPIRATION_SECONDS. So a visible, animating arc
-        // means "data is flowing right now".
-        ARC_LIVE_SECONDS: 5,
+        // Arcs are a *live* indicator: each arriving packet sweeps a gap along the
+        // route from origin to destination over ARC_ANIM_MS, then the line lingers
+        // (drawn) for ARC_LINGER_MS and fades out — leaving just the dot (which
+        // lingers and fades until EXPIRATION_SECONDS). No traffic means no arc, so
+        // a fresh arc always means "a packet flowed just now". See triggerArc/
+        // tickArcs in globe-view.js.
+        ARC_ANIM_MS: 1000,
+        ARC_LINGER_MS: 5000,
         INTERNAL_EXPIRATION_SECONDS: 600,
         MAX_POINTS: 1000,
         MAX_INTERNAL_PACKETS: 500,
