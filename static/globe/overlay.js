@@ -145,6 +145,8 @@ export function setupOverlay(app) {
             app.statsOverlayOpen = true;
             ov.style.display = 'flex';
             app.syncDeviceSelect(document.getElementById('ovDeviceSel'));
+            app.syncNetworkFilterButtons?.();
+            app.syncGlobeDisplayToggles?.();
             app.buildDeviceLegend();
             showPage(page || app.currentPage || 'stats');
         };
@@ -176,6 +178,17 @@ export function setupOverlay(app) {
         cmDevice.addEventListener('click', () => setMode('device'));
         syncCm();
         document.getElementById('addDeviceBtn').addEventListener('click', app.addDevice);
+
+        // ── Globe filter toggles (Settings page) ──
+        [
+            ['ovToggleLocalNetwork', 'local', () => !app.showLocalNetwork],
+            ['ovToggleExternalNetwork', 'external', () => !app.showExternalNetwork],
+            ['ovToggleTCPOnly', 'tcp', () => !app.showTCPOnly],
+            ['ovToggleAllUDPPackets', 'udp', () => !app.showAllUDPPackets],
+        ].forEach(([id, key, next]) => {
+            document.getElementById(id)?.addEventListener('click', () => app.setNetworkFilter(key, next()));
+        });
+        app.syncNetworkFilterButtons?.();
 
         // ── Widget chooser (Statistics page) ──
         const cfg = document.getElementById('statCfg');

@@ -65,6 +65,37 @@ export function setupGlobe(app) {
         return r;
     }
 
+    function getBadgeAltitude(d) {
+        return d.isCluster ? 0.13 + threatRank(d.threat_level) * 0.015
+                           : 0.12 + threatRank(d.threat_level) * 0.015;
+    }
+
+    function badgeText(d) {
+        return String(d.count || 0);
+    }
+
+    function badgeKey(d) {
+        const id = d.isCluster ? `cluster:${d.cellKey}` : `ip:${d.ip}`;
+        return [
+            id,
+            badgeText(d),
+            (d._dispLat ?? d.lat).toFixed(4),
+            (d._dispLng ?? d.lng).toFixed(4),
+            d.threat_level || ''
+        ].join('|');
+    }
+
+    function badgeElement(d) {
+        const text = badgeText(d);
+        if (!d._badgeEl) {
+            d._badgeEl = document.createElement('div');
+            d._badgeEl.className = 'globe-count-badge';
+        }
+        if (d._badgeEl.textContent !== text) d._badgeEl.textContent = text;
+        d._badgeEl.classList.toggle('cluster', !!d.isCluster);
+        return d._badgeEl;
+    }
+
     // ── Age-based dot fade ────────────────────────────────
     // The longer no fresh packet has arrived, the more transparent the dot is
     // drawn, so a point gently dims over its lifetime until it expires and is
@@ -171,22 +202,15 @@ export function setupGlobe(app) {
         .arcDashAnimateTime(0)
         // No built-in grow-in tween — our dashOffset ramp is the whole animation.
         .arcsTransitionDuration(0)
-        // The labels layer is fed ONLY the cluster render objects (see
-        // updateGlobeData): each shows how many IPs the pile hides, floated just
-        // above the marker so the count reads clearly.
-        .labelLat(d => d._dispLat ?? d.lat)
-        .labelLng(d => d._dispLng ?? d.lng)
-        .labelText(d => String(d.count))
-        .labelSize(1.0)
-        // The badge dims in lock-step with its cluster dot (same freshness fade,
-        // same 0.25 floor) so the number never bows out while the pile is still
-        // drawn — and the layer's default fade-in/out transition is off so a badge
-        // appears/vanishes exactly with its cluster, not a beat behind it.
-        .labelColor(d => toRGBA('#FFFFFF', freshnessAlpha(d, app.EXPIRATION_SECONDS)))
-        .labelsTransitionDuration(0)
-        .labelResolution(2)
-        .labelAltitude(0.13)
-        .labelIncludeDot(false)
+        // Cluster count badges use the HTML layer rather than globe.gl's canvas label
+        // layer. The label layer was visible during camera movement but could be
+        // hidden once rendering settled; DOM badges stay present while their point
+        // remains in the render set.
+        .htmlLat(d => d._dispLat ?? d.lat)
+        .htmlLng(d => d._dispLng ?? d.lng)
+        .htmlAltitude(getBadgeAltitude)
+        .htmlElement(badgeElement)
+        .htmlTransitionDuration(0)
         .onPointClick(point => {
             // A cluster isn't a single connection — open the detail popup with one
             // tab per IP in the pile, so each member's full info is switchable.
@@ -211,6 +235,7 @@ export function setupGlobe(app) {
         })
         (document.getElementById('globeViz'));
     app.globe = globe;
+    globe.labelsData([]);
 
     // ── Remember the last camera centre + zoom across reloads ─────────────
     // Without a saved view the globe stays centred on the user's own location
@@ -252,20 +277,34 @@ export function setupGlobe(app) {
     });
     resizeObserver.observe(globeContainer);
 
-    // ── Arcs checkbox ─────────────────────────────────────
-    const showArcsCheckbox = document.getElementById('showArcs');
-    if (showArcsCheckbox) {
-        showArcsCheckbox.checked = app.showArcs;
-        showArcsCheckbox.addEventListener('change', () => {
-            app.showArcs = showArcsCheckbox.checked;
-            localStorage.setItem('showArcs', JSON.stringify(app.showArcs));
-            app.updateGlobeData();
-        });
-    }
+    // ── Globe display toggles ─────────────────────────────
+    const showLabelsButton  = document.getElementById('showLabels');
+    const showArcsButton    = document.getElementById('showArcs');
+    const showBordersButton = document.getElementById('showBorders');
+    app.syncGlobeDisplayToggles = () => {
+        showLabelsButton?.classList.toggle('active', app.showLabels);
+        showArcsButton?.classList.toggle('active', app.showArcs);
+        showBordersButton?.classList.toggle('active', app.showBorders);
+    };
+    app.syncGlobeDisplayToggles();
 
-    // ── Country borders checkbox ──────────────────────────
-    const showBordersCheckbox = document.getElementById('showBorders');
-    if (showBordersCheckbox) showBordersCheckbox.checked = app.showBorders;
+    showLabelsButton?.addEventListener('click', () => {
+        app.showLabels = !app.showLabels;
+        localStorage.setItem('showLabels', JSON.stringify(app.showLabels));
+        app.syncGlobeDisplayToggles();
+        app.updateGlobeData();
+    });
+
+    showArcsButton?.addEventListener('click', () => {
+        app.showArcs = !app.showArcs;
+        localStorage.setItem('showArcs', JSON.stringify(app.showArcs));
+        app.syncGlobeDisplayToggles();
+        if (!app.showArcs) {
+            globe.arcsData([]);
+            app._arcShownCount = 0;
+        }
+        app.updateGlobeData();
+    });
 
     fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson')
         .then(r => r.json())
@@ -280,13 +319,12 @@ export function setupGlobe(app) {
         })
         .catch(err => console.error('Error loading country borders:', err));
 
-    if (showBordersCheckbox) {
-        showBordersCheckbox.addEventListener('change', () => {
-            app.showBorders = showBordersCheckbox.checked;
-            localStorage.setItem('showBorders', JSON.stringify(app.showBorders));
-            globe.polygonsData(app.showBorders ? app.countriesData : []);
-        });
-    }
+    showBordersButton?.addEventListener('click', () => {
+        app.showBorders = !app.showBorders;
+        localStorage.setItem('showBorders', JSON.stringify(app.showBorders));
+        app.syncGlobeDisplayToggles();
+        globe.polygonsData(app.showBorders ? app.countriesData : []);
+    });
 
     document.getElementById('centerOwnLocation')?.addEventListener('click', () => {
         globe.pointOfView({ lat: myIpCoords.lat, lng: myIpCoords.lng, altitude: 2.5 }, 1000);
@@ -465,8 +503,16 @@ export function setupGlobe(app) {
         separateOverlaps(render);
 
         globe.pointsData(render);
-        // The count badge layer carries only the clusters.
-        globe.labelsData(render.filter(d => d.isCluster));
+        // Keep labels tied to visible clusters, not to active arcs/rays. Packet
+        // counts are intentionally not shown here; they created a second number
+        // on individual points while the cluster count was already present.
+        const badges = app.showLabels ? render.filter(d => d.isCluster) : [];
+        const badgeSig = badges.map(badgeKey).join('\n');
+        if (badgeSig !== app._badgeRenderSig) {
+            app._badgeRenderSig = badgeSig;
+            globe.labelsData([]);
+            globe.htmlElementsData(badges);
+        }
     };
 
     // Final de-overlap pass. Clustering already merges co-located *points*, but a

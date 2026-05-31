@@ -1,0 +1,183 @@
+/* ============================================================
+   Threat ticker (top bar, right) + expandable detail panel
+   Accent colour is the app blue (var(--accent) / --accent-light).
+   ============================================================ */
+
+#threatTicker {
+    margin-left: auto;                 /* push the ticker to the right of the bar */
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 360px;
+    padding: 2px 8px;
+    background: rgba(30, 60, 114, 0.25);    /* accent tint */
+    border: 1px solid var(--accent-light);
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+    transition: background 0.2s, border-color 0.2s;
+}
+#threatTicker:hover       { background: rgba(42, 82, 152, 0.40); }
+#threatTicker.ticker-open { background: rgba(42, 82, 152, 0.55); }
+
+/* Two stacked marquee rows: threats over newest connections. */
+.ticker-rows { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.ticker-row  { display: flex; align-items: center; gap: 6px; height: 15px; }
+
+.ticker-icon { font-size: 11px; flex-shrink: 0; line-height: 1; }
+.ticker-icon-threat { color: #ffcf3f; }
+.ticker-icon-new    { color: var(--accent-light); font-size: 10px; }
+
+.ticker-viewport {
+    overflow: hidden;
+    width: 280px;
+    height: 100%;
+    position: relative;
+    display: flex;
+    align-items: center;
+    mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+}
+.ticker-track {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    will-change: transform;
+    backface-visibility: hidden;          /* promote to its own GPU layer */
+    transform: translateZ(0);
+}
+/* The track holds the item list twice, so a -50% shift loops seamlessly.
+   translate3d keeps it on the compositor (smoother than 2D translateX). */
+@keyframes tickerScroll {
+    from { transform: translate3d(0, 0, 0); }
+    to   { transform: translate3d(-50%, 0, 0); }
+}
+.ticker-viewport:hover .ticker-track:not(.ticker-step) { animation-play-state: paused; }
+
+/* Step mode: a single IP shown at a time, faded in on each swap. */
+.ticker-track.ticker-step { animation: none !important; transform: none; }
+@keyframes tickerFade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+.ticker-fade { animation: tickerFade 0.4s ease; }
+
+/* "NEW" tag for a never-before-seen IP (permanent-ledger is_new flag). */
+.ticker-new {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #fff;
+    background: var(--accent-light);
+    border-radius: 3px;
+    padding: 0 3px;
+    line-height: 1.4;
+}
+
+.ticker-item { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; line-height: 1; }
+.ticker-dot  { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.ticker-ip   { color: var(--text); font-weight: 600; }
+.ticker-name { color: var(--text-dim); }
+/* Fixed-ish width + right align so a "59s ago"->"1m ago" relabel doesn't shift
+   the following items mid-scroll (a subtle stutter source). */
+.ticker-time { color: var(--accent-light); display: inline-block; min-width: 48px; text-align: right; }
+.ticker-sep  { color: var(--text-dim); margin: 0 9px; }
+.ticker-none { color: var(--text-dim); font-style: italic; font-size: 10px; }
+.ticker-caret { color: var(--accent-light); font-size: 9px; flex-shrink: 0; line-height: 1; }
+
+/* ── Dropdown detail panel ─────────────────────────────────── */
+.threat-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 8px;
+    width: 380px;
+    max-width: calc(100vw - 16px);
+    max-height: 70vh;
+    overflow-y: auto;
+    background: rgba(20, 24, 32, 0.97);
+    border: 1px solid var(--accent-light);
+    border-radius: 6px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+    z-index: 1100;
+    padding: 8px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+.threat-panel.hidden { display: none; }
+.threat-panel ul { list-style: none; margin: 0; padding: 0; }
+
+.tp-section { margin-bottom: 10px; }
+.tp-section:last-child { margin-bottom: 0; }
+.tp-section h5 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent-light);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+}
+
+.tp-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.tp-row:hover { background: rgba(42, 82, 152, 0.28); }
+.tp-dot  { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.tp-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.tp-ip   { font-size: 11px; font-weight: 600; color: var(--text); }
+.tp-meta { font-size: 9px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.tp-time  { font-size: 9px; color: var(--accent-light); white-space: nowrap; }
+.tp-none  { color: var(--text-dim); font-style: italic; font-size: 10px; padding: 4px 6px; }
+
+.tp-new {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #fff;
+    background: var(--accent-light);
+    border-radius: 3px;
+    padding: 0 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+/* ── Mini settings menu (top of the panel) ─────────────────── */
+.tp-settings {
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.tp-settings h5 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent-light);
+}
+.tp-set-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--text);
+    padding: 3px 2px;
+}
+.tp-set-row input[type="checkbox"] { accent-color: var(--accent-light); cursor: pointer; }
+.tp-set-label { min-width: 60px; color: var(--text-dim); }
+.tp-set-val   { min-width: 28px; text-align: right; color: var(--accent-light); }
+.tp-set-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent-light);
+    cursor: pointer;
+    height: 4px;
+}

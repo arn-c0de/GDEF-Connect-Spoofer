@@ -96,6 +96,17 @@
 .ov-page .sidebar-section { padding: 0 0 18px; }
 .ov-page .sidebar-section:first-child { padding-top: 0; }
 .color-mode-row { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; color: var(--text-dim); font-size: 0.85rem; }
+.globe-toggle-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.globe-toggle-row .toggle-button {
+    min-width: 72px;
+    padding: 7px 10px;
+    font-size: 0.78rem;
+}
 
 .kpi-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
 .kpi {

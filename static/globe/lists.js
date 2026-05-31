@@ -28,6 +28,7 @@ export function setupLists(app) {
         app.updateInternalNetworkList();
         app.updateGlobeData();
         app.renderStats();
+        if (app.renderThreatTicker) app.renderThreatTicker();
     }
 
     app.refreshViews = () => {
@@ -78,6 +79,7 @@ export function setupLists(app) {
         _localDebounce = setTimeout(() => {
             app.showLocalNetwork = !app.showLocalNetwork;
             toggleLocalNetworkButton.classList.toggle('active', app.showLocalNetwork);
+            app.syncNetworkFilterButtons?.();
             app.socket.emit('set_local_network', { showLocalNetwork: app.showLocalNetwork });
             app.refreshViews();
         }, 300);
@@ -89,6 +91,7 @@ export function setupLists(app) {
     toggleExternalNetworkButton.addEventListener('click', () => {
         app.showExternalNetwork = !app.showExternalNetwork;
         toggleExternalNetworkButton.classList.toggle('active', app.showExternalNetwork);
+        app.syncNetworkFilterButtons?.();
         app.socket.emit('set_external_network', { showExternalNetwork: app.showExternalNetwork });
         app.refreshViews();
     });
@@ -99,6 +102,7 @@ export function setupLists(app) {
     toggleTCPOnlyButton.addEventListener('click', () => {
         app.showTCPOnly = !app.showTCPOnly;
         toggleTCPOnlyButton.classList.toggle('active', app.showTCPOnly);
+        app.syncNetworkFilterButtons?.();
         app.socket.emit('set_tcp_only', { showTCPOnly: app.showTCPOnly });
         app.refreshViews();
     });
@@ -109,9 +113,41 @@ export function setupLists(app) {
     toggleAllUDPPacketsButton.addEventListener('click', () => {
         app.showAllUDPPackets = !app.showAllUDPPackets;
         toggleAllUDPPacketsButton.classList.toggle('active', app.showAllUDPPackets);
+        app.syncNetworkFilterButtons?.();
         app.socket.emit('set_udp_filter', { showAllUDPPackets: app.showAllUDPPackets });
         app.refreshViews();
     });
+
+    app.syncNetworkFilterButtons = () => {
+        [
+            ['toggleLocalNetwork', 'ovToggleLocalNetwork', app.showLocalNetwork],
+            ['toggleExternalNetwork', 'ovToggleExternalNetwork', app.showExternalNetwork],
+            ['toggleTCPOnly', 'ovToggleTCPOnly', app.showTCPOnly],
+            ['toggleAllUDPPackets', 'ovToggleAllUDPPackets', app.showAllUDPPackets],
+        ].forEach(([mainId, overlayId, active]) => {
+            document.getElementById(mainId)?.classList.toggle('active', active);
+            document.getElementById(overlayId)?.classList.toggle('active', active);
+        });
+    };
+
+    app.setNetworkFilter = (key, value) => {
+        if (key === 'local') {
+            app.showLocalNetwork = value;
+            app.socket.emit('set_local_network', { showLocalNetwork: app.showLocalNetwork });
+        } else if (key === 'external') {
+            app.showExternalNetwork = value;
+            app.socket.emit('set_external_network', { showExternalNetwork: app.showExternalNetwork });
+        } else if (key === 'tcp') {
+            app.showTCPOnly = value;
+            app.socket.emit('set_tcp_only', { showTCPOnly: app.showTCPOnly });
+        } else if (key === 'udp') {
+            app.showAllUDPPackets = value;
+            app.socket.emit('set_udp_filter', { showAllUDPPackets: app.showAllUDPPackets });
+        }
+        app.syncNetworkFilterButtons();
+        app.refreshViews();
+    };
+    app.syncNetworkFilterButtons();
 
     // ── Search inputs ─────────────────────────────────────
     document.getElementById('connectionSearch')?.addEventListener('input', e => {
@@ -410,6 +446,11 @@ export function setupLists(app) {
             ['Source Port',      packet.src_port    || 'N/A'],
             ['Dest Port',        dstPortLabel],
             ['Last Seen',        packet.last_seen   ? new Date(packet.last_seen * 1000).toLocaleString() : 'N/A'],
+            // Permanent ledger: when this IP was EVER first seen (survives retention
+            // & restarts). "NEW" means the server had never recorded it before now.
+            ['First Seen',       packet.first_seen_ever
+                                    ? new Date(packet.first_seen_ever * 1000).toLocaleString() + (packet.is_new ? '  — NEW' : '')
+                                    : (packet.is_new ? 'NEW' : 'N/A')],
             ['Packets In',       formatNum(packet.incoming_count)],
             ['Packets Out',      formatNum(packet.outgoing_count)],
             ['Total Packets',    formatNum(packet.packet_count)],

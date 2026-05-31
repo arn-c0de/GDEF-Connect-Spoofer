@@ -159,6 +159,12 @@ export function setupSocket(app) {
             pt.expired        = false;
             // When this client first laid eyes on the IP — drives the "Newest" list.
             if (pt._firstSeen === undefined) pt._firstSeen = nowSec;
+            // Permanent ledger info from the server: first_seen = when this IP was
+            // EVER first observed (survives retention/restarts); is_new = the server
+            // had never seen it before this update. Keep is_new sticky for the
+            // session so a genuinely-new connection stays flagged in the UI.
+            if (data.first_seen) pt.first_seen_ever = data.first_seen;
+            if (data.is_new) pt.is_new = true;
             recordPacketRate(pt, total, nowSec);
 
             // One arc per (device, ip): each device draws its own line from its
@@ -326,20 +332,17 @@ export function setupSocket(app) {
         }
         if (data.show_all_udp_packets !== undefined) {
             app.showAllUDPPackets = data.show_all_udp_packets;
-            app.toggleAllUDPPacketsButton.classList.toggle('active', app.showAllUDPPackets);
         }
         if (data.show_local_network !== undefined) {
             app.showLocalNetwork = data.show_local_network;
-            app.toggleLocalNetworkButton.classList.toggle('active', app.showLocalNetwork);
         }
         if (data.show_external_network !== undefined) {
             app.showExternalNetwork = data.show_external_network;
-            app.toggleExternalNetworkButton.classList.toggle('active', app.showExternalNetwork);
         }
         if (data.show_tcp_only !== undefined) {
             app.showTCPOnly = data.show_tcp_only;
-            app.toggleTCPOnlyButton.classList.toggle('active', app.showTCPOnly);
         }
+        app.syncNetworkFilterButtons?.();
         app.refreshViews();
     });
 

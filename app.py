@@ -699,6 +699,31 @@ def api_stats():
         return jsonify({"error": "stats unavailable"}), 500
 
 
+@app.route('/api/recent')
+@login_required
+def api_recent():
+    """Recent connections and threats from the PERMANENT ip_seen ledger, so the
+    tickers can surface history that has already aged out of ip_data — not just
+    the live in-memory points. Ordered by last_seen so 'most recent' is honest."""
+    cols = "ip, first_seen, last_seen, org, country, hostname, threat_level, seen_count"
+
+    def to_dict(r):
+        return {"ip": r[0], "first_seen": r[1], "last_seen": r[2], "org": r[3],
+                "country": r[4], "hostname": r[5], "threat_level": r[6], "seen_count": r[7]}
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute(f"SELECT {cols} FROM ip_seen ORDER BY last_seen DESC NULLS LAST LIMIT 60")
+            newest = [to_dict(r) for r in c.fetchall()]
+            c.execute(f"SELECT {cols} FROM ip_seen WHERE threat_level IN ('High','Medium','Low') "
+                      "ORDER BY last_seen DESC NULLS LAST LIMIT 60")
+            threats = [to_dict(r) for r in c.fetchall()]
+        return jsonify({"newest": newest, "threats": threats})
+    except Exception as e:
+        logger.error(f"Error in api_recent: {e}")
+        return jsonify({"error": "recent unavailable"}), 500
+
+
 @app.route('/api/export/csv')
 @login_required
 def api_export_csv():
@@ -976,6 +1001,19 @@ def init_db():
                              (mac TEXT PRIMARY KEY, vendor TEXT)''')
                 c.execute('''CREATE TABLE IF NOT EXISTS threat_list
                              (ip TEXT PRIMARY KEY, threat_level TEXT, source TEXT)''')
+                # Permanent first-/last-seen ledger of EVERY IP ever observed.
+                # Unlike ip_data this is NEVER expired or trimmed by
+                # cleanup_expired_ips, so "have we ever talked to this IP, and
+                # since when?" stays answerable forever — across retention and
+                # restarts. It is deliberately lightweight (no per-packet counts,
+                # no ports) so it can grow to one row per unique IP indefinitely.
+                # The longer the system runs cleanly, the more confidently a
+                # never-before-seen IP stands out as genuinely new.
+                c.execute('''CREATE TABLE IF NOT EXISTS ip_seen
+                             (ip TEXT PRIMARY KEY,
+                              first_seen DOUBLE PRECISION, last_seen DOUBLE PRECISION,
+                              org TEXT, country TEXT, hostname TEXT,
+                              threat_level TEXT, seen_count BIGINT DEFAULT 0)''')
 
                 # Migrate a pre-multi-device ip_data (single-column 'ip' PK) in
                 # place: add device_id, then swap the PK to (device_id, ip).
@@ -1002,6 +1040,7 @@ def init_db():
                 c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_last_seen ON ip_data(last_seen)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_ip ON ip_data(ip)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_threat_list_ip ON threat_list(ip)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_ip_seen_last_seen ON ip_seen(last_seen)")
 
                 # Seed the built-in local-capture device (kind='local').
                 c.execute('''INSERT INTO devices (device_id, name, color, kind, enabled, seq, created_at)
@@ -1740,7 +1779,28 @@ def flush_ip_writes():
                                           (device_id, ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
                                            e["src_port"], e["dst_port"], e["protocol"], inc, out,
                                            e["mac"], e["vendor"], e["hostname"], e["os"], e.get("local_ip"), threat_level))
-                            broadcasts.append((e, inc, out, threat_level))
+                            # Permanent ledger upsert. RETURNING (xmax = 0) is the
+                            # standard ON CONFLICT trick to tell an INSERT (brand-new
+                            # IP, xmax=0 -> is_new=True) from an UPDATE (already known);
+                            # first_seen is when this IP was EVER first observed and is
+                            # never overwritten. This is what survives retention and
+                            # restarts, so a genuinely new connection can be flagged.
+                            c.execute('''INSERT INTO ip_seen
+                                             (ip, first_seen, last_seen, org, country, hostname, threat_level, seen_count)
+                                         VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
+                                         ON CONFLICT (ip) DO UPDATE SET
+                                             last_seen    = GREATEST(ip_seen.last_seen, EXCLUDED.last_seen),
+                                             org          = COALESCE(NULLIF(EXCLUDED.org, 'Unknown'), ip_seen.org),
+                                             country      = COALESCE(NULLIF(EXCLUDED.country, 'Unknown'), ip_seen.country),
+                                             hostname     = COALESCE(NULLIF(EXCLUDED.hostname, 'Unknown'), ip_seen.hostname),
+                                             threat_level = EXCLUDED.threat_level,
+                                             seen_count   = ip_seen.seen_count + 1
+                                         RETURNING first_seen, (xmax = 0)''',
+                                      (ip, e["last_seen"], e["last_seen"], org,
+                                       e["country"], e["hostname"], threat_level))
+                            seen_row = c.fetchone()
+                            first_seen_ever, is_new = (seen_row[0], bool(seen_row[1])) if seen_row else (e["last_seen"], False)
+                            broadcasts.append((e, inc, out, threat_level, is_new, first_seen_ever))
                         conn.commit()
                 except db.DBError as ex:
                     logger.error(f"Error flushing IP writes: {ex}")
@@ -1750,12 +1810,16 @@ def flush_ip_writes():
             # Socket.IO message per client instead of N separate emits, cutting
             # fan-out from (IPs x clients) frames to (1 x clients) per interval.
             messages = []
-            for e, inc, out, threat_level in broadcasts:
+            for e, inc, out, threat_level, is_new, first_seen_ever in broadcasts:
                 m = build_ip_message(e["geo_ip"], e["lat"], e["lon"], e["city"], e["country"], e["region"],
                                      e.get("org", "Unknown"), e["last_seen"], e["protocol"], e["src_port"], e["dst_port"],
                                      e["mac"], e["vendor"], inc, out, 0, e["hostname"], e["os"], threat_level,
                                      device_id=e.get("device_id", LOCAL_DEVICE_ID), local_ip=e.get("local_ip"))
                 if m is not None:
+                    # first_seen = when this IP was EVER first observed; is_new =
+                    # this flush was its very first sighting (never seen before).
+                    m["first_seen"] = first_seen_ever
+                    m["is_new"] = is_new
                     messages.append(m)
             if messages:
                 socketio.emit('ip_update_batch', messages)
@@ -2309,6 +2373,10 @@ def cleanup_expired_ips(stats):
             with locked(db_lock):
                 with db.get_connection() as conn:
                     c = conn.cursor()
+                    # Only ip_data (the heavy per-connection detail) is expired
+                    # here; the lightweight ip_seen ledger is intentionally NEVER
+                    # touched, so the permanent record of every IP's first/last
+                    # sighting outlives retention.
                     # Never expire pinned IPs, nor any IP carrying a threat level
                     # (High/Medium/Low — i.e. suspicious or worse): those are kept
                     # indefinitely so the record of a threat is never silently lost.
@@ -2641,16 +2709,32 @@ def send_all_ips_to_client(sid=None):
     try:
         with db_connect() as conn:
             c = conn.cursor()
-            c.execute('''SELECT device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol,
-                         incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip,
-                         (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip) as packet_count
-                         FROM ip_data WHERE last_seen > %s''', (time.time() - EXPIRATION_SECONDS,))
+            # Load the live window PLUS every threat-flagged and pinned IP,
+            # regardless of how long ago it was last seen — otherwise a restart or
+            # page reload silently drops threats that haven't been active in the
+            # last EXPIRATION_SECONDS (they're still in the DB, just not loaded).
+            # threat_level is the PERSISTED column (not re-derived here), so a
+            # threat survives the reload instead of arriving as "No Threat".
+            # first_seen comes from the permanent ledger for the detail popup.
+            c.execute('''SELECT d.device_id, d.ip, d.lat, d.lon, d.city, d.country, d.org, d.last_seen,
+                         d.src_port, d.dst_port, d.protocol, d.incoming_count, d.outgoing_count, d.mac,
+                         d.vendor, d.hostname, d.os, d.local_ip, d.threat_level,
+                         (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = d.ip) as packet_count,
+                         s.first_seen
+                         FROM ip_data d
+                         LEFT JOIN ip_seen s ON s.ip = d.ip
+                         WHERE d.last_seen > %s
+                            OR d.threat_level IN ('High', 'Medium', 'Low')
+                            OR d.ip IN (SELECT ip FROM pinned_ips)''',
+                      (time.time() - EXPIRATION_SECONDS,))
             rows = c.fetchall()
     except db.DBError as e:
         logger.error(f"Error sending all IPs: {e}")
         return
     for row in rows:
-        device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip, packet_count = row
+        (device_id, ip, lat, lon, city, country, org, last_seen, src_port, dst_port, protocol,
+         incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip, threat_level,
+         packet_count, first_seen) = row
         # Stopped devices contribute no data to any client (initial load or
         # rebroadcast), matching the "no traffic while stopped" guarantee.
         if device_id in disabled_devices:
@@ -2676,7 +2760,11 @@ def send_all_ips_to_client(sid=None):
             "outgoing_count": outgoing_count,
             "packet_count": packet_count or 0,
             "hostname": display_hostname,
-            "os": os
+            "os": os,
+            # Persisted threat level so a reload/restart keeps threats flagged
+            # instead of showing every IP as "No Threat" until fresh traffic.
+            "threat_level": threat_level or "No Threat",
+            "first_seen": first_seen,
         })
     if messages:
         if sid:

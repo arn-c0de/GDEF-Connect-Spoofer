@@ -15,6 +15,7 @@ import { setupStats } from './stats.js';
 import { setupDevices } from './devices.js';
 import { setupSocket } from './socket.js';
 import { setupOverlay } from './overlay.js';
+import { setupThreatTicker } from './threats.js';
 
 async function initializeGlobe(myIpCoords) {
     // Threat→colour classification first, so the very first render is correct.
@@ -41,15 +42,24 @@ async function initializeGlobe(myIpCoords) {
     setupStats(app);
     setupDevices(app);
     setupSocket(app);
+    // After setupLists (so app.showDataList exists for the panel rows); harmless
+    // if a socket refresh fires first — app.renderThreatTicker is guarded.
+    setupThreatTicker(app);
     setupOverlay(app);
 
     // ── Expiration timer ──────────────────────────────────
     setInterval(() => {
         const now = Date.now() / 1000;
         for (const ip in app.points) {
-            if (!app.pinnedIPs[ip] && ip !== 'Your IP' &&
-                now - app.points[ip].last_seen > app.EXPIRATION_SECONDS) {
-                app.points[ip].expired = true;
+            const p = app.points[ip];
+            // Threat-flagged IPs (High/Medium/Low) are kept visible like pinned
+            // ones — never expired client-side — so a suspicious/dangerous host
+            // stays on the globe and under "threats" instead of fading out after
+            // EXPIRATION_SECONDS of quiet (and vanishing entirely on reload).
+            const isThreat = p.threat_level === 'High' || p.threat_level === 'Medium' || p.threat_level === 'Low';
+            if (!app.pinnedIPs[ip] && !isThreat && ip !== 'Your IP' &&
+                now - p.last_seen > app.EXPIRATION_SECONDS) {
+                p.expired = true;
                 app.expireArcsOfIp(ip);
             }
         }

@@ -45,3 +45,29 @@ body {
     inset: 0;
     z-index: 1;
 }
+
+.globe-count-badge {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+    text-shadow: 0 1px 2px #000;
+    pointer-events: none;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.globe-count-badge.cluster {
+    border-color: rgba(77, 141, 255, 0.75);
+    background: rgba(10, 24, 48, 0.84);
+}

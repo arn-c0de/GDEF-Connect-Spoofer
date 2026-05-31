@@ -34,6 +34,7 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='css/responsive.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='css/devices.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='css/overlay.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/ticker.css') }}">
     </head>
     <body data-lat="{{ lat|default(0, true)|float }}" data-lng="{{ lng|default(0, true)|float }}">
 
@@ -50,6 +51,50 @@
                 <li><strong>City:</strong> {{ my_geo_data.city }}</li>
                 <li><strong>Region:</strong> {{ my_geo_data.region }}</li>
             </ul>
+
+            <!-- Threat ticker: scrolling marquee of the most recent suspicious/
+                 dangerous IPs; click to expand the panel below (threats + newest
+                 connections). Populated by globe/threats.js. -->
+            <div id="threatTicker" title="Latest threats & newest connections — click for details">
+                <div class="ticker-rows">
+                    <div class="ticker-row">
+                        <span class="ticker-icon ticker-icon-threat">⚠</span>
+                        <div class="ticker-viewport"><div class="ticker-track" id="threatTickerTrack"></div></div>
+                    </div>
+                    <div class="ticker-row">
+                        <span class="ticker-icon ticker-icon-new">🆕</span>
+                        <div class="ticker-viewport"><div class="ticker-track" id="newestTickerTrack"></div></div>
+                    </div>
+                </div>
+                <span class="ticker-caret" id="threatTickerCaret">▾</span>
+            </div>
+            <div id="threatPanel" class="threat-panel hidden">
+                <div class="tp-settings">
+                    <h5>⚙ Ticker</h5>
+                    <label class="tp-set-row">
+                        <input type="checkbox" id="tickerScrollToggle">
+                        <span>Scrolling ticker</span>
+                    </label>
+                    <div class="tp-set-row" id="tickerSpeedRow">
+                        <span class="tp-set-label">Speed</span>
+                        <input type="range" id="tickerSpeed" min="20" max="160" step="5">
+                    </div>
+                    <div class="tp-set-row" id="tickerStepRow">
+                        <span class="tp-set-label">Interval</span>
+                        <input type="range" id="tickerStepSec" min="1" max="15" step="1">
+                        <span class="tp-set-val" id="tickerStepVal">5s</span>
+                    </div>
+                </div>
+                <div class="tp-section">
+                    <h5>⚠ Latest threats</h5>
+                    <ul id="threatPanelList"></ul>
+                </div>
+                <div class="tp-section">
+                    <h5>🆕 Newest connections</h5>
+                    <ul id="newestPanelList"></ul>
+                </div>
+            </div>
+
             <div id="connectionStatus">Connecting…</div>
         </div>
 
@@ -65,15 +110,22 @@
         <div id="sidebar">
 
             <div class="sidebar-section">
-                <h4>Display</h4>
-                <label>
-                    <input type="checkbox" id="showBorders" checked>
-                    Country borders
-                </label>
-                <label>
-                    <input type="checkbox" id="showArcs" checked>
-                    Connection lines
-                </label>
+                <h4>Globe Filters</h4>
+                <div class="globe-toggle-row">
+                    <button id="ovToggleLocalNetwork" class="toggle-button active" title="Toggle local network">Local</button>
+                    <button id="ovToggleExternalNetwork" class="toggle-button active" title="Toggle external network">Ext</button>
+                    <button id="ovToggleTCPOnly" class="toggle-button" title="TCP connections only">TCP</button>
+                    <button id="ovToggleAllUDPPackets" class="toggle-button" title="All UDP packets">UDP</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Globe Display</h4>
+                <div class="globe-toggle-row">
+                    <button id="showLabels" class="toggle-button active" title="Show/hide cluster labels">Labels</button>
+                    <button id="showBorders" class="toggle-button active" title="Show/hide country borders">Borders</button>
+                    <button id="showArcs" class="toggle-button active" title="Show/hide connection rays">Rays</button>
+                </div>
             </div>
 
             <div class="sidebar-section">

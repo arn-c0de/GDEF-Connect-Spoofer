@@ -56,7 +56,8 @@
 }
 
 #connectionStatus {
-    margin-left: auto;
+    /* The threat ticker carries margin-left:auto and pushes the right-hand group
+       (ticker + status) over; status sits directly after it. */
     background: var(--green);
     padding: 2px 8px;
     border-radius: 3px;
