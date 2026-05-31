@@ -18,6 +18,10 @@ services:
   app:
     environment:
       FRITZDUMP_ENABLED: "1"
+      # Capture is REDACTED by default: payloads are stripped, only headers
+      # (who talks to whom, ports, sizes) are recorded — real message contents
+      # are never written to disk. To capture full payloads instead, uncomment:
+      # FRITZDUMP_REDACT: "0"
     volumes:
       # Live module (code + .env + dumps). Edits on the host are seen in the
       # container; the pcaps the worker writes are visible on the host too.

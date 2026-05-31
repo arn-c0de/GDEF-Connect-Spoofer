@@ -3,7 +3,7 @@
 GDEF-L1NK – Full Smoke Test
 ================================
 
-Testet JEDE Funktion von app.py (und select_interface.py) ohne echten
+Testet JEDE Funktion von app.py (und scripts/select_interface.py) ohne echten
 Netzwerk-Traffic und ohne Root. Strategie:
 
   * Vor dem Import wird in ein temporaeres Arbeitsverzeichnis gewechselt, damit
@@ -16,7 +16,7 @@ Netzwerk-Traffic und ohne Root. Strategie:
   * Worker-Endlosschleifen (Enrichment, Stats, Cleanup, Packet-Processing)
     werden als Daemon-Threads kurz angestossen und ihre Seiteneffekte geprueft.
 
-Aufruf:  python smoketest.py   (Exit-Code 0 = alles gruen)
+Aufruf:  ./smoke-test.sh   (Exit-Code 0 = alles gruen)
 """
 
 import os
@@ -34,11 +34,13 @@ from urllib.parse import urlsplit
 # --------------------------------------------------------------------------- #
 #  0)  Umgebung praeparieren  –  MUSS vor `import app` passieren
 # --------------------------------------------------------------------------- #
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS_DIR = os.path.join(PROJECT_DIR, "scripts")
 TMP_DIR = tempfile.mkdtemp(prefix="gdef_l1nk_smoke_")
 
 # Projektverzeichnis fuer den Import sicherstellen, dann ins TempDir wechseln.
 sys.path.insert(0, PROJECT_DIR)
+sys.path.insert(0, SCRIPTS_DIR)
 os.chdir(TMP_DIR)
 
 # Damit der Import keine festen Ports / unsicheren Defaults nutzt.

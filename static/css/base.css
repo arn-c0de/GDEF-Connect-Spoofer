@@ -1,0 +1,47 @@
+/* ============================================================
+   Reset + variables
+   ============================================================ */
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+:root {
+    --bg-primary:   #1a1a1a;
+    --bg-secondary: #252525;
+    --bg-hover:     #333;
+    --bg-active:    #444;
+    --border:       rgba(255, 255, 255, 0.08);
+    --text:         #e0e0e0;
+    --text-dim:     #888;
+    --accent:       #1e3c72;
+    --accent-light: #2a5298;
+    --green:        rgba(0, 128, 0, 0.85);
+    /* Modern blue accents for the unified overlay */
+    --blue:         #3b82f6;
+    --blue-dim:     #2563eb;
+    --blue-soft:    rgba(59, 130, 246, 0.14);
+}
+
+/* Hide scrollbars globally (content still scrollable via JS/touch) */
+* { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; }
+
+body {
+    background: var(--bg-primary);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* ============================================================
+   Globe canvas
+   ============================================================ */
+
+#globeViz {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+}

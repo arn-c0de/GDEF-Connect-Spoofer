@@ -26,7 +26,7 @@ import struct
 
 # scapy is already a hard dependency of capture_core; import the link-layer
 # decoders we map pcap LINKTYPE_* values onto.
-from scapy.all import Ether, IP, CookedLinux
+from scapy.all import Ether, IP, CookedLinux, Dot11
 
 # Capture-file extensions we will tail under the dump directory.
 PCAP_EXTENSIONS = {".pcap", ".pcapng", ".eth", ".cap", ".dmp"}
@@ -37,10 +37,15 @@ _GLOBAL_HDR_LEN = 24
 # a multi-GB "record" (a desynced offset would otherwise read garbage lengths).
 _MAX_SNAPLEN = 262_144
 
-# pcap LINKTYPE -> scapy decoder. Default to Ethernet (what a FRITZ!Box emits).
+# pcap LINKTYPE -> scapy decoder. Default to Ethernet (what a FRITZ!Box emits on
+# its wired bridge). The box's *Wi-Fi* interfaces stream raw 802.11 frames
+# (LINKTYPE_IEEE802_11 = 105: Dot11/LLC/SNAP/IP), so they MUST be decoded as
+# Dot11 — decoding those as Ethernet yields garbage with no IP layer, which is
+# why Wi-Fi traffic never reached the globe.
 _LINKTYPE_DECODERS = {
     1: Ether,        # LINKTYPE_ETHERNET
     101: IP,         # LINKTYPE_RAW (bare IP)
+    105: Dot11,      # LINKTYPE_IEEE802_11 (FRITZ!Box Wi-Fi capture)
     113: CookedLinux,  # LINKTYPE_LINUX_SLL
 }
 

@@ -1,0 +1,207 @@
+/* ============================================================
+   Settings button
+   ============================================================ */
+
+#menuButton {
+    position: fixed;
+    top: 10%;
+    right: 0;
+    transform: translateY(-50%);
+    width: 44px;
+    height: 44px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light));
+    color: white;
+    border: none;
+    border-radius: 50% 0 0 50%;
+    cursor: pointer;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    transition: background 0.2s, box-shadow 0.2s;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.4);
+}
+
+#menuButton:hover {
+    background: linear-gradient(90deg, var(--accent-light), var(--accent));
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.6);
+}
+
+/* ============================================================
+   Sidebar
+   ============================================================ */
+
+#sidebar {
+    position: fixed;
+    top: 36px;
+    right: -320px;
+    width: 300px;
+    height: calc(100% - 36px);
+    background: rgba(10, 10, 15, 0.97);
+    color: var(--text);
+    transition: right 0.3s ease;
+    z-index: 1500;
+    padding: 16px;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.6);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    overflow-y: auto;
+    box-sizing: border-box;
+}
+
+#sidebar.open { right: 0; }
+
+.sidebar-section {
+    padding: 12px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-section:first-child {
+    border-top: none;
+    padding-top: 0;
+}
+
+.sidebar-section h4 {
+    margin: 0 0 10px 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    font-weight: 600;
+}
+
+#sidebar label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 4px 0;
+    color: var(--text);
+}
+
+/* Stat grid */
+
+.stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.stat-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 8px 10px;
+    text-align: center;
+}
+
+.stat-card span {
+    display: block;
+    font-size: 15px;
+    font-weight: bold;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+}
+
+.stat-card small {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.threat-summary {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+/* Organisation editor */
+
+.org-editor label {
+    display: block;
+    font-size: 10px;
+    color: var(--text-dim);
+    margin: 8px 0 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+.org-editor label:first-child { margin-top: 0; }
+
+.org-editor textarea {
+    width: 100%;
+    background: var(--bg-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 11px;
+    padding: 6px 8px;
+    resize: vertical;
+    box-sizing: border-box;
+    font-family: monospace;
+    line-height: 1.5;
+}
+
+.org-editor textarea:focus {
+    outline: none;
+    border-color: var(--accent-light);
+}
+
+.save-orgs-btn {
+    width: 100%;
+    margin-top: 10px;
+    padding: 7px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.2s;
+}
+
+.save-orgs-btn:hover { background: var(--accent-light); }
+
+/* Export link */
+
+.export-btn {
+    display: inline-block;
+    padding: 7px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text);
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.export-btn:hover {
+    background: var(--bg-hover);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Logout link */
+
+.logout-link {
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    color: #e05555;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 12px;
+    display: block;
+    transition: color 0.2s;
+}
+
+.logout-link:hover { color: #ff7777; }
