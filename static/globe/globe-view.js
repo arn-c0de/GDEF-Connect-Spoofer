@@ -74,17 +74,6 @@ export function setupGlobe(app) {
         return String(d.count || 0);
     }
 
-    function badgeKey(d) {
-        const id = d.isCluster ? `cluster:${d.cellKey}` : `ip:${d.ip}`;
-        return [
-            id,
-            badgeText(d),
-            (d._dispLat ?? d.lat).toFixed(4),
-            (d._dispLng ?? d.lng).toFixed(4),
-            d.threat_level || ''
-        ].join('|');
-    }
-
     function badgeElement(d) {
         const text = badgeText(d);
         if (!d._badgeEl) {
@@ -94,6 +83,38 @@ export function setupGlobe(app) {
         if (d._badgeEl.textContent !== text) d._badgeEl.textContent = text;
         d._badgeEl.classList.toggle('cluster', !!d.isCluster);
         return d._badgeEl;
+    }
+
+    function renderBadgeOverlay(badges = app._badgeData || []) {
+        if (!app.badgeLayer) return;
+        document.querySelectorAll('.globe-count-badge').forEach(el => {
+            if (!app.badgeLayer.contains(el)) el.remove();
+        });
+        app.badgeLayer.replaceChildren();
+        if (!app.showLabels || !badges.length || typeof globe.getCoords !== 'function' ||
+            typeof globe.camera !== 'function' || typeof THREE === 'undefined') return;
+
+        const cam = globe.camera();
+        const w = app.globeContainer.clientWidth || 1;
+        const h = app.globeContainer.clientHeight || 1;
+        for (const d of badges) {
+            const lat = d._dispLat ?? d.lat;
+            const lng = d._dispLng ?? d.lng;
+            if (!isValidCoord(lat, lng) || (!app.showLabelsThroughGlobe && !isFacingCamera(d))) continue;
+            const pos = globe.getCoords(lat, lng, getBadgeAltitude(d));
+            const v = new THREE.Vector3(
+                Array.isArray(pos) ? pos[0] : pos.x,
+                Array.isArray(pos) ? pos[1] : pos.y,
+                Array.isArray(pos) ? pos[2] : pos.z
+            ).project(cam);
+            if (v.z < -1 || v.z > 1) continue;
+            const x = (v.x * 0.5 + 0.5) * w;
+            const y = (-v.y * 0.5 + 0.5) * h;
+            if (x < -30 || x > w + 30 || y < -30 || y > h + 30) continue;
+            const el = badgeElement(d);
+            el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -50%)`;
+            app.badgeLayer.appendChild(el);
+        }
     }
 
     function angularDistanceDeg(aLat, aLng, bLat, bLng) {
@@ -225,15 +246,6 @@ export function setupGlobe(app) {
         .arcDashAnimateTime(0)
         // No built-in grow-in tween — our dashOffset ramp is the whole animation.
         .arcsTransitionDuration(0)
-        // Cluster count badges use the HTML layer rather than globe.gl's canvas label
-        // layer. The label layer was visible during camera movement but could be
-        // hidden once rendering settled; DOM badges stay present while their point
-        // remains in the render set.
-        .htmlLat(d => d._dispLat ?? d.lat)
-        .htmlLng(d => d._dispLng ?? d.lng)
-        .htmlAltitude(getBadgeAltitude)
-        .htmlElement(badgeElement)
-        .htmlTransitionDuration(0)
         .onPointClick(point => {
             // A cluster isn't a single connection — open the detail popup with one
             // tab per IP in the pile, so each member's full info is switchable.
@@ -259,6 +271,7 @@ export function setupGlobe(app) {
         (document.getElementById('globeViz'));
     app.globe = globe;
     globe.labelsData([]);
+    globe.htmlElementsData([]);
 
     // ── Remember the last camera centre + zoom across reloads ─────────────
     // Without a saved view the globe stays centred on the user's own location
@@ -275,6 +288,7 @@ export function setupGlobe(app) {
     globe.onZoom(pov => {
         // Debounced so a drag/zoom gesture writes once it settles, not every frame.
         if (_povSaveTimer) clearTimeout(_povSaveTimer);
+        renderBadgeOverlay();
         _povSaveTimer = setTimeout(() => {
             try { localStorage.setItem(SAVED_POV_KEY, JSON.stringify(pov)); } catch (_) { /* quota */ }
             // Pile sizes track the zoom level, so re-cluster once the view settles.
@@ -294,9 +308,14 @@ export function setupGlobe(app) {
     // Resize the globe canvas whenever the container changes size.
     const globeContainer = document.getElementById('globeViz');
     app.globeContainer = globeContainer;
+    app.badgeLayer = document.createElement('div');
+    app.badgeLayer.id = 'globeBadgeLayer';
+    app.badgeLayer.className = 'globe-badge-layer';
+    globeContainer.appendChild(app.badgeLayer);
     const resizeObserver = new ResizeObserver(() => {
         globe.width(globeContainer.clientWidth)
              .height(globeContainer.clientHeight);
+        renderBadgeOverlay();
     });
     resizeObserver.observe(globeContainer);
 
@@ -317,7 +336,6 @@ export function setupGlobe(app) {
         app.showLabels = !app.showLabels;
         localStorage.setItem('showLabels', JSON.stringify(app.showLabels));
         app.syncGlobeDisplayToggles();
-        app._badgeRenderSig = null;
         app.updateGlobeData();
     });
 
@@ -325,7 +343,6 @@ export function setupGlobe(app) {
         app.showLabelsThroughGlobe = !app.showLabelsThroughGlobe;
         localStorage.setItem('showLabelsThroughGlobe', JSON.stringify(app.showLabelsThroughGlobe));
         app.syncGlobeDisplayToggles();
-        app._badgeRenderSig = null;
         app.updateGlobeData();
     });
 
@@ -545,11 +562,10 @@ export function setupGlobe(app) {
         // Keep labels tied to visible clusters, not to active arcs/rays. Packet
         // counts are intentionally not shown here; they created a second number
         // on individual points while the cluster count was already present.
-        const badges = app.showLabels ? render.filter(d => d.isCluster && isFacingCamera(d)) : [];
-        const badgeSig = badges.map(badgeKey).join('\n');
-        app._badgeRenderSig = badgeSig;
+        app._badgeData = app.showLabels ? render.filter(d => d.isCluster) : [];
         globe.labelsData([]);
-        globe.htmlElementsData(badges);
+        globe.htmlElementsData([]);
+        renderBadgeOverlay(app._badgeData);
     };
 
     // Final de-overlap pass. Clustering already merges co-located *points*, but a

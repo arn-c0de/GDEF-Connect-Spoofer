@@ -69,7 +69,18 @@ body {
     z-index: 1;
 }
 
+.globe-badge-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    overflow: hidden;
+}
+
 .globe-count-badge {
+    position: absolute;
+    left: 0;
+    top: 0;
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
