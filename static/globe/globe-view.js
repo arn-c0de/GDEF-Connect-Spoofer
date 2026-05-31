@@ -58,8 +58,11 @@ export function setupGlobe(app) {
                                  + Math.log10((point._recent || 0) + 1) * 0.2, 1.5);
         }
         const recent = recentPacketCount(point, Date.now() / 1000);
-        if (recent <= 0) return 0.3;
-        return Math.min(0.3 + Math.log10(recent + 1) * 0.6, 3.0);
+        let r = recent <= 0 ? 0.3 : Math.min(0.3 + Math.log10(recent + 1) * 0.6, 3.0);
+        // White (no-threat / unclassified) dots are the bulk and least notable —
+        // draw them a bit smaller so the threat-coloured dots read more prominently.
+        if (!point.isOrigin && getCircleColor(point.threat_level, point.org) === 'white') r *= 0.65;
+        return r;
     }
 
     // ── Age-based dot fade ────────────────────────────────
@@ -129,7 +132,7 @@ export function setupGlobe(app) {
         // more severe, so suspicious/dangerous dots stand proud of the plain ones
         // instead of being buried among them. No-threat dots and origins stay flat.
         // Clusters lift by their worst member's threat (carried on threat_level).
-        .pointAltitude(d => 0.1 + threatRank(d.threat_level) * 0.06)
+        .pointAltitude(d => 0.1 + threatRank(d.threat_level) * 0.03)
         .arcColor(arc => {
             // "Colour by device" makes each device's arcs its own colour.
             let base;
@@ -171,8 +174,8 @@ export function setupGlobe(app) {
         // The labels layer is fed ONLY the cluster render objects (see
         // updateGlobeData): each shows how many IPs the pile hides, floated just
         // above the marker so the count reads clearly.
-        .labelLat(d => d.lat)
-        .labelLng(d => d.lng)
+        .labelLat(d => d._dispLat ?? d.lat)
+        .labelLng(d => d._dispLng ?? d.lng)
         .labelText(d => String(d.count))
         .labelSize(1.0)
         // The badge dims in lock-step with its cluster dot (same freshness fade,
@@ -454,8 +457,39 @@ export function setupGlobe(app) {
             if (app.isDeviceVisible(id) && isValidCoord(o.lat, o.lng)) render.push(o);
         }
 
+        separateOverlaps(render);
+
         globe.pointsData(render);
         // The count badge layer carries only the clusters.
         globe.labelsData(render.filter(d => d.isCluster));
     };
+
+    // Final de-overlap pass. Clustering already merges co-located *points*, but a
+    // fading point/cluster and an origin (which never fades) can still land on the
+    // exact same spot — two translucent cylinders at one position z-fight, which
+    // reads as extreme flicker. Here we ring every still-coincident marker around
+    // the group's centre (origin kept centred) so nothing overlaps. Labels follow
+    // via _dispLat/_dispLng, so a moved cluster's count badge moves with it.
+    function separateOverlaps(items) {
+        // Origins/clusters persist across refreshes, so clear last pass's offsets.
+        for (const d of items) { d._dispLat = undefined; d._dispLng = undefined; }
+        const groups = new Map();
+        for (const d of items) {
+            if (!isValidCoord(d.lat, d.lng)) continue;
+            const k = `${d.lat.toFixed(2)}|${d.lng.toFixed(2)}`;
+            (groups.get(k) || groups.set(k, []).get(k)).push(d);
+        }
+        for (const g of groups.values()) {
+            if (g.length < 2) continue;
+            // Keep an origin (else the first item) at the true spot; ring the rest.
+            g.sort((a, b) => (b.isOrigin ? 1 : 0) - (a.isOrigin ? 1 : 0));
+            const c = g[0], rest = g.slice(1);
+            const R = 1.3;   // degrees — clears the largest marker (cluster ~0.9°)
+            rest.forEach((d, i) => {
+                const ang = (2 * Math.PI * i) / rest.length;
+                d._dispLat = c.lat + R * Math.sin(ang);
+                d._dispLng = c.lng + R * Math.cos(ang);
+            });
+        }
+    }
 }
