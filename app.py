@@ -44,7 +44,7 @@ from packet_pipeline import PacketQueue, SharedStats
 from config import (
     LOGIN_MAX_ATTEMPTS, LOGIN_LOCKOUT_SECONDS,
     DATABASE_DIR, DATABASE_PATH, CACHE_TIMEOUT, API_TIMEOUT,
-    DEFAULT_COORDS, EXPIRATION_SECONDS, MAX_IP_ROWS, SNIFF_TIMEOUT,
+    DEFAULT_COORDS, EXPIRATION_SECONDS, RETENTION_SECONDS, MAX_IP_ROWS, SNIFF_TIMEOUT,
     SOCKETIO_PING_TIMEOUT, SOCKETIO_PING_INTERVAL,
     TRUSTED_ORGS_PATH, IP_LABELS_PATH,
     LOCAL_DEVICE_ID, LOCAL_DEVICE_COLOR, HUB_DEVICE_NAME, DEVICE_KEYS_DIR,
@@ -1035,6 +1035,8 @@ def load_settings():
             c = conn.cursor()
             c.execute('SELECT key, value FROM settings')
             for key, value in c.fetchall():
+                if key == _STATS_SETTINGS_KEY:
+                    continue  # internal stats snapshot, not a client-facing setting
                 if key in _BOOL_SETTINGS:
                     settings[key] = value == '1'
                 else:
@@ -2190,10 +2192,56 @@ def _device_stats_payload(stats):
     return payload
 
 
+# --- SharedStats persistence ------------------------------------------------
+# The hub's cumulative packet/byte counters live in shared memory and reset to
+# zero on every process start. We snapshot them to the settings table so the
+# totals continue across a restart instead of dropping back to ~0. Only the
+# monotonic counters are persisted; active_connections is a live gauge derived
+# from ip_data, so it is intentionally excluded.
+_PERSISTED_STAT_FIELDS = ('tcp_packets', 'udp_packets', 'icmp_packets',
+                          'total_bytes', 'fragmented_packets')
+_STATS_SETTINGS_KEY = 'stats_totals'
+
+def load_persisted_stats(stats):
+    """Seed the in-memory counters from the last saved snapshot. Called once
+    before the sniffer fork so both processes share the restored baseline."""
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM settings WHERE key = %s", (_STATS_SETTINGS_KEY,))
+            row = c.fetchone()
+        if not row:
+            return
+        saved = json.loads(row[0])
+        for name in _PERSISTED_STAT_FIELDS:
+            v = saved.get(name)
+            if isinstance(v, int) and v >= 0:
+                stats.set(name, v)
+        logger.info("Restored persisted stats totals from previous run")
+    except Exception as e:
+        logger.error(f"Could not load persisted stats: {e}")
+
+def save_persisted_stats(stats):
+    """Write the cumulative counters back so a restart resumes from here."""
+    try:
+        snap = stats.snapshot()
+        payload = json.dumps({k: int(snap.get(k, 0)) for k in _PERSISTED_STAT_FIELDS})
+        with locked(db_lock):
+            with db.get_connection() as conn:
+                c = conn.cursor()
+                c.execute("INSERT INTO settings (key, value) VALUES (%s, %s) "
+                          "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                          (_STATS_SETTINGS_KEY, payload))
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Could not save persisted stats: {e}")
+
+
 def send_network_stats(stats):
     while True:
         try:
             socketio.emit('network_stats', _device_stats_payload(stats))
+            save_persisted_stats(stats)
             with active_clients_lock:
                 count = len(active_clients)
             if count > 0:
@@ -2211,7 +2259,7 @@ def cleanup_expired_ips(stats):
                 with db.get_connection() as conn:
                     c = conn.cursor()
                     c.execute('''DELETE FROM ip_data WHERE last_seen < %s AND ip NOT IN (SELECT ip FROM pinned_ips)''',
-                              (now - EXPIRATION_SECONDS,))
+                              (now - RETENTION_SECONDS,))
                     conn.commit()
 
                     # Hard row cap: even within the expiration window a spoofing
@@ -2911,6 +2959,9 @@ if __name__ == "__main__":
     # init_db waits for the DB internally and is idempotent (it runs again in the
     # sniffing thread).
     init_db()
+    # Restore cumulative counters before the fork so total_bytes etc. resume from
+    # the last run instead of resetting to zero (both processes share the cells).
+    load_persisted_stats(stats)
     settings = load_settings()
     is_internal_search_active = manager.Value('b', settings.get('is_internal_search_active', True))
     showAllUDPPackets = manager.Value('b', settings.get('show_all_udp_packets', True))

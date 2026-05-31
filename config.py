@@ -27,11 +27,22 @@ CACHE_TIMEOUT = 3600
 API_TIMEOUT = 5
 
 DEFAULT_COORDS = [0, 0]
-EXPIRATION_SECONDS = 3600
+# Display / "active" window: how long a connection counts as live in the UI —
+# drives the dot fade-out, the initial-load query and the active-connection
+# accounting. Kept short by default so the globe shows recent activity; raise
+# the EXPIRATION_SECONDS env var to keep points visible longer.
+EXPIRATION_SECONDS = int(os.environ.get("EXPIRATION_SECONDS", "3600"))
+# DB retention window: how long a row survives in ip_data before the cleanup
+# thread deletes it (pinned IPs are never deleted). DECOUPLED from the display
+# window above, so data is kept for history long after a point stops being drawn
+# live. Default 30 days; override via RETENTION_SECONDS. Clamped to be at least
+# the display window so we never delete rows the live view still wants to show.
+RETENTION_SECONDS = max(EXPIRATION_SECONDS,
+                        int(os.environ.get("RETENTION_SECONDS", str(30 * 24 * 3600))))
 # Hard ceiling on rows kept in ip_data. Even under a spoofing flood (new IPs are
-# rate-limited but can still accumulate within the EXPIRATION_SECONDS window),
-# the cleanup thread trims the oldest unpinned rows beyond this cap so the DB
-# can't fill the disk. Override via the MAX_IP_ROWS env var.
+# rate-limited but can still accumulate within the retention window), the cleanup
+# thread trims the oldest unpinned rows beyond this cap so the DB can't fill the
+# disk. Override via the MAX_IP_ROWS env var.
 MAX_IP_ROWS = int(os.environ.get("MAX_IP_ROWS", "50000"))
 SNIFF_TIMEOUT = 30
 SOCKETIO_PING_TIMEOUT = 120
