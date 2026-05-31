@@ -184,6 +184,9 @@ export function setupSocket(app) {
             arc.city           = data.city;
             arc.country        = data.country;
             arc.org            = data.org;
+            // Kept on the arc so its threat colour (matching the dot) survives even
+            // if the point is evicted from app.points (see arcColor in globe-view).
+            arc.threat_level   = data.threat_level || 'No Threat';
             arc.protocol       = data.protocol;
             arc.incoming_count = data.incoming_count || 0;
             arc.outgoing_count = data.outgoing_count || 0;
