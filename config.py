@@ -67,6 +67,14 @@ FRITZDUMP_DEVICE_ID = 'fritzdump'
 FRITZDUMP_ENABLED = os.environ.get('FRITZDUMP_ENABLED', '0').strip().lower() not in ('0', 'false', 'no', '')
 FRITZDUMP_DEVICE_NAME = os.environ.get('FRITZDUMP_DEVICE_NAME', '').strip() or 'FritzBox'
 FRITZDUMP_DEVICE_COLOR = '#29B6F6'
+# Privacy default: run the FritzDump capture in the module's *redacted* mode —
+# packet payloads are stripped and only headers (who talks to whom, ports,
+# sizes) are written, so real message contents are never persisted or shown.
+# ON by default (fail-safe); set FRITZDUMP_REDACT=0 (or false/no/off) to capture
+# full payloads. The hub injects this as FRITZ_REDACT into the worker's
+# environment, which overrides whatever modules/FritzDump/.env says — so this is
+# the single switch for whether real data can be seen.
+FRITZDUMP_REDACT = os.environ.get('FRITZDUMP_REDACT', '1').strip().lower() not in ('0', 'false', 'no', 'off')
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 FRITZDUMP_DIR = os.environ.get('FRITZDUMP_DIR') or os.path.join(
     _APP_DIR, 'modules', 'FritzDump', 'dumps')
