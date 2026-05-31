@@ -371,12 +371,19 @@ export function setupLists(app) {
     };
 
     // ── Detail panel ──────────────────────────────────────
-    function appendDetailItem(ul, label, value) {
+    function appendDetailItem(ul, label, value, valueClass) {
         const li   = document.createElement('li');
         const name = document.createElement('strong');
         name.textContent = label;
         li.appendChild(name);
-        li.appendChild(document.createTextNode(String(value)));
+        if (valueClass) {
+            const span = document.createElement('span');
+            span.className = valueClass;
+            span.textContent = String(value);
+            li.appendChild(span);
+        } else {
+            li.appendChild(document.createTextNode(String(value)));
+        }
         ul.appendChild(li);
     }
 
@@ -387,10 +394,11 @@ export function setupLists(app) {
             ? `${packet.dst_port}${svc ? ' (' + svc + ')' : ''}` : 'N/A';
 
         const details = [
+            // Which device(s) in the local network this external IP is talking to
+            // (the LAN-side endpoint). Surfaced first + highlighted so the popup
+            // shows the same "→ LAN host" info the live lists do, at a glance.
+            ['LAN device(s)',    app.localPeersText(packet) || '—', 'detail-lan'],
             ['Hostname',         packet.hostname    || 'Unknown'],
-            // Which device in the local network this external IP is talking to
-            // (the LAN-side endpoint — most useful for the FritzBox source).
-            ['LAN device(s)',    app.localPeersText(packet) || '—'],
             ['OS',               packet.os          || 'Unknown'],
             ['MAC Address',      packet.mac         || 'N/A'],
             ['Vendor',           packet.vendor      || 'Unknown'],
@@ -424,7 +432,7 @@ export function setupLists(app) {
         });
 
         const ul = document.createElement('ul');
-        details.forEach(([label, value]) => appendDetailItem(ul, label, value));
+        details.forEach(([label, value, cls]) => appendDetailItem(ul, label, value, cls));
 
         header.appendChild(title);
         header.appendChild(closeBtn);
