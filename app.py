@@ -957,7 +957,7 @@ def init_db():
                               country TEXT, last_seen DOUBLE PRECISION, org TEXT,
                               src_port INTEGER, dst_port INTEGER, protocol TEXT, incoming_count BIGINT DEFAULT 0,
                               outgoing_count BIGINT DEFAULT 0, mac TEXT, vendor TEXT, hostname TEXT, os TEXT,
-                              local_ip TEXT,
+                              local_ip TEXT, threat_level TEXT,
                               PRIMARY KEY (device_id, ip))''')
                 # Devices: the hub's own local capture plus any registered remote
                 # sensors. Secrets (Fernet keys) are NOT stored here — only on disk
@@ -992,6 +992,11 @@ def init_db():
                 # network the external IP is actually talking to (most useful for the
                 # FritzDump source, which sees the whole home LAN).
                 c.execute("ALTER TABLE ip_data ADD COLUMN IF NOT EXISTS local_ip TEXT")
+                # Persisted threat classification for the row (High/Medium/Low/No
+                # Threat). Read by /api/stats' threat_summary and by the retention
+                # cleanup, which never expires a threat-flagged IP. Older databases
+                # predate the column — add it idempotently.
+                c.execute("ALTER TABLE ip_data ADD COLUMN IF NOT EXISTS threat_level TEXT")
 
                 # Create indexes
                 c.execute("CREATE INDEX IF NOT EXISTS idx_ip_data_last_seen ON ip_data(last_seen)")
@@ -1719,22 +1724,22 @@ def flush_ip_writes():
                                              last_seen = %s, src_port = %s, dst_port = %s, protocol = %s,
                                              incoming_count = %s, outgoing_count = %s, mac = %s,
                                              vendor = CASE WHEN %s=1 THEN %s ELSE vendor END,
-                                             hostname = %s, os = %s,
+                                             hostname = %s, os = %s, threat_level = %s,
                                              local_ip = COALESCE(%s, local_ip)
                                              WHERE device_id = %s AND ip = %s''',
                                           (geo_ok, e["lat"], geo_ok, e["lon"], geo_ok, e["city"],
                                            geo_ok, e["country"], geo_ok, org,
                                            e["last_seen"], e["src_port"], e["dst_port"], e["protocol"],
                                            inc, out, e["mac"], vendor_ok, e["vendor"],
-                                           e["hostname"], e["os"], e.get("local_ip"), device_id, ip))
+                                           e["hostname"], e["os"], threat_level, e.get("local_ip"), device_id, ip))
                             else:
                                 inc, out = e["in_delta"], e["out_delta"]
                                 c.execute('''INSERT INTO ip_data (device_id, ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
-                                             protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip)
-                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                                             protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip, threat_level)
+                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                                           (device_id, ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
                                            e["src_port"], e["dst_port"], e["protocol"], inc, out,
-                                           e["mac"], e["vendor"], e["hostname"], e["os"], e.get("local_ip")))
+                                           e["mac"], e["vendor"], e["hostname"], e["os"], e.get("local_ip"), threat_level))
                             broadcasts.append((e, inc, out, threat_level))
                         conn.commit()
                 except db.DBError as ex:

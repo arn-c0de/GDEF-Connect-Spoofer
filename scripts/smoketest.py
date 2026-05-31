@@ -50,6 +50,103 @@ os.environ.setdefault("MAC_NEGATIVE_TTL", "60")
 # (Geraet sichtbar, Reader, Worker) vollstaendig abgedeckt ist.
 os.environ.setdefault("FRITZDUMP_ENABLED", "1")
 
+# --------------------------------------------------------------------------- #
+#  0b)  PostgreSQL: gegen eine WEGWERF-DB testen, nie gegen die echte
+# --------------------------------------------------------------------------- #
+# Die Verbindungsparameter (Host/Port/User/PW) kommen aus der echten Projekt-
+# .env, damit der Test denselben Postgres trifft wie der Betrieb. Wir haengen
+# aber "_smoketest" an den Datenbanknamen, legen DIESE DB frisch an und droppen
+# sie am Ende wieder -> die echte gdef_l1nk-DB wird nie beruehrt. So erzeugt der
+# Smoke-Test garantiert keine Restdaten in der produktiven Datenbank.
+import atexit  # noqa: E402
+import psycopg  # noqa: E402
+
+
+def _load_env_file(path):
+    """Minimaler .env-Reader (KEY=VALUE, '#'-Kommentare, optionale Quotes)."""
+    vals = {}
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                vals[key.strip()] = val.split(" #", 1)[0].strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return vals
+
+
+_ENV_FILE = _load_env_file(os.path.join(PROJECT_DIR, ".env"))
+
+
+def _env(*names_default):
+    """Aktueller Wert: echte Prozess-Umgebung gewinnt, dann .env, sonst Default.
+
+    Akzeptiert mehrere Schluesselnamen (z. B. POSTGRES_PORT vor PGPORT); der
+    letzte Eintrag ist der Default-Wert."""
+    *names, default = names_default
+    for name in names:
+        v = os.environ.get(name) or _ENV_FILE.get(name)
+        if v:
+            return v
+    return default
+
+
+# Der db-Container published auf 127.0.0.1:POSTGRES_PORT (Default 55432).
+_PG_HOST = _env("PGHOST", "127.0.0.1")
+_PG_PORT = _env("POSTGRES_PORT", "PGPORT", "55432")
+_PG_USER = _env("POSTGRES_USER", "PGUSER", "gdef_l1nk")
+_PG_PW = _env("POSTGRES_PASSWORD", "PGPASSWORD", "gdef_l1nk")
+_PG_BASE = _env("POSTGRES_DB", "PGDATABASE", "gdef_l1nk")
+_PG_TESTDB = _PG_BASE + "_smoketest"
+
+
+def _admin_conn():
+    """Autocommit-Connection zur Wartungs-DB 'postgres' fuer CREATE/DROP DATABASE."""
+    return psycopg.connect(host=_PG_HOST, port=_PG_PORT, user=_PG_USER,
+                           password=_PG_PW, dbname="postgres",
+                           autocommit=True, connect_timeout=15)
+
+
+def _terminate_and_drop(cur):
+    # Neue Verbindungen sperren, laufende abwerfen, dann droppen. Das Sperren
+    # verhindert, dass ein noch laufender Daemon-Thread (Pool) sich neu verbindet
+    # und der DROP an "is being accessed by other users" scheitert.
+    try:
+        cur.execute(f'ALTER DATABASE "{_PG_TESTDB}" WITH ALLOW_CONNECTIONS false')
+    except psycopg.Error:
+        pass  # DB existiert (noch) nicht
+    cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()", (_PG_TESTDB,))
+    cur.execute(f'DROP DATABASE IF EXISTS "{_PG_TESTDB}"')
+
+
+def _drop_test_db():
+    try:
+        with _admin_conn() as c:
+            _terminate_and_drop(c)
+    except Exception as e:  # pragma: no cover - reines Aufraeumen
+        print(f"[smoke] WARN: Test-DB {_PG_TESTDB!r} nicht gedroppt: {e}")
+
+
+# Test-DB frisch anlegen (Reste eines abgebrochenen Laufs zuerst entfernen).
+try:
+    with _admin_conn() as _c:
+        _terminate_and_drop(_c)
+        _c.execute(f'CREATE DATABASE "{_PG_TESTDB}"')
+except Exception as _e:
+    print(f"[smoke] FATAL: Test-DB {_PG_TESTDB!r} nicht anlegbar "
+          f"(laeuft Postgres auf {_PG_HOST}:{_PG_PORT}?): {_e}")
+    sys.exit(2)
+
+# Ab jetzt zeigt die App AUSSCHLIESSLICH auf die Wegwerf-DB; am Ende wird sie
+# (inkl. aller im Test erzeugten Daten) wieder vollstaendig gedroppt.
+os.environ["DATABASE_URL"] = (
+    f"postgresql://{_PG_USER}:{_PG_PW}@{_PG_HOST}:{_PG_PORT}/{_PG_TESTDB}")
+atexit.register(_drop_test_db)
+
 import requests  # noqa: E402
 
 
@@ -770,15 +867,23 @@ def t_send_network_stats():
     assert_true("network_stats" in rec.events())
 
 
-@check("cleanup_expired_ips (1 Iteration)")
+@check("cleanup_expired_ips (Retention-Fenster + Threat-Ausnahme)")
 def t_cleanup_expired_ips():
     s = app.SharedStats()
-    # abgelaufene IP einfuegen
-    old = time.time() - app.EXPIRATION_SECONDS - 100
+    # Loeschung haengt jetzt am RETENTION_SECONDS-Fenster (nicht mehr am kurzen
+    # Anzeige-Fenster EXPIRATION_SECONDS): ein Eintrag jenseits der Retention wird
+    # entfernt, ein gleich alter Threat-Eintrag bleibt aber erhalten.
+    old = time.time() - app.RETENTION_SECONDS - 100
     with app.db.get_connection() as conn:
         conn.execute("INSERT INTO ip_data (device_id, ip, last_seen) VALUES (%s, %s, %s) "
                      "ON CONFLICT (device_id, ip) DO UPDATE SET last_seen = EXCLUDED.last_seen",
                      (app.LOCAL_DEVICE_ID, "66.66.66.66", old))
+        # Gleich alter, aber als verdaechtig markierter Eintrag -> nie loeschen.
+        conn.execute("INSERT INTO ip_data (device_id, ip, last_seen, threat_level) "
+                     "VALUES (%s, %s, %s, %s) "
+                     "ON CONFLICT (device_id, ip) DO UPDATE SET "
+                     "last_seen = EXCLUDED.last_seen, threat_level = EXCLUDED.threat_level",
+                     (app.LOCAL_DEVICE_ID, "66.66.66.67", old, "Medium"))
         conn.commit()
     # alten geo_cache-Eintrag setzen
     with app.cache_lock:
@@ -793,7 +898,11 @@ def t_cleanup_expired_ips():
                                ("66.66.66.66",)).fetchone()
         removed = row is None
         time.sleep(0.05)
-    assert_true(removed, "abgelaufene IP sollte geloescht sein")
+    assert_true(removed, "abgelaufene IP (jenseits Retention) sollte geloescht sein")
+    with app.db.get_connection() as conn:
+        threat_row = conn.execute("SELECT 1 FROM ip_data WHERE ip=%s",
+                                  ("66.66.66.67",)).fetchone()
+    assert_true(threat_row is not None, "Threat-IP darf NIE geloescht werden")
     assert_true("expired-key" not in app.geo_cache, "alter geo_cache sollte weg sein")
 
 
