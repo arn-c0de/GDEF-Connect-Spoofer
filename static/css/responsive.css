@@ -1,0 +1,32 @@
+/* ============================================================
+   Responsive (mobile)
+   ============================================================ */
+
+@media (max-width: 768px) {
+    #ownConnectionData {
+        flex-wrap: wrap;
+        height: auto;
+        padding: 6px 10px;
+    }
+
+    #connectionDataList {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    #activeConnectionsList,
+    #internalNetworkList {
+        width: 45%;
+        max-width: none;
+        max-height: 45vh;
+    }
+}
+
+@media (hover: none) and (pointer: coarse) {
+    .toggle-button:hover,
+    #toggleActiveConnections:hover,
+    #toggleInternalNetwork:hover {
+        background: var(--bg-secondary);
+    }
+    .conn-row:hover { background: transparent; }
+}

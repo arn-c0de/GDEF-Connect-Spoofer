@@ -15,5 +15,12 @@ services:
       # Live source — edits on the host are seen inside the container instantly.
       - ./app.py:/app/app.py
       - ./db.py:/app/db.py
+      # Helper modules split out of app.py (imported by it) — mount them too so a
+      # dev edit is picked up on the next `./run.sh restart`, not baked-image stale.
+      - ./config.py:/app/config.py
+      - ./secret_files.py:/app/secret_files.py
+      - ./netutils.py:/app/netutils.py
+      - ./validators.py:/app/validators.py
+      - ./packet_pipeline.py:/app/packet_pipeline.py
       - ./static:/app/static
       - ./templates:/app/templates

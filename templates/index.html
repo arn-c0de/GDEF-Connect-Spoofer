@@ -25,7 +25,15 @@
         <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"
                 integrity="sha384-7EyYLQZgWBi67fBtVxw60/OWl1kjsfrPFcaU0pp0nAh+i8FD068QogUvg85Ewy1k"
                 crossorigin="anonymous"></script>
-        <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+        <!-- Stylesheets, loaded in cascade order (was the single styles.css). -->
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/topbar.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/sidebar.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/lists.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/toast.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/responsive.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/devices.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/overlay.css') }}">
     </head>
     <body data-lat="{{ lat|default(0, true)|float }}" data-lng="{{ lng|default(0, true)|float }}">
 
@@ -51,8 +59,8 @@
         <!-- Settings button (opens the unified overlay on the Settings page) -->
         <button id="menuButton" title="Settings">⚙️</button>
 
-        <!-- Settings source sections. On load these are relocated by globe.js into
-             the unified overlay's Settings page (buildOverlay), keeping their IDs
+        <!-- Settings source sections. On load these are relocated by globe/overlay.js
+             into the unified overlay's Settings page (buildOverlay), keeping their IDs
              and wiring intact. This div is removed once relocated. -->
         <div id="sidebar">
 
@@ -138,7 +146,7 @@
         <!-- Toast / alert container -->
         <div id="toastContainer"></div>
 
-        <script src="{{ url_for('static', filename='globe.js') }}"></script>
-        <script src="{{ url_for('static', filename='init-globe.js') }}"></script>
+        <!-- ES-module entry; pulls in the rest of static/globe/* via imports. -->
+        <script type="module" src="{{ url_for('static', filename='globe/main.js') }}"></script>
     </body>
 </html>

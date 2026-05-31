@@ -4,8 +4,8 @@ umask 077
 
 # GDEF-L1NK – Smoke-Test Runner
 # ==================================
-# Fuehrt smoketest.py aus, der JEDE Funktion von app.py / select_interface.py
-# testet (ohne echten Netzwerk-Traffic und ohne Root).
+# Fuehrt scripts/smoketest.py aus, der JEDE Funktion von app.py /
+# scripts/select_interface.py testet (ohne echten Netzwerk-Traffic und ohne Root).
 #
 # Usage:
 #   ./smoke-test.sh
@@ -19,7 +19,7 @@ umask 077
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-SMOKE="$PROJECT_DIR/smoketest.py"
+SMOKE="$PROJECT_DIR/scripts/smoketest.py"
 UV="${UV:-uv}"
 PYTHON="${PYTHON:-python3}"
 
@@ -27,7 +27,7 @@ log()  { printf '\033[94m[smoke]\033[0m %s\n' "$*"; }
 err()  { printf '\033[91m[smoke]\033[0m %s\n' "$*" >&2; }
 
 if [[ ! -f "$SMOKE" ]]; then
-  err "smoketest.py nicht gefunden in $PROJECT_DIR"
+  err "scripts/smoketest.py nicht gefunden in $PROJECT_DIR"
   exit 2
 fi
 

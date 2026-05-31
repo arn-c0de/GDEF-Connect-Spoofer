@@ -396,9 +396,12 @@ GDEF-L1NK/
 ├── docker-compose.dev.yml          # Dev override: bind-mounts source (./run.sh dev)
 ├── .env.example                     # Sample environment for Docker Compose
 ├── run.sh                           # Docker Compose launcher (Linux)
+├── smoke-test.sh                    # Smoke-test launcher
 ├── start.bat                        # Windows launcher
-├── select_interface.py              # Interface selection helper
-├── debug_interfaces.py              # Interface diagnostics helper
+├── scripts/                         # Smoke tests and local helper scripts
+│   ├── smoketest.py                 # Full app smoke test
+│   ├── select_interface.py          # Interface selection helper
+│   └── debug_interfaces.py          # Interface diagnostics helper
 ├── pyproject.toml                   # Project metadata and dependencies
 ├── uv.lock                          # Locked dependency graph
 ├── .python-version                  # Preferred Python runtime for uv
@@ -440,7 +443,7 @@ The dashboard is locked by default.
 - **Windows**: If you cannot see the file, ensure you ran `start.bat` as Administrator.
 
 ### Wrong capture interface
-Set `NETWORK_INTERFACE` in `.env` to a real host interface (e.g. `enp3s0`, `wlan0`), then `./run.sh restart`. List interfaces with `python debug_interfaces.py` or `ip -br link`.
+Set `NETWORK_INTERFACE` in `.env` to a real host interface (e.g. `enp3s0`, `wlan0`), then `./run.sh restart`. List interfaces with `python scripts/debug_interfaces.py` or `ip -br link`.
 
 ## License
 

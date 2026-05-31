@@ -1,17 +1,14 @@
 import db
 import threading
 import time
-import re
 from scapy.all import sniff, get_if_list
 from capture_core import (
-    MAC_RE, MAX_PACKET_LEN, UDP_FILTER_PORTS,
     is_valid_mac, is_private_ip, estimate_os, build_bpf_filter, classify_packet,
 )
 import device_crypto
 from capture_sources import FritzDumpSource
 import requests
 import ipaddress
-import ctypes
 import sys
 import socket
 from zeroconf import ServiceBrowser, Zeroconf
@@ -19,17 +16,45 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_socketio import SocketIO, disconnect
 from uuid import uuid4
 import logging
-from multiprocessing import Process, Manager, Queue, Value
+from multiprocessing import Process, Manager
 from queue import Empty, Full, Queue as ThreadQueue
 import os
 import json
-import shlex
 import signal
 import subprocess
 from contextlib import contextmanager
 from functools import wraps
-from urllib.parse import urlparse
 import secrets
+
+# Pure, app-state-free helpers split out of this module for readability. They
+# hold no globals and start no threads, so importing them here is side-effect-free.
+from secret_files import write_secret_file
+from netutils import (
+    is_safe_redirect_target, get_local_ip, is_admin, auto_detect_interface,
+)
+from validators import (
+    sanitize_mdns_hostname, _clamp_int, _valid_port, _short_str,
+    _valid_device_id, _COLOR_RE,
+)
+from packet_pipeline import PacketQueue, SharedStats
+# Static configuration constants (paths, limits, timeouts, device/FritzDump
+# defaults). Pure values, never rebound — NETWORK_INTERFACE stays in this module
+# because validate_interface() reassigns it (a rebound global can't be imported).
+from config import (
+    LOGIN_MAX_ATTEMPTS, LOGIN_LOCKOUT_SECONDS,
+    DATABASE_DIR, DATABASE_PATH, CACHE_TIMEOUT, API_TIMEOUT,
+    DEFAULT_COORDS, EXPIRATION_SECONDS, MAX_IP_ROWS, SNIFF_TIMEOUT,
+    SOCKETIO_PING_TIMEOUT, SOCKETIO_PING_INTERVAL,
+    TRUSTED_ORGS_PATH, IP_LABELS_PATH,
+    LOCAL_DEVICE_ID, LOCAL_DEVICE_COLOR, HUB_DEVICE_NAME, DEVICE_KEYS_DIR,
+    FRITZDUMP_DEVICE_ID, FRITZDUMP_ENABLED, FRITZDUMP_DEVICE_NAME,
+    FRITZDUMP_DEVICE_COLOR, FRITZDUMP_DIR, FRITZDUMP_POLL_INTERVAL,
+    FRITZDUMP_WORKER_DIR, FRITZDUMP_WORKER_CMD,
+    FRITZDUMP_AUTOSTART, FRITZDUMP_WORKER_MIN_UPTIME, FRITZDUMP_WORKER_BACKOFF,
+    FRITZDUMP_WORKER_LOG,
+    SOCKET_RATE_LIMIT, SOCKET_RATE_WINDOW,
+    MAX_KNOWN_IPS, MAX_CACHE_SIZE,
+)
 
 # Logging Setup
 # Default to INFO so high-traffic environments don't drown in (and fill the disk
@@ -58,39 +83,7 @@ logger = logging.getLogger(__name__)
 ACCESS_TOKEN = os.environ.get('ACCESS_TOKEN', '').strip() or secrets.token_urlsafe(16)
 TOKEN_FILE = os.path.join("database", "access_token.txt")
 
-# O_NOFOLLOW only exists on POSIX; degrade to 0 on platforms (Windows) that
-# lack it so the open() call stays portable.
-_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-
-def write_secret_file(path, data):
-    """Persist a 0600 secret file atomically and without following symlinks.
-
-    Defends against a local attacker who pre-creates a symlink at `path` before
-    the app first runs (the database/ dir is 0700, but this is belt-and-braces):
-    we write to a fresh temp file in the same directory opened O_CREAT|O_EXCL|
-    O_NOFOLLOW (so we neither follow nor reuse anything an attacker planted),
-    then os.replace() it into place. os.replace is atomic, so the destination
-    is never observed half-written, and renaming onto a symlinked path replaces
-    the link itself rather than writing through it to the target.
-    """
-    directory = os.path.dirname(path) or "."
-    tmp = os.path.join(directory, f".{os.path.basename(path)}.{os.getpid()}.tmp")
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.chmod(path, 0o600)
+# write_secret_file lives in secret_files.py (imported above).
 
 try:
     if not os.path.exists("database"):
@@ -113,32 +106,10 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-def is_safe_redirect_target(target):
-    """Allow only local, relative redirect targets (open-redirect protection).
-
-    Accepts paths like '/index' but rejects absolute URLs ('http://evil'),
-    scheme-relative URLs ('//evil') and backslash tricks ('/\\evil')."""
-    if not target:
-        return False
-    # Reject anything that isn't a plain path rooted at '/'
-    if not target.startswith('/'):
-        return False
-    # '//host' and '/\host' are scheme-relative / host-relative -> external
-    if target.startswith('//') or target.startswith('/\\'):
-        return False
-    # A control char or embedded scheme indicates an attempt to escape
-    if '\\' in target or '\n' in target or '\r' in target:
-        return False
-    # Defense in depth: the target must be a pure path with no scheme/host of
-    # its own, so it can never point off-origin.
-    parsed = urlparse(target)
-    if parsed.scheme or parsed.netloc:
-        return False
-    return True
+# is_safe_redirect_target lives in netutils.py (imported above).
 
 # Brute-force protection for the login form (simple in-memory limiter).
-LOGIN_MAX_ATTEMPTS = int(os.environ.get('LOGIN_MAX_ATTEMPTS', '5'))
-LOGIN_LOCKOUT_SECONDS = int(os.environ.get('LOGIN_LOCKOUT_SECONDS', '300'))
+# LOGIN_MAX_ATTEMPTS / LOGIN_LOCKOUT_SECONDS live in config.py (imported above).
 login_attempts = {}  # ip -> [fail_count, first_attempt_ts, locked_until_ts]
 login_attempts_lock = threading.Lock()
 
@@ -195,86 +166,18 @@ def load_network_interface():
         logger.error(f"Error loading configuration file {BACKEND_CONF_PATH}: {e}")
     return None
 
-# Configuration
+# Configuration. The scalar settings (paths, timeouts, device + FritzDump
+# defaults) live in config.py (imported above); only the interface — which
+# validate_interface() reassigns at runtime — and the CONFIG dict that wraps it
+# are kept here.
 CONFIG = {
     "network_interface": load_network_interface(),
-    "cache_timeout": 3600,
-    "api_timeout": 5,
-    "database_dir": "database",
-    "database_path": os.path.join("database", "geo_data.db"),
+    "cache_timeout": CACHE_TIMEOUT,
+    "api_timeout": API_TIMEOUT,
+    "database_dir": DATABASE_DIR,
+    "database_path": DATABASE_PATH,
 }
 NETWORK_INTERFACE = CONFIG["network_interface"]
-DEFAULT_COORDS = [0, 0]
-CACHE_TIMEOUT = CONFIG["cache_timeout"]
-EXPIRATION_SECONDS = 3600
-# Hard ceiling on rows kept in ip_data. Even under a spoofing flood (new IPs are
-# rate-limited but can still accumulate within the EXPIRATION_SECONDS window),
-# the cleanup thread trims the oldest unpinned rows beyond this cap so the DB
-# can't fill the disk. Override via the MAX_IP_ROWS env var.
-MAX_IP_ROWS = int(os.environ.get("MAX_IP_ROWS", "50000"))
-SNIFF_TIMEOUT = 30
-SOCKETIO_PING_TIMEOUT = 120
-SOCKETIO_PING_INTERVAL = 25
-DATABASE_DIR = CONFIG["database_dir"]
-DATABASE_PATH = CONFIG["database_path"]
-TRUSTED_ORGS_PATH = os.path.join(DATABASE_DIR, "trusted_organisations.json")
-# Operator-defined friendly names for local/LAN IPs (e.g. 192.168.178.100 -> "PC-E1").
-# Display-only; surfaced in the dashboard's "LAN device" columns.
-IP_LABELS_PATH = os.path.join(DATABASE_DIR, "ip_labels.json")
-
-# --- Multi-device (sensor) identity -----------------------------------------
-# Every captured connection belongs to a "device". The hub's own local capture
-# is the built-in device 'local'; remote sensors register their own ids. Devices
-# are NEVER identified by IP — sensors in the same network share one public IP —
-# so the id is the sole identity, carried explicitly through the pipeline.
-LOCAL_DEVICE_ID = 'local'
-LOCAL_DEVICE_COLOR = '#FFFF00'  # the legacy "Your IP" yellow
-HUB_DEVICE_NAME = os.environ.get('HUB_DEVICE_NAME', '').strip() or socket.gethostname() or 'local'
-# Per-device sensor keys (Fernet) live here as 0600 files, written via
-# write_secret_file (symlink-safe), mirroring how the access token is stored.
-DEVICE_KEYS_DIR = os.path.join(DATABASE_DIR, "devices")
-
-# --- FritzDump pcap source ---------------------------------------------------
-# A built-in capture *device* whose packets come from tailing the pcap files the
-# FritzDump module writes (a FRITZ!Box capture), instead of a live NIC. It shows
-# up in the device list like any device, with its own Start/Stop (the per-device
-# `enabled` flag): while disabled it captures nothing at all.
-FRITZDUMP_DEVICE_ID = 'fritzdump'
-# Master switch for the whole FritzDump module. OFF by default so a deployment
-# that doesn't use it never sees the device, the reader thread, or the worker.
-# Turn it on with FRITZDUMP_ENABLED=1 (the docker-compose.fritzdump.yml override
-# sets this and bind-mounts the module).
-FRITZDUMP_ENABLED = os.environ.get('FRITZDUMP_ENABLED', '0').strip().lower() not in ('0', 'false', 'no', '')
-FRITZDUMP_DEVICE_NAME = os.environ.get('FRITZDUMP_DEVICE_NAME', '').strip() or 'FritzBox'
-FRITZDUMP_DEVICE_COLOR = '#29B6F6'
-_APP_DIR = os.path.dirname(os.path.abspath(__file__))
-FRITZDUMP_DIR = os.environ.get('FRITZDUMP_DIR') or os.path.join(
-    _APP_DIR, 'modules', 'FritzDump', 'dumps')
-FRITZDUMP_POLL_INTERVAL = float(os.environ.get('FRITZDUMP_POLL_INTERVAL', '1.0'))
-
-# Pressing Start should also LAUNCH the FritzDump capture worker (the process that
-# logs into the box and writes the pcaps), not just tail an already-running one.
-# FRITZDUMP_WORKER_DIR holds modules/FritzDump; the worker is its run.sh. Override
-# the whole command with FRITZDUMP_WORKER_CMD (shell-split). Set FRITZDUMP_AUTOSTART=0
-# if you start FritzDump yourself and only want the hub to read the pcaps.
-FRITZDUMP_WORKER_DIR = os.environ.get('FRITZDUMP_WORKER_DIR') or os.path.join(
-    _APP_DIR, 'modules', 'FritzDump')
-FRITZDUMP_WORKER_MODE = os.environ.get('FRITZDUMP_WORKER_MODE', 'home')
-_fdcmd = os.environ.get('FRITZDUMP_WORKER_CMD', '').strip()
-if _fdcmd:
-    FRITZDUMP_WORKER_CMD = shlex.split(_fdcmd)
-else:
-    _runsh = os.path.join(FRITZDUMP_WORKER_DIR, 'run.sh')
-    FRITZDUMP_WORKER_CMD = ['bash', _runsh, FRITZDUMP_WORKER_MODE] if os.path.isfile(_runsh) else None
-FRITZDUMP_AUTOSTART = os.environ.get('FRITZDUMP_AUTOSTART', '1') not in ('0', 'false', 'False', 'no')
-# If the worker exits within this many seconds it is treated as a failed start
-# (e.g. missing .env / credentials) and we back off instead of respawn-storming.
-FRITZDUMP_WORKER_MIN_UPTIME = 8.0
-FRITZDUMP_WORKER_BACKOFF = 30.0
-# The worker's stdout/stderr go here (persistent, in the mounted database dir) so
-# a failed run.sh (wrong .env, bad interface id, no route to the box) is visible:
-#   cat database/fritzdump_worker.log
-FRITZDUMP_WORKER_LOG = os.path.join(DATABASE_DIR, 'fritzdump_worker.log')
 
 # --- Per-device Start/Stop ---------------------------------------------------
 # A device's `enabled` flag is its Start/Stop. While a device is stopped, NONE of
@@ -309,8 +212,6 @@ def device_is_disabled(device_id):
         return device_id in disabled_devices
 
 
-API_TIMEOUT = CONFIG["api_timeout"]
-
 # Global variables
 geo_cache = {}
 known_ips = set()
@@ -322,13 +223,9 @@ db_lock = threading.Lock()
 pinned_ips_cache = {}
 pinned_ips_cache_lock = threading.Lock()
 
-# Per-client Socket.IO rate limiting (sliding window). Caps how often a single
-# client may invoke state-changing events such as pin_ip / reset_packet_count,
-# preventing a flood of server-side DB writes. Keyed on the client IP (not the
-# SID) so a client cannot bypass the limit by disconnecting and immediately
-# reconnecting under a fresh SID (SID churn).
-SOCKET_RATE_LIMIT = int(os.environ.get('SOCKET_RATE_LIMIT', '5'))        # events per window
-SOCKET_RATE_WINDOW = float(os.environ.get('SOCKET_RATE_WINDOW', '1.0'))  # window length (seconds)
+# Per-client Socket.IO rate limiting (sliding window). SOCKET_RATE_LIMIT /
+# SOCKET_RATE_WINDOW live in config.py (imported above); the in-memory window
+# state stays here next to the limiter functions.
 _socket_event_times = {}   # (client_ip, event_name) -> [timestamps]
 _socket_rate_lock = threading.Lock()
 
@@ -359,98 +256,16 @@ def socket_rate_prune():
                     if all(now - t >= SOCKET_RATE_WINDOW for t in v)]:
             del _socket_event_times[key]
 
-# Constants for DoS protection
-MAX_KNOWN_IPS = 10000
-MAX_CACHE_SIZE = 5000
-IP_UPDATE_INTERVAL = 1.0  # Min seconds between updates for the same IP
+# DoS-protection limits (MAX_KNOWN_IPS / MAX_CACHE_SIZE / IP_UPDATE_INTERVAL)
+# live in config.py (imported above).
 # MAX_PACKET_LEN and the BPF capture filter live in capture_core (shared with the
 # sensor worker). The filter drops the dashboard's own TCP traffic on APP_PORT so
 # the web UI is neither visualized nor adds parsing load under heavy traffic.
 CAPTURE_BPF_FILTER = build_bpf_filter(os.environ.get('APP_PORT', '8000'))
 last_ip_updates = {}
 
-# Packet Queue
-class PacketQueue:
-    def __init__(self, maxsize=5000):
-        # multiprocessing.Queue is FIFO, so putting (priority, item) into one
-        # queue did not actually prioritize external traffic. Two queues keep the
-        # capture path non-blocking while process_packets drains external packets
-        # first and only uses internal traffic when the high-priority lane is idle.
-        self.high = Queue(maxsize=maxsize)
-        self.low = Queue(maxsize=maxsize)
-
-    def _is_external(self, item):
-        if 'ip_src' in item or 'ip_dst' in item:
-            return not (is_private_ip(item.get('ip_src', '')) and is_private_ip(item.get('ip_dst', '')))
-        if 'ip' in item:
-            return not is_private_ip(item.get('ip', ''))
-        return True
-
-    def put(self, item):
-        try:
-            is_external = self._is_external(item)
-            priority = 1 if is_external else 5
-            target = self.high if is_external else self.low
-            target.put_nowait((priority, item))
-            logger.debug(f"Packet queued: {item.get('protocol')}, {'external' if is_external else 'internal'}")
-        except Full:
-            logger.warning("Queue full, packet dropped")
-
-    def get(self, timeout=None):
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            if timeout == 0:
-                try:
-                    return self.high.get_nowait()
-                except Empty:
-                    return self.low.get_nowait()
-            high_wait = 0.01
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise Empty
-                high_wait = min(high_wait, remaining)
-            try:
-                return self.high.get(timeout=high_wait)
-            except Empty:
-                pass
-            try:
-                return self.low.get_nowait()
-            except Empty:
-                pass
-            if deadline is not None and time.monotonic() >= deadline:
-                raise Empty
-
-    def empty(self):
-        return self.high.empty() and self.low.empty()
-
-class SharedStats:
-    """Cross-process packet counters backed by multiprocessing.Value (shared
-    memory) instead of a Manager().dict() proxy.
-
-    A Manager proxy serializes every read/write over a socket to the manager
-    process. Updating it on every captured packet from two processes becomes a
-    hard IPC bottleneck at high packet rates and makes the sniffer drop frames at
-    the kernel. Value uses a shared-memory cell with a tiny lock, which is orders
-    of magnitude cheaper. Created before fork so children share the same cells."""
-    _FIELDS = ('tcp_packets', 'udp_packets', 'icmp_packets', 'total_bytes', 'active_connections', 'fragmented_packets')
-
-    def __init__(self):
-        # 'q' = signed 64-bit, so total_bytes cannot overflow under sustained load.
-        self._v = {name: Value('q', 0) for name in self._FIELDS}
-
-    def incr(self, name, amount=1):
-        v = self._v[name]
-        with v.get_lock():
-            v.value += amount
-
-    def set(self, name, value):
-        v = self._v[name]
-        with v.get_lock():
-            v.value = value
-
-    def snapshot(self):
-        return {name: v.value for name, v in self._v.items()}
+# PacketQueue and SharedStats live in packet_pipeline.py (imported above). The
+# instances are still created in this module's __main__ (before the sniffer fork).
 
 # MAC_RE / is_valid_mac live in capture_core (shared with the sensor). They
 # validate any MAC before it is interpolated into an outbound API URL, preventing
@@ -979,16 +794,7 @@ def api_ip_labels():
 #    hostnames are therefore sanitized to a short, safe charset before storage.
 MDNS_MAX_DEVICES = int(os.environ.get('MDNS_MAX_DEVICES', '4096'))
 MDNS_DEVICE_TTL = int(os.environ.get('MDNS_DEVICE_TTL', str(2 * 3600)))  # 2 hours
-_MDNS_HOSTNAME_RE = re.compile(r'[^A-Za-z0-9._-]')
-
-def sanitize_mdns_hostname(name):
-    """mDNS names are untrusted input. Strip to a DNS-safe charset and cap the
-    length so a spoofed service name cannot smuggle markup, control characters,
-    or unbounded text into the DB / UI."""
-    if not name:
-        return "Unknown"
-    cleaned = _MDNS_HOSTNAME_RE.sub('', name)[:63]
-    return cleaned or "Unknown"
+# sanitize_mdns_hostname lives in validators.py (imported above).
 
 class MDNSListener:
     def __init__(self):
@@ -1065,75 +871,8 @@ def start_mdns_listener():
         logger.error(f"Error starting mDNS listener: {e}")
         return None, None
 
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-        logger.info(f"Local IP: {local_ip}")
-        return local_ip
-    except Exception as e:
-        logger.error(f"Error getting local IP: {e}")
-        return "127.0.0.1"
-
-# Linux capability bits required for raw packet capture.
-CAP_NET_ADMIN = 12
-CAP_NET_RAW = 13
-
-def has_net_capabilities():
-    """On Linux, check whether the effective capability set grants the rights
-    needed for sniffing (CAP_NET_RAW / CAP_NET_ADMIN). This lets the app run as
-    a non-root user when the Python binary has been granted capabilities via:
-        sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))
-    """
-    try:
-        with open('/proc/self/status', 'r') as f:
-            for line in f:
-                if line.startswith('CapEff:'):
-                    cap_eff = int(line.split()[1], 16)
-                    needed = (1 << CAP_NET_RAW)
-                    return (cap_eff & needed) == needed
-    except Exception as e:
-        logger.debug(f"Could not read capabilities: {e}")
-    return False
-
-def is_admin():
-    """Return True if the process can capture raw packets: either it is root /
-    Administrator, or (on Linux) it holds the required net capabilities."""
-    try:
-        if sys.platform == 'win32':
-            return ctypes.windll.shell32.IsUserAnAdmin()
-        if os.geteuid() == 0:
-            return True
-        # Non-root: accept if capabilities have been granted (least privilege).
-        return has_net_capabilities()
-    except Exception as e:
-        logger.error(f"Error checking admin privileges: {e}")
-        return False
-
-def auto_detect_interface():
-    """Auto-detects the best network interface on all platforms."""
-    available = get_if_list()
-    if not available:
-        return None
-
-    if sys.platform == 'win32':
-        # On Windows: first interface as fallback
-        return available[0]
-
-    # On Linux/macOS: prefer real network interfaces
-    preferred_prefixes = ('eth', 'en', 'wl', 'wlan', 'ens', 'enp', 'wlp')
-    for iface in available:
-        if iface.startswith(preferred_prefixes):
-            return iface
-
-    # Fallback: first interface that is not lo
-    for iface in available:
-        if iface != 'lo':
-            return iface
-
-    return available[0]
+# get_local_ip, has_net_capabilities, is_admin and auto_detect_interface live in
+# netutils.py (imported above).
 
 def validate_interface():
     available_interfaces = get_if_list()
@@ -1998,8 +1737,7 @@ INGEST_MAX_BODY = int(os.environ.get('INGEST_MAX_BODY', str(8 * 1024 * 1024)))  
 INGEST_RATE_LIMIT = int(os.environ.get('INGEST_RATE_LIMIT', '20'))    # batches per window
 INGEST_RATE_WINDOW = float(os.environ.get('INGEST_RATE_WINDOW', '1.0'))
 
-_DEVICE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
-_COLOR_RE = re.compile(r'^#[0-9A-Fa-f]{6}$')
+# _DEVICE_ID_RE and _COLOR_RE live in validators.py (imported above).
 _DEFAULT_DEVICE_COLORS = ['#4FC3F7', '#FF8A65', '#BA68C8', '#81C784', '#FFD54F',
                           '#F06292', '#4DB6AC', '#9575CD', '#A1887F', '#90A4AE']
 
@@ -2017,10 +1755,6 @@ _DEVICE_COLS = ("device_id", "name", "color", "kind", "public_ip", "lat", "lon",
                 "enabled", "seq", "last_seen", "created_at")
 _DEVICE_SELECT = ("SELECT device_id, name, color, kind, public_ip, lat, lon, "
                   "enabled, seq, last_seen, created_at FROM devices")
-
-
-def _valid_device_id(s):
-    return isinstance(s, str) and bool(_DEVICE_ID_RE.match(s))
 
 
 def device_key_path(device_id):
@@ -2161,23 +1895,7 @@ def ingest_rate_limited(device_id):
         return False
 
 
-def _clamp_int(v, lo, hi, default=0):
-    try:
-        return max(lo, min(hi, int(v)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _valid_port(v):
-    try:
-        p = int(v)
-    except (TypeError, ValueError):
-        return None
-    return p if 0 <= p <= 65535 else None
-
-
-def _short_str(v, default="Unknown", maxlen=128):
-    return v[:maxlen] if isinstance(v, str) and v else default
+# _clamp_int, _valid_port and _short_str live in validators.py (imported above).
 
 
 def ingest_events(device_id, events, device_geo):
