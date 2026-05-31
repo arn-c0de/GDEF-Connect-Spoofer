@@ -37,7 +37,13 @@ logger = logging.getLogger("GDEF-L1NK")
 DBError = psycopg.Error
 
 
+# Built-in fallback password. Fine for a localhost-only dev run, but a known
+# constant — anything reachable on a non-loopback PGHOST must override it.
+_DEFAULT_PW = "gdef_l1nk"
+_warned_default_pw = False
+
 def _dsn():
+    global _warned_default_pw
     url = os.environ.get("DATABASE_URL")
     if url:
         return url
@@ -45,7 +51,13 @@ def _dsn():
     port = os.environ.get("PGPORT", "5432")
     name = os.environ.get("PGDATABASE", "gdef_l1nk")
     user = os.environ.get("PGUSER", "gdef_l1nk")
-    pw = os.environ.get("PGPASSWORD", "gdef_l1nk")
+    pw = os.environ.get("PGPASSWORD", _DEFAULT_PW)
+    if pw == _DEFAULT_PW and not _warned_default_pw:
+        _warned_default_pw = True
+        logger.warning(
+            "PGPASSWORD is unset: using the built-in default DB password (a known "
+            "constant). Set PGPASSWORD or DATABASE_URL to a strong secret before "
+            "PostgreSQL is reachable on anything other than 127.0.0.1.")
     return f"host={host} port={port} dbname={name} user={user} password={pw}"
 
 

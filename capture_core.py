@@ -7,11 +7,14 @@ it without pulling in the whole web application. Keeping the L3/L4 parsing in
 one place means the hub and every sensor classify packets identically; there is
 no second copy to drift out of sync.
 """
+import logging
 import os
 import re
 import ipaddress
 
 from scapy.all import IP, TCP, UDP, ICMP, Ether
+
+logger = logging.getLogger(__name__)
 
 # MAC address validation (``xx:xx:xx:xx:xx:xx``, ':' or '-' separated).
 MAC_RE = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
@@ -92,46 +95,57 @@ def classify_packet(packet, show_all_udp=False, udp_filter_ports=UDP_FILTER_PORT
 
     ``udp_filtered`` is set (rather than the packet being dropped here) for noisy
     local-discovery UDP so the caller can still account for it — e.g. count a
-    fragment — before discarding, preserving the hub's original ordering."""
-    if len(packet) < 20 or len(packet) > max_packet_len or IP not in packet:
+    fragment — before discarding, preserving the hub's original ordering.
+
+    The whole body is wrapped: scapy dissects layers lazily on field access, and
+    a specially-crafted/truncated frame can raise deep inside that dissection. We
+    run on EVERY frame on the wire (attacker-controlled), and this is the sniff
+    prn — an uncaught raise here tears down the entire ``sniff()`` call and opens
+    a multi-second capture gap (the loop only restarts after a 5s back-off). So a
+    malformed packet is treated like any other un-parseable frame: return None."""
+    try:
+        if len(packet) < 20 or len(packet) > max_packet_len or IP not in packet:
+            return None
+
+        ip_layer = packet[IP]
+        src_port = None
+        dst_port = None
+        udp_filtered = False
+
+        if TCP in packet:
+            protocol = "TCP"
+            src_port = packet[TCP].sport
+            dst_port = packet[TCP].dport
+        elif UDP in packet:
+            protocol = "UDP"
+            src_port = packet[UDP].sport
+            dst_port = packet[UDP].dport
+            if not show_all_udp and (src_port in udp_filter_ports or dst_port in udp_filter_ports):
+                udp_filtered = True
+        elif ICMP in packet and packet[ICMP].type == 8:
+            protocol = "ICMP"
+        else:
+            return None
+
+        src_mac = None
+        dst_mac = None
+        if Ether in packet:
+            src_mac = packet[Ether].src
+            dst_mac = packet[Ether].dst
+
+        return {
+            "ip_src": ip_layer.src,
+            "ip_dst": ip_layer.dst,
+            "ttl": ip_layer.ttl,
+            "protocol": protocol,
+            "src_port": src_port,
+            "dst_port": dst_port,
+            "src_mac": src_mac,
+            "dst_mac": dst_mac,
+            "fragmented": bool(is_fragment(ip_layer)),
+            "udp_filtered": udp_filtered,
+            "length": len(packet),
+        }
+    except Exception:
+        logger.debug("Dropping unparseable packet", exc_info=True)
         return None
-
-    ip_layer = packet[IP]
-    src_port = None
-    dst_port = None
-    udp_filtered = False
-
-    if TCP in packet:
-        protocol = "TCP"
-        src_port = packet[TCP].sport
-        dst_port = packet[TCP].dport
-    elif UDP in packet:
-        protocol = "UDP"
-        src_port = packet[UDP].sport
-        dst_port = packet[UDP].dport
-        if not show_all_udp and (src_port in udp_filter_ports or dst_port in udp_filter_ports):
-            udp_filtered = True
-    elif ICMP in packet and packet[ICMP].type == 8:
-        protocol = "ICMP"
-    else:
-        return None
-
-    src_mac = None
-    dst_mac = None
-    if Ether in packet:
-        src_mac = packet[Ether].src
-        dst_mac = packet[Ether].dst
-
-    return {
-        "ip_src": ip_layer.src,
-        "ip_dst": ip_layer.dst,
-        "ttl": ip_layer.ttl,
-        "protocol": protocol,
-        "src_port": src_port,
-        "dst_port": dst_port,
-        "src_mac": src_mac,
-        "dst_mac": dst_mac,
-        "fragmented": bool(is_fragment(ip_layer)),
-        "udp_filtered": udp_filtered,
-        "length": len(packet),
-    }

@@ -229,6 +229,18 @@ pinned_ips_cache_lock = threading.Lock()
 # state stays here next to the limiter functions.
 _socket_event_times = {}   # (client_ip, event_name) -> [timestamps]
 _socket_rate_lock = threading.Lock()
+# Opportunistic-prune threshold: once the window map exceeds this many keys we
+# sweep expired entries inline, so memory stays bounded even if clients never
+# disconnect cleanly (the disconnect-time prune alone could otherwise let stale
+# (ip, event) windows accumulate). Holds the rate lock — see _socket_prune_locked.
+_SOCKET_RATE_PRUNE_AT = 4096
+
+def _socket_prune_locked(now):
+    """Drop fully-expired rate-limit windows. Caller MUST hold _socket_rate_lock
+    (threading.Lock is non-reentrant, so we never re-acquire it here)."""
+    for key in [k for k, v in _socket_event_times.items()
+                if all(now - t >= SOCKET_RATE_WINDOW for t in v)]:
+        del _socket_event_times[key]
 
 def socket_rate_limited(event_name):
     """Return True if the client IP has exceeded the rate for `event_name`."""
@@ -239,6 +251,8 @@ def socket_rate_limited(event_name):
     now = time.time()
     key = (client, event_name)
     with locked(_socket_rate_lock):
+        if len(_socket_event_times) > _SOCKET_RATE_PRUNE_AT:
+            _socket_prune_locked(now)
         times = [t for t in _socket_event_times.get(key, []) if now - t < SOCKET_RATE_WINDOW]
         if len(times) >= SOCKET_RATE_LIMIT:
             _socket_event_times[key] = times
@@ -253,9 +267,7 @@ def socket_rate_prune():
     limit persists across reconnects."""
     now = time.time()
     with locked(_socket_rate_lock):
-        for key in [k for k, v in _socket_event_times.items()
-                    if all(now - t >= SOCKET_RATE_WINDOW for t in v)]:
-            del _socket_event_times[key]
+        _socket_prune_locked(now)
 
 # DoS-protection limits (MAX_KNOWN_IPS / MAX_CACHE_SIZE / IP_UPDATE_INTERVAL)
 # live in config.py (imported above).
@@ -2306,7 +2318,13 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
     # live traffic. (process_packets also drops it, covering the forked scanner.)
     if LOCAL_DEVICE_ID in disabled_devices:
         return
-    logger.debug(f"Packet captured: {packet.summary()}")
+    # summary() forces full scapy dissection on every frame — skip it entirely
+    # unless DEBUG is on, and never let a malformed frame raise out of the prn.
+    if logger.isEnabledFor(logging.DEBUG):
+        try:
+            logger.debug("Packet captured: %s", packet.summary())
+        except Exception:
+            pass
     parsed = parse_ip_packet(packet, stats, showAllUDPPackets, lookup_private_macs=False)
     if not parsed:
         return
@@ -2394,7 +2412,11 @@ def fritzdump_packet_callback(packet, queue, mdns_listener, show_all_udp):
         logger.error(f"Error adding FritzDump packet to queue: {e}")
 
 def internal_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, queue, is_internal_search_active, stats, mdns_listener, showAllUDPPackets):
-    logger.debug(f"Internal packet captured: {packet.summary()}")
+    if logger.isEnabledFor(logging.DEBUG):
+        try:
+            logger.debug("Internal packet captured: %s", packet.summary())
+        except Exception:
+            pass
     if not is_internal_search_active.value:
         return
     parsed = parse_ip_packet(packet, stats, showAllUDPPackets)
