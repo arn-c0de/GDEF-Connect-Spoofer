@@ -9,7 +9,7 @@
 
 import { isValidCoord, recentPacketCount, isLocalNetwork } from './net.js';
 import { getCircleColor } from './classify.js';
-import { escapeHTML, showToast } from './format.js';
+import { escapeHTML, showToast, toRGBA } from './format.js';
 
 export function setupGlobe(app) {
     const myIpCoords = app.myIpCoords;
@@ -24,18 +24,33 @@ export function setupGlobe(app) {
         return Math.min(0.3 + Math.log10(recent + 1) * 0.6, 3.0);
     }
 
+    // ── Age-based dot fade ────────────────────────────────
+    // The longer no fresh packet has arrived, the more transparent the dot is
+    // drawn, so a point gently dims over its lifetime until it expires and is
+    // filtered out entirely. Origins and pinned IPs never fade. A floor keeps the
+    // dimmed dot clearly visible (a "slight" fade) rather than fading to nothing.
+    function freshnessAlpha(obj, lifetimeSeconds) {
+        if (obj.isOrigin || app.pinnedIPs[obj.ip]) return 1;
+        const age = Date.now() / 1000 - (obj.last_seen || 0);
+        const t = Math.max(0, Math.min(1, age / lifetimeSeconds));
+        return Math.max(0.25, 1 - t);
+    }
+
     // Detail panel is created dynamically so it stays on top of the globe canvas.
     const dataList = document.createElement('div');
     dataList.id = 'dataList';
     document.body.appendChild(dataList);
     app.dataList = dataList;
 
-    // Close the detail panel when clicking anywhere outside it.
-    // Globe-canvas clicks are excluded here — onGlobeClick handles those.
+    // Close the detail panel on any click outside it — including the empty globe
+    // canvas ("space" around the sphere), which onGlobeClick does NOT catch.
+    // onPointClick fires on the canvas first and bubbles here, so it sets
+    // _detailJustOpened to let that one opening click through; every other
+    // outside click (background, sidebar, sphere) closes the panel.
     document.addEventListener('click', e => {
         if (dataList.style.display !== 'block') return;
         if (dataList.contains(e.target)) return;
-        if (document.getElementById('globeViz').contains(e.target)) return;
+        if (app._detailJustOpened) { app._detailJustOpened = false; return; }
         dataList.style.display = 'none';
     });
 
@@ -44,9 +59,13 @@ export function setupGlobe(app) {
         .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
         .pointOfView({ lat: myIpCoords.lat, lng: myIpCoords.lng, altitude: 2.5 }, 0)
         .pointRadius(getMarkerRadius)
-        .pointColor(point => point.isOrigin
-            ? (point.color || '#FFFF00')
-            : getCircleColor(point.threat_level, point.org))
+        .pointColor(point => {
+            const base = point.isOrigin
+                ? (point.color || '#FFFF00')
+                : getCircleColor(point.threat_level, point.org);
+            // Dots linger and fade over EXPIRATION_SECONDS (origins stay solid).
+            return toRGBA(base, freshnessAlpha(point, app.EXPIRATION_SECONDS));
+        })
         .pointLabel(point => point.isOrigin
             ? `<div>${escapeHTML(point.label || 'Device')}</div>`
             : `<div>${escapeHTML(point.ip) || 'N/A'} — ${escapeHTML(point.org) || 'N/A'}</div>`)
@@ -56,12 +75,18 @@ export function setupGlobe(app) {
         .arcColor(arc => {
             // "Colour by device" makes each device's arcs its own colour; "by
             // threat" falls back to the destination IP's threat colour.
-            if (app.colorMode === 'device') return app.deviceColor(arc.device_id);
-            if (arc.city === 'Unknown' || arc.country === 'Unknown' || arc.org === 'Not available') {
-                return '#FFFFFF';
+            let base;
+            if (app.colorMode === 'device') {
+                base = app.deviceColor(arc.device_id);
+            } else if (arc.city === 'Unknown' || arc.country === 'Unknown' || arc.org === 'Not available') {
+                base = '#FFFFFF';
+            } else {
+                const pt = app.points[arc.ip];
+                base = pt ? getCircleColor(pt.threat_level, pt.org) : '#FFFFFF';
             }
-            const pt = app.points[arc.ip];
-            return pt ? getCircleColor(pt.threat_level, pt.org) : '#FFFFFF';
+            // Solid + full opacity: an arc is only ever drawn while it's live
+            // (see updateGlobeData), so it should read as a clear "flowing now".
+            return base;
         })
         .arcStroke(0.5)
         .arcDashLength(0.8)
@@ -185,8 +210,14 @@ export function setupGlobe(app) {
         }
         globe.pointsData(visiblePoints);
 
+        // Arcs render ONLY while live — i.e. a packet arrived within the last
+        // ARC_LIVE_SECONDS. Once traffic stops the line drops off and just the
+        // (fading) dot remains, so an animating arc always means "data flowing
+        // right now". Pinned IPs keep their arc so a watched host stays drawn.
+        const nowSec = Date.now() / 1000;
         globe.arcsData(app.showArcs ? Object.values(app.arcs).filter(a =>
             !a.expired && app.isDeviceVisible(a.device_id) &&
+            (app.pinnedIPs[a.ip] || nowSec - (a._lastActive || 0) <= app.ARC_LIVE_SECONDS) &&
             (app.showTCPOnly ? a.protocol === 'TCP' : true) &&
             ((app.showLocalNetwork    && isLocalNetwork(a.ip, a.org)) ||
              (app.showExternalNetwork && !isLocalNetwork(a.ip, a.org)))

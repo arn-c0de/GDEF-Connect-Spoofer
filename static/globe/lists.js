@@ -389,6 +389,10 @@ export function setupLists(app) {
 
     app.showDataList = (packet, onClose = null) => {
         const dataList = app.dataList;
+        // Flag the click that's opening the panel so the document-level
+        // outside-click handler (which fires as this same click bubbles up,
+        // whether from a globe point or a list row) doesn't immediately close it.
+        app._detailJustOpened = true;
         const svc = PORT_SERVICES[packet.dst_port];
         const dstPortLabel = packet.dst_port
             ? `${packet.dst_port}${svc ? ' (' + svc + ')' : ''}` : 'N/A';

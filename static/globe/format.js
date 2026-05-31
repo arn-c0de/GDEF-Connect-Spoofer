@@ -48,6 +48,32 @@ export function saveJSON(key, val) {
     try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) { /* quota/full */ }
 }
 
+// The handful of named colours getCircleColor()/deviceColor() can return, plus
+// hex, resolved to [r, g, b] so we can re-emit them as rgba() with a computed
+// alpha (used to fade points/arcs as they age toward expiry).
+const _NAMED_RGB = {
+    green:  [0, 128, 0],   red:    [255, 0, 0],   orange: [255, 165, 0],
+    yellow: [255, 255, 0], white:  [255, 255, 255],
+};
+
+// Convert a named or hex colour to an `rgba(r,g,b,a)` string. `alpha` is clamped
+// to [0,1]; unknown colours fall back to white so something is always drawn.
+export function toRGBA(color, alpha) {
+    const a = Math.max(0, Math.min(1, alpha));
+    let rgb = _NAMED_RGB[color];
+    if (!rgb && typeof color === 'string' && color[0] === '#') {
+        let hex = color.slice(1);
+        if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+        if (hex.length === 6) {
+            rgb = [parseInt(hex.slice(0, 2), 16),
+                   parseInt(hex.slice(2, 4), 16),
+                   parseInt(hex.slice(4, 6), 16)];
+        }
+    }
+    if (!rgb) rgb = _NAMED_RGB.white;
+    return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
+}
+
 export function makeThreatBadge(threatLevel) {
     const raw   = (threatLevel || 'no threat').toLowerCase().trim();
     const key   = raw.replace(' ', '-');
