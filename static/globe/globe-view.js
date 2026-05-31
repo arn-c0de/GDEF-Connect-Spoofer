@@ -208,6 +208,13 @@ export function setupGlobe(app) {
         // instead of being buried among them. No-threat dots and origins stay flat.
         // Clusters lift by their worst member's threat (carried on threat_level).
         .pointAltitude(d => 0.1 + threatRank(d.threat_level) * 0.03)
+        // No grow-in tween on data updates. updateGlobeData() re-pushes pointsData
+        // on every zoom-settle (re-clustering, so points enter/leave the set) and
+        // once a second (size decay); with the default 1000ms transition each
+        // affected column animated up from radius 0, which read as the whole globe
+        // "reloading" — every dot shrinking to nothing and growing back on each
+        // zoom. 0 makes size changes instant, so columns simply stay put.
+        .pointsTransitionDuration(0)
         .arcColor(arc => {
             // "Colour by device" makes each device's arcs its own colour.
             let base;
