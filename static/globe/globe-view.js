@@ -429,6 +429,7 @@ export function setupGlobe(app) {
                 const ang = (2 * Math.PI * i) / g.length;
                 p._dispLat = p.lat + R * Math.sin(ang);
                 p._dispLng = p.lng + R * Math.cos(ang);
+                p._fanOut = true;
             });
         }
     }
@@ -468,7 +469,11 @@ export function setupGlobe(app) {
         );
         // Clear any fan-out offset from a previous expand; re-applied below only
         // for members of a pile the user has opened.
-        for (const p of visiblePoints) { p._dispLat = undefined; p._dispLng = undefined; }
+        for (const p of visiblePoints) {
+            p._dispLat = undefined;
+            p._dispLng = undefined;
+            p._fanOut = false;
+        }
 
         // Bucket points into a lat/lng grid whose cell size tracks the zoom level.
         const cellDeg = clusterCellDeg();
@@ -522,12 +527,12 @@ export function setupGlobe(app) {
     // the group's centre (origin kept centred) so nothing overlaps. Labels follow
     // via _dispLat/_dispLng, so a moved cluster's count badge moves with it.
     function separateOverlaps(items) {
-        // Origins/clusters persist across refreshes, so clear last pass's offsets.
-        for (const d of items) { d._dispLat = undefined; d._dispLng = undefined; }
         const groups = new Map();
         for (const d of items) {
-            if (!isValidCoord(d.lat, d.lng)) continue;
-            const k = `${d.lat.toFixed(2)}|${d.lng.toFixed(2)}`;
+            const lat = d._dispLat ?? d.lat;
+            const lng = d._dispLng ?? d.lng;
+            if (!isValidCoord(lat, lng)) continue;
+            const k = `${lat.toFixed(2)}|${lng.toFixed(2)}`;
             (groups.get(k) || groups.set(k, []).get(k)).push(d);
         }
         for (const g of groups.values()) {
@@ -535,11 +540,14 @@ export function setupGlobe(app) {
             // Keep an origin (else the first item) at the true spot; ring the rest.
             g.sort((a, b) => (b.isOrigin ? 1 : 0) - (a.isOrigin ? 1 : 0));
             const c = g[0], rest = g.slice(1);
+            const baseLat = c._dispLat ?? c.lat;
+            const baseLng = c._dispLng ?? c.lng;
             const R = 1.3;   // degrees — clears the largest marker (cluster ~0.9°)
             rest.forEach((d, i) => {
+                if (d._fanOut) return;
                 const ang = (2 * Math.PI * i) / rest.length;
-                d._dispLat = c.lat + R * Math.sin(ang);
-                d._dispLng = c.lng + R * Math.cos(ang);
+                d._dispLat = baseLat + R * Math.sin(ang);
+                d._dispLng = baseLng + R * Math.cos(ang);
             });
         }
     }

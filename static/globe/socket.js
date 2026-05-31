@@ -279,7 +279,7 @@ export function setupSocket(app) {
                 data.threat_level === 'High' && !notifiedHighThreatIPs.has(ip)) {
                 notifiedHighThreatIPs.add(ip);
                 showToast(
-                    `⚠ High Threat: ${ip} — ${data.org || 'Unknown'} (${data.country || ''})`,
+                    `[!] High Threat: ${ip} — ${data.org || 'Unknown'} (${data.country || ''})`,
                     'high'
                 );
                 notifyHighThreat(ip, data.org, data.country);

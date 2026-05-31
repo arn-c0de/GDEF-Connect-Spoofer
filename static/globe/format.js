@@ -3,6 +3,14 @@
 // Stateless formatting + small DOM helpers. No app state, no side effects
 // beyond the explicit DOM nodes they create (toast/notification).
 
+// Inline-SVG icon helper. References the symbol sprite defined once in
+// index.html (#ic-*), so every icon is a single monochrome line-glyph that
+// inherits its colour from `currentColor` — the cybersec/industrial look,
+// tinted by the surrounding element (blue accent by default). Returns a
+// string for HTML concatenation; set .innerHTML or use in template literals.
+export const icon = (name) =>
+    `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-${name}"/></svg>`;
+
 // Map of common destination ports to human-readable service names.
 export const PORT_SERVICES = {
     20: 'FTP-DATA', 21: 'FTP',     22: 'SSH',      23: 'Telnet',
@@ -96,7 +104,7 @@ export function showToast(message, level = 'info', durationMs = 6000) {
 
 export function notifyHighThreat(ip, org, country) {
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
-    new Notification('⚠ High Threat Detected', {
+    new Notification('[!] High Threat Detected', {
         body: `${ip} — ${org || 'Unknown'} (${country || 'Unknown'})`,
         tag: `threat-${ip}`,  // prevents duplicate OS notifications for the same IP
     });
