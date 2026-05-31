@@ -30,6 +30,29 @@ html, body {
 * { scrollbar-width: none; }
 ::-webkit-scrollbar { display: none; }
 
+/* ------------------------------------------------------------
+   Inline-SVG icons (the cybersec/industrial line-glyph set that
+   replaced the former emoji). Each glyph scales with the font
+   size of its context (1em box) and is stroked with the current
+   text colour, so it inherits the blue accent — or a contextual
+   tint such as the amber threat colour — from its parent. See the
+   #ic-* sprite in templates/index.html and icon() in format.js.
+   ------------------------------------------------------------ */
+.ic {
+    width: 1em;
+    height: 1em;
+    flex: none;
+    display: inline-block;
+    vertical-align: -0.14em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+    overflow: visible;
+}
+
 body {
     background: var(--bg-primary);
     color: var(--text);

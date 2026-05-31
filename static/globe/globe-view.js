@@ -96,6 +96,29 @@ export function setupGlobe(app) {
         return d._badgeEl;
     }
 
+    function angularDistanceDeg(aLat, aLng, bLat, bLng) {
+        const toRad = deg => deg * Math.PI / 180;
+        const lat1 = toRad(aLat), lat2 = toRad(bLat);
+        const dLat = toRad(bLat - aLat);
+        const dLng = toRad(bLng - aLng);
+        const h = Math.sin(dLat / 2) ** 2 +
+                  Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+        return 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h))) * 180 / Math.PI;
+    }
+
+    function isFacingCamera(d) {
+        if (app.showLabelsThroughGlobe) return true;
+        const pov = globe.pointOfView();
+        if (!isValidCoord(pov.lat, pov.lng)) return true;
+        const lat = d._dispLat ?? d.lat;
+        const lng = d._dispLng ?? d.lng;
+        if (!isValidCoord(lat, lng)) return false;
+        const dist = angularDistanceDeg(pov.lat, pov.lng, lat, lng);
+        const cameraDistance = 1 + Math.max(0.01, pov.altitude || 2.5);
+        const horizon = Math.acos(Math.min(1, 1 / cameraDistance)) * 180 / Math.PI;
+        return dist <= horizon + 2;
+    }
+
     // ── Age-based dot fade ────────────────────────────────
     // The longer no fresh packet has arrived, the more transparent the dot is
     // drawn, so a point gently dims over its lifetime until it expires and is
@@ -278,11 +301,13 @@ export function setupGlobe(app) {
     resizeObserver.observe(globeContainer);
 
     // ── Globe display toggles ─────────────────────────────
-    const showLabelsButton  = document.getElementById('showLabels');
-    const showArcsButton    = document.getElementById('showArcs');
-    const showBordersButton = document.getElementById('showBorders');
+    const showLabelsButton             = document.getElementById('showLabels');
+    const showLabelsThroughGlobeButton = document.getElementById('showLabelsThroughGlobe');
+    const showArcsButton               = document.getElementById('showArcs');
+    const showBordersButton            = document.getElementById('showBorders');
     app.syncGlobeDisplayToggles = () => {
         showLabelsButton?.classList.toggle('active', app.showLabels);
+        showLabelsThroughGlobeButton?.classList.toggle('active', app.showLabelsThroughGlobe);
         showArcsButton?.classList.toggle('active', app.showArcs);
         showBordersButton?.classList.toggle('active', app.showBorders);
     };
@@ -291,6 +316,13 @@ export function setupGlobe(app) {
     showLabelsButton?.addEventListener('click', () => {
         app.showLabels = !app.showLabels;
         localStorage.setItem('showLabels', JSON.stringify(app.showLabels));
+        app.syncGlobeDisplayToggles();
+        app.updateGlobeData();
+    });
+
+    showLabelsThroughGlobeButton?.addEventListener('click', () => {
+        app.showLabelsThroughGlobe = !app.showLabelsThroughGlobe;
+        localStorage.setItem('showLabelsThroughGlobe', JSON.stringify(app.showLabelsThroughGlobe));
         app.syncGlobeDisplayToggles();
         app.updateGlobeData();
     });
@@ -511,7 +543,7 @@ export function setupGlobe(app) {
         // Keep labels tied to visible clusters, not to active arcs/rays. Packet
         // counts are intentionally not shown here; they created a second number
         // on individual points while the cluster count was already present.
-        const badges = app.showLabels ? render.filter(d => d.isCluster) : [];
+        const badges = app.showLabels ? render.filter(d => d.isCluster && isFacingCamera(d)) : [];
         const badgeSig = badges.map(badgeKey).join('\n');
         if (badgeSig !== app._badgeRenderSig) {
             app._badgeRenderSig = badgeSig;

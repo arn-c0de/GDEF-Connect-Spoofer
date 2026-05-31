@@ -6,7 +6,7 @@
 // relocated here so the whole app config lives on one modern surface.
 
 import { loadTrustedOrgs } from './classify.js';
-import { showToast } from './format.js';
+import { showToast, icon } from './format.js';
 import { STAT_WIDGETS } from './stats.js';
 
 export function setupOverlay(app) {
@@ -75,10 +75,10 @@ export function setupOverlay(app) {
             '<div class="ov-panel">' +
               '<nav class="ov-nav">' +
                 '<div class="ov-brand">GDEF<span>-L1NK</span></div>' +
-                '<button class="ov-nav-item active" data-page="stats"><span class="ov-ico">📊</span>Statistics</button>' +
-                '<button class="ov-nav-item" data-page="conn"><span class="ov-ico">🔌</span>Connections</button>' +
-                '<button class="ov-nav-item" data-page="devices"><span class="ov-ico">🖥️</span>Devices</button>' +
-                '<button class="ov-nav-item" data-page="settings"><span class="ov-ico">⚙️</span>Settings</button>' +
+                '<button class="ov-nav-item active" data-page="stats"><span class="ov-ico">' + icon('stats') + '</span>Statistics</button>' +
+                '<button class="ov-nav-item" data-page="conn"><span class="ov-ico">' + icon('conn') + '</span>Connections</button>' +
+                '<button class="ov-nav-item" data-page="devices"><span class="ov-ico">' + icon('monitor') + '</span>Devices</button>' +
+                '<button class="ov-nav-item" data-page="settings"><span class="ov-ico">' + icon('gear') + '</span>Settings</button>' +
                 '<div class="ov-nav-spacer"></div>' +
                 '<a class="ov-nav-item ov-logout" id="ovLogout"><span class="ov-ico">↩</span>Logout</a>' +
               '</nav>' +
@@ -88,13 +88,13 @@ export function setupOverlay(app) {
                   '<div class="ov-head-tools">' +
                     '<label class="ov-scope" id="ovScope">Device&nbsp;' +
                       '<select id="ovDeviceSel" class="stat-device-sel"></select></label>' +
-                    '<button id="ovClose" class="ov-close" title="Close (Esc)">✕</button>' +
+                    '<button id="ovClose" class="ov-close" title="Close (Esc)">' + icon('close') + '</button>' +
                   '</div>' +
                 '</header>' +
                 '<div class="ov-scroll">' +
                   '<div class="ov-page active" data-page="stats">' +
                     '<div class="stat-head"><h4>At a glance</h4>' +
-                      '<button id="statCfgBtn" class="device-btn" title="Choose widgets">⚙ Widgets</button></div>' +
+                      '<button id="statCfgBtn" class="device-btn" title="Choose widgets">' + icon('widgets') + ' Widgets</button></div>' +
                     '<div id="statCfg" class="stat-cfg" style="display:none"></div>' +
                     '<div id="modStatGrid" class="stat-grid"></div>' +
                     '<div id="ovStatsCharts"></div>' +

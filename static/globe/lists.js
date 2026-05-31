@@ -8,7 +8,7 @@ import { isValidCoord, isLocalNetwork } from './net.js';
 import { getCircleColor } from './classify.js';
 import {
     PORT_SERVICES, timeAgo, formatNum, truncate,
-    makeThreatBadge, showToast, escapeHTML,
+    makeThreatBadge, showToast, escapeHTML, icon,
 } from './format.js';
 
 export function setupLists(app) {
@@ -475,7 +475,7 @@ export function setupLists(app) {
         const closeBtn = document.createElement('button');
         closeBtn.id    = 'closeDataList';
         closeBtn.title = 'Close';
-        closeBtn.textContent = '✕';
+        closeBtn.innerHTML = icon('close');
         closeBtn.addEventListener('click', () => {
             dataList.style.display = 'none';
             if (onClose) onClose();

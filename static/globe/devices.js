@@ -5,7 +5,7 @@
 // adding a new remote sensor. Built dynamically so it tracks the live device
 // list pushed by the hub.
 
-import { showToast } from './format.js';
+import { showToast, icon } from './format.js';
 
 export function setupDevices(app) {
     const LOCAL_ID = app.LOCAL_ID;
@@ -105,7 +105,7 @@ export function setupDevices(app) {
             row.append(ss);
 
             const ren = document.createElement('button');
-            ren.className = 'device-btn'; ren.textContent = '✎'; ren.title = 'Rename';
+            ren.className = 'device-btn'; ren.innerHTML = icon('edit'); ren.title = 'Rename';
             ren.addEventListener('click', async () => {
                 const nn = (window.prompt('Rename device:', app.deviceName(id)) || '').trim();
                 if (!nn) return;
@@ -125,7 +125,7 @@ export function setupDevices(app) {
                     else showToast('Could not rotate key', 'high');
                 });
                 const del = document.createElement('button');
-                del.className = 'device-btn'; del.textContent = '🗑'; del.title = 'Delete';
+                del.className = 'device-btn'; del.innerHTML = icon('trash'); del.title = 'Delete';
                 del.addEventListener('click', async () => {
                     if (!window.confirm(`Delete device "${app.deviceName(id)}" and its data?`)) return;
                     const { ok } = await apiJson(`/api/devices/${id}`, { method: 'DELETE' });

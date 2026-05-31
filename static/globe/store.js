@@ -63,6 +63,7 @@ export function createApp(myIpCoords) {
         showArcs: JSON.parse(localStorage.getItem('showArcs') ?? 'true'),
         showBorders: JSON.parse(localStorage.getItem('showBorders') ?? 'true'),
         showLabels: JSON.parse(localStorage.getItem('showLabels') ?? 'true'),
+        showLabelsThroughGlobe: JSON.parse(localStorage.getItem('showLabelsThroughGlobe') ?? 'false'),
         countriesData: [],
 
         // ── Collapse state ────────────────────────────────────
