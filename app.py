@@ -1431,59 +1431,41 @@ def update_threat_list():
 # Start the thread
 threading.Thread(target=schedule_threat_list_updates, daemon=True).start()
 
-@socketio.on('set_local_network')
-def handle_set_local_network(data):
-    if not session.get('authenticated'):
-        return
-    if socket_rate_limited('set_local_network'):
-        logger.warning(f"Rate limit exceeded for set_local_network from SID {request.sid}")
-        return
-    try:
-        show_local = data.get('showLocalNetwork', True)
-        if not isinstance(show_local, bool):
-            logger.error(f"Invalid value for showLocalNetwork: {show_local}")
-            return
-        save_setting('show_local_network', show_local)
-        socketio.emit('settings_update', {'show_local_network': show_local})
-        logger.info(f"Local network {'shown' if show_local else 'hidden'}")
-    except Exception as e:
-        logger.error(f"Error in set_local_network: {e}")
+def register_bool_setting(event, payload_key, setting_key, default, log_on, log_off, on_change=None):
+    """Register a Socket.IO handler for a boolean UI setting.
 
-@socketio.on('set_external_network')
-def handle_set_external_network(data):
-    if not session.get('authenticated'):
-        return
-    if socket_rate_limited('set_external_network'):
-        logger.warning(f"Rate limit exceeded for set_external_network from SID {request.sid}")
-        return
-    try:
-        show_external = data.get('showExternalNetwork', True)
-        if not isinstance(show_external, bool):
-            logger.error(f"Invalid value for showExternalNetwork: {show_external}")
+    All these handlers share the same shape: auth + rate-limit gate, validate
+    the bool payload, optionally update a shared-state Value (on_change), persist
+    it, broadcast a settings_update, and log. log_on/log_off are the full
+    messages for the enabled/disabled cases.
+    """
+    @socketio.on(event)
+    def handler(data):
+        if not session.get('authenticated'):
             return
-        save_setting('show_external_network', show_external)
-        socketio.emit('settings_update', {'show_external_network': show_external})
-        logger.info(f"External network {'shown' if show_external else 'hidden'}")
-    except Exception as e:
-        logger.error(f"Error in set_external_network: {e}")
+        if socket_rate_limited(event):
+            logger.warning(f"Rate limit exceeded for {event} from SID {request.sid}")
+            return
+        try:
+            value = data.get(payload_key, default)
+            if not isinstance(value, bool):
+                logger.error(f"Invalid value for {payload_key}: {value}")
+                return
+            if on_change is not None:
+                on_change(value)
+            save_setting(setting_key, value)
+            socketio.emit('settings_update', {setting_key: value})
+            logger.info(log_on if value else log_off)
+        except Exception as e:
+            logger.error(f"Error in {event}: {e}")
+    return handler
 
-@socketio.on('set_tcp_only')
-def handle_set_tcp_only(data):
-    if not session.get('authenticated'):
-        return
-    if socket_rate_limited('set_tcp_only'):
-        logger.warning(f"Rate limit exceeded for set_tcp_only from SID {request.sid}")
-        return
-    try:
-        show_tcp = data.get('showTCPOnly', False)
-        if not isinstance(show_tcp, bool):
-            logger.error(f"Invalid value for showTCPOnly: {show_tcp}")
-            return
-        save_setting('show_tcp_only', show_tcp)
-        socketio.emit('settings_update', {'show_tcp_only': show_tcp})
-        logger.info(f"TCP-only connections {'enabled' if show_tcp else 'disabled'}")
-    except Exception as e:
-        logger.error(f"Error in set_tcp_only: {e}")
+register_bool_setting('set_local_network', 'showLocalNetwork', 'show_local_network', True,
+                      "Local network shown", "Local network hidden")
+register_bool_setting('set_external_network', 'showExternalNetwork', 'show_external_network', True,
+                      "External network shown", "External network hidden")
+register_bool_setting('set_tcp_only', 'showTCPOnly', 'show_tcp_only', False,
+                      "TCP-only connections enabled", "TCP-only connections disabled")
 
 def save_setting(key, value):
     with locked(db_lock):
@@ -3567,43 +3549,14 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Error sending initial data: {e}")
 
-    @socketio.on('set_internal_search')
-    def handle_set_internal_search(data):
-        if not session.get('authenticated'):
-            return
-        if socket_rate_limited('set_internal_search'):
-            logger.warning(f"Rate limit exceeded for set_internal_search from SID {request.sid}")
-            return
-        try:
-            is_active = data.get('isInternalSearchActive', False)
-            if not isinstance(is_active, bool):
-                logger.error(f"Invalid value for isInternalSearchActive: {is_active}")
-                return
-            is_internal_search_active.value = is_active
-            save_setting('is_internal_search_active', is_active)
-            socketio.emit('settings_update', {'is_internal_search_active': is_active})
-            logger.info(f"Internal search {'enabled' if is_active else 'disabled'}")
-        except Exception as e:
-            logger.error(f"Error in set_internal_search: {e}")
-
-    @socketio.on('set_udp_filter')
-    def handle_set_udp_filter(data):
-        if not session.get('authenticated'):
-            return
-        if socket_rate_limited('set_udp_filter'):
-            logger.warning(f"Rate limit exceeded for set_udp_filter from SID {request.sid}")
-            return
-        try:
-            show_all_udp = data.get('showAllUDPPackets', False)
-            if not isinstance(show_all_udp, bool):
-                logger.error(f"Invalid value for showAllUDPPackets: {show_all_udp}")
-                return
-            showAllUDPPackets.value = show_all_udp
-            save_setting('show_all_udp_packets', show_all_udp)
-            socketio.emit('settings_update', {'show_all_udp_packets': show_all_udp})
-            logger.info(f"UDP filter {'all packets' if show_all_udp else 'filtered'}")
-        except Exception as e:
-            logger.error(f"Error in set_udp_filter: {e}")
+    # These two also flip a shared-state multiprocessing Value (read by the
+    # capture workers) before persisting, hence the on_change callbacks.
+    register_bool_setting('set_internal_search', 'isInternalSearchActive', 'is_internal_search_active', False,
+                          "Internal search enabled", "Internal search disabled",
+                          on_change=lambda v: setattr(is_internal_search_active, 'value', v))
+    register_bool_setting('set_udp_filter', 'showAllUDPPackets', 'show_all_udp_packets', False,
+                          "UDP filter all packets", "UDP filter filtered",
+                          on_change=lambda v: setattr(showAllUDPPackets, 'value', v))
 
     @socketio.on('pin_ip')
     def handle_pin_ip(data):
