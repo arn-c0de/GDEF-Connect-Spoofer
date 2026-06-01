@@ -101,8 +101,9 @@
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
     z-index: 1100;
     padding: 8px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    /* No backdrop-filter: the panel background is 97% opaque, so a blur behind it
+       is imperceptible — but it would force the GPU to re-sample the moving globe
+       behind the panel every frame while it's open (animation jank for nothing). */
 }
 .threat-panel.hidden { display: none; }
 .threat-panel ul { list-style: none; margin: 0; padding: 0; }

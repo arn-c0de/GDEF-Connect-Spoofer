@@ -94,34 +94,47 @@ export function setupGlobe(app) {
 
     function renderBadgeOverlay(badges = app._badgeData || []) {
         if (!app.badgeLayer) return;
-        document.querySelectorAll('.globe-count-badge').forEach(el => {
-            if (!app.badgeLayer.contains(el)) el.remove();
-        });
-        app.badgeLayer.replaceChildren();
-        if (!app.showLabels || !badges.length || typeof globe.getCoords !== 'function' ||
-            typeof globe.camera !== 'function' || typeof THREE === 'undefined') return;
+        const layer = app.badgeLayer;
+        // Elements attached on the previous pass. This runs once per rotation
+        // frame, so we update transforms in place and only attach/detach the
+        // badges that actually appeared/disappeared this frame. The old code
+        // queried the whole document, tore down the entire layer (replaceChildren)
+        // and re-appended every badge each frame — a forced reflow + repaint on
+        // every frame, which was the main globe animation-jank source.
+        const prev = app._badgeEls || (app._badgeEls = new Set());
+        const next = new Set();
 
-        const cam = globe.camera();
-        const w = app.globeContainer.clientWidth || 1;
-        const h = app.globeContainer.clientHeight || 1;
-        for (const d of badges) {
-            const lat = d._dispLat ?? d.lat;
-            const lng = d._dispLng ?? d.lng;
-            if (!isValidCoord(lat, lng) || (!app.showLabelsThroughGlobe && !isFacingCamera(d))) continue;
-            const pos = globe.getCoords(lat, lng, getBadgeAltitude(d));
-            const v = new THREE.Vector3(
-                Array.isArray(pos) ? pos[0] : pos.x,
-                Array.isArray(pos) ? pos[1] : pos.y,
-                Array.isArray(pos) ? pos[2] : pos.z
-            ).project(cam);
-            if (v.z < -1 || v.z > 1) continue;
-            const x = (v.x * 0.5 + 0.5) * w;
-            const y = (-v.y * 0.5 + 0.5) * h;
-            if (x < -30 || x > w + 30 || y < -30 || y > h + 30) continue;
-            const el = badgeElement(d);
-            el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -50%)`;
-            app.badgeLayer.appendChild(el);
+        if (app.showLabels && badges.length && typeof globe.getCoords === 'function' &&
+            typeof globe.camera === 'function' && typeof THREE !== 'undefined') {
+            const cam = globe.camera();
+            const w = app.globeContainer.clientWidth || 1;
+            const h = app.globeContainer.clientHeight || 1;
+            // One reused vector instead of allocating per badge per frame (GC).
+            const v = app._badgeVec || (app._badgeVec = new THREE.Vector3());
+            for (const d of badges) {
+                const lat = d._dispLat ?? d.lat;
+                const lng = d._dispLng ?? d.lng;
+                if (!isValidCoord(lat, lng) || (!app.showLabelsThroughGlobe && !isFacingCamera(d))) continue;
+                const pos = globe.getCoords(lat, lng, getBadgeAltitude(d));
+                v.set(
+                    Array.isArray(pos) ? pos[0] : pos.x,
+                    Array.isArray(pos) ? pos[1] : pos.y,
+                    Array.isArray(pos) ? pos[2] : pos.z
+                ).project(cam);
+                if (v.z < -1 || v.z > 1) continue;
+                const x = (v.x * 0.5 + 0.5) * w;
+                const y = (-v.y * 0.5 + 0.5) * h;
+                if (x < -30 || x > w + 30 || y < -30 || y > h + 30) continue;
+                const el = badgeElement(d);
+                el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -50%)`;
+                if (!prev.has(el)) layer.appendChild(el);
+                next.add(el);
+            }
         }
+        // Detach only what's gone (rotated off-screen, removed, or labels off) —
+        // proportional to what changed, not the whole layer.
+        for (const el of prev) if (!next.has(el)) el.remove();
+        app._badgeEls = next;
     }
 
     function angularDistanceDeg(aLat, aLng, bLat, bLng) {
@@ -424,7 +437,12 @@ export function setupGlobe(app) {
         if (!_rotLast) _rotLast = ts;
         const dt = Math.min(0.1, (ts - _rotLast) / 1000);   // clamp after a tab-away
         _rotLast = ts;
-        if (!_pointerDown) {
+        // Skip the work while the full-screen overlay covers the globe: the scene
+        // is invisible, so rotating the camera and reprojecting badges every frame
+        // is wasted — and it keeps the globe repainting behind the overlay's
+        // backdrop blur. The rAF stays alive, so rotation resumes the instant the
+        // overlay closes.
+        if (!_pointerDown && !app.statsOverlayOpen) {
             const pov = globe.pointOfView();
             let lng = pov.lng + app.autoRotateSpeed * dt;
             if (lng > 180) lng -= 360; else if (lng < -180) lng += 360;
