@@ -4,6 +4,7 @@ import time
 from scapy.all import sniff, get_if_list
 from capture_core import (
     is_valid_mac, is_private_ip, estimate_os, build_bpf_filter, classify_packet,
+    classify_direction,
 )
 import device_crypto
 from capture_sources import FritzDumpSource
@@ -2827,16 +2828,7 @@ def external_packet_callback(packet, my_geo_data, my_local_ip, my_public_ip, que
     protocol = parsed["protocol"]
     src_port = parsed["src_port"]
     dst_port = parsed["dst_port"]
-    direction = "other"
-    if ip_dst in (my_local_ip, my_public_ip):
-        direction = "incoming"
-    elif ip_src in (my_local_ip, my_public_ip):
-        direction = "outgoing"
-    elif protocol == "TCP":
-        if src_port in [80, 443]:
-            direction = "incoming"
-        elif dst_port in [80, 443]:
-            direction = "outgoing"
+    direction = classify_direction(ip_src, ip_dst, protocol, src_port, dst_port, my_local_ip, my_public_ip)
 
     hostname_src = mdns_listener.devices.get(ip_src, ip_src if is_private_ip(ip_src) else "Unknown")
     hostname_dst = mdns_listener.devices.get(ip_dst, ip_dst if is_private_ip(ip_dst) else "Unknown")

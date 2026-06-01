@@ -44,6 +44,26 @@ def is_private_ip(ip):
         return False
 
 
+def classify_direction(ip_src, ip_dst, protocol, src_port, dst_port, my_local_ip, my_public_ip):
+    """Classify a packet's direction relative to this host.
+
+    Incoming if we are the destination, outgoing if we are the source; for TCP
+    between two other hosts, the well-known web ports (80/443) are used as a
+    heuristic (server side = incoming). Everything else is ``other``. Shared by
+    the hub's live capture and the standalone sensor so both classify the same
+    traffic identically."""
+    if ip_dst in (my_local_ip, my_public_ip):
+        return "incoming"
+    if ip_src in (my_local_ip, my_public_ip):
+        return "outgoing"
+    if protocol == "TCP":
+        if src_port in (80, 443):
+            return "incoming"
+        if dst_port in (80, 443):
+            return "outgoing"
+    return "other"
+
+
 def estimate_os(ttl):
     """Coarse OS guess from an observed IP TTL."""
     if ttl is None:

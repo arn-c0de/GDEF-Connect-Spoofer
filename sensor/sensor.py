@@ -105,20 +105,6 @@ MY_LOCAL_IP = None
 MY_PUBLIC_IP = None
 
 
-def _direction(ip_src, ip_dst, protocol, src_port, dst_port):
-    """Classify a packet relative to this host (mirrors the hub's logic)."""
-    if ip_dst in (MY_LOCAL_IP, MY_PUBLIC_IP):
-        return "incoming"
-    if ip_src in (MY_LOCAL_IP, MY_PUBLIC_IP):
-        return "outgoing"
-    if protocol == "TCP":
-        if src_port in (80, 443):
-            return "incoming"
-        if dst_port in (80, 443):
-            return "outgoing"
-    return "other"
-
-
 def _record(ip, direction, parsed, mac):
     """Fold one packet into the coalescing buffer under `ip`."""
     global _dropped
@@ -150,7 +136,9 @@ def on_packet(packet):
     if parsed is None or parsed["udp_filtered"]:
         return
     ip_src, ip_dst = parsed["ip_src"], parsed["ip_dst"]
-    direction = _direction(ip_src, ip_dst, parsed["protocol"], parsed["src_port"], parsed["dst_port"])
+    direction = capture_core.classify_direction(
+        ip_src, ip_dst, parsed["protocol"], parsed["src_port"], parsed["dst_port"],
+        MY_LOCAL_IP, MY_PUBLIC_IP)
     # Report the remote endpoint (the one that isn't us). For "other" traffic
     # neither end is us, so report both so the hub still sees the conversation.
     if direction == "incoming":
