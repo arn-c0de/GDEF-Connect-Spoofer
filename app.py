@@ -913,17 +913,23 @@ def api_connections():
             protocol = {(r[0] or 'Other'): r[1] for r in c.fetchall()}
             c.execute(f"SELECT d.threat_level, COUNT(*) FROM ip_data d{where} GROUP BY d.threat_level", params)
             threat = {(r[0] or 'No Threat'): r[1] for r in c.fetchall()}
-            # Count DISTINCT IPs per country (not rows): "how many IPs are in
-            # this country", deduped across capture devices.
-            c.execute(f"SELECT d.country, COUNT(DISTINCT d.ip) AS n FROM ip_data d{country_where} "
-                      f"GROUP BY d.country ORDER BY n DESC LIMIT 15", params)
-            countries = [[r[0], r[1]] for r in c.fetchall()]
             # Country facet for the dropdown: every country (filter-independent)
             # with its distinct-IP count, so each option can show how many IPs it
             # holds. Ordered by count so the busiest countries surface first.
             c.execute(f"SELECT d.country, COUNT(DISTINCT d.ip) AS n FROM ip_data d{facet_where} "
                       f"GROUP BY d.country ORDER BY n DESC LIMIT 200", base_params)
             facet_countries = [[r[0], r[1]] for r in c.fetchall()]
+            # Top-15 DISTINCT-IP-per-country summary. When no country/threat/protocol
+            # filter is active the summary scope equals the facet scope, so the
+            # already-ordered facet's first 15 ARE the summary — skip a second
+            # identical GROUP BY scan (the common default-history case). Only when a
+            # filter narrows the scope do we run the dedicated query.
+            if country_where == facet_where and params == base_params:
+                countries = facet_countries[:15]
+            else:
+                c.execute(f"SELECT d.country, COUNT(DISTINCT d.ip) AS n FROM ip_data d{country_where} "
+                          f"GROUP BY d.country ORDER BY n DESC LIMIT 15", params)
+                countries = [[r[0], r[1]] for r in c.fetchall()]
             db_size = _db_size_bytes(c)
         return jsonify({
             "rows": rows,
@@ -1892,10 +1898,17 @@ def update_ip(ip, direction, protocol, src_port, dst_port, my_geo_data, my_local
     
     with cache_lock:
         if len(known_ips) >= MAX_KNOWN_IPS and ip not in known_ips:
-            # Simple eviction: clear 10% of entries if limit reached
-            to_remove = list(known_ips)[:int(MAX_KNOWN_IPS * 0.1)]
-            for old_ip in to_remove:
-                known_ips.discard(old_ip)
+            # Drop ~10% to make room. known_ips is only a memory-bounded dedup set
+            # (added to, never read for a decision), so WHICH entries go doesn't
+            # matter — pop() removes arbitrary elements in O(1) without
+            # materialising the whole set into a list first, which list(...)[:k]
+            # did on every new IP once the cap was hit (a steady state under an
+            # IP-churn flood).
+            for _ in range(int(MAX_KNOWN_IPS * 0.1)):
+                try:
+                    known_ips.pop()
+                except KeyError:
+                    break
         known_ips.add(ip)
         
     # Non-blocking: never wait on an external geo API in the packet loop. Cached
