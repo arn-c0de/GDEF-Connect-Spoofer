@@ -503,6 +503,7 @@ export function setupGlobe(app) {
     // the globe automatically — only the HTML count-badge overlay needs a manual
     // repaint per frame to track the motion.
     const autoRotateButton  = document.getElementById('globeAutoRotate');
+    const spaceRotateButton  = document.getElementById('globeSpaceRotate');
     const rotateSpeedInput   = document.getElementById('globeRotateSpeed');
     const rotateSpeedVal     = document.getElementById('globeRotateSpeedVal');
     const rotateSpeedRow     = document.getElementById('globeRotateSpeedRow');
@@ -541,16 +542,44 @@ export function setupGlobe(app) {
 
     app.syncGlobeRotationControls = () => {
         autoRotateButton?.classList.toggle('active', app.autoRotate);
+        spaceRotateButton?.classList.toggle('active', app.spaceRotate);
         if (rotateSpeedInput) rotateSpeedInput.value = app.autoRotateSpeed;
         if (rotateSpeedVal)   rotateSpeedVal.textContent = `${app.autoRotateSpeed}°/s`;
         if (rotateSpeedRow)   rotateSpeedRow.style.display = app.autoRotate ? '' : 'none';
     };
 
-    autoRotateButton?.addEventListener('click', () => {
-        app.autoRotate = !app.autoRotate;
+    // Single entry point for flipping rotation, shared by the panel button and
+    // the spacebar shortcut, so both stay in sync and persist identically.
+    function setAutoRotate(on) {
+        app.autoRotate = on;
         localStorage.setItem('autoRotate', JSON.stringify(app.autoRotate));
         app.syncGlobeRotationControls();
         app.applyAutoRotate();
+    }
+
+    autoRotateButton?.addEventListener('click', () => setAutoRotate(!app.autoRotate));
+
+    // Opt-in spacebar control. The "Space" toggle arms the shortcut; once armed,
+    // tapping Space anywhere on the page flips auto-rotation — except while
+    // typing in a field, so it never eats real input.
+    spaceRotateButton?.addEventListener('click', () => {
+        app.spaceRotate = !app.spaceRotate;
+        localStorage.setItem('spaceRotate', JSON.stringify(app.spaceRotate));
+        app.syncGlobeRotationControls();
+        showToast(app.spaceRotate
+            ? 'Spacebar now toggles globe rotation' : 'Spacebar rotation shortcut off', 'low');
+    });
+
+    window.addEventListener('keydown', e => {
+        if (!app.spaceRotate) return;
+        if (e.code !== 'Space' && e.key !== ' ') return;
+        const t = e.target;
+        const tag = t && t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+            (t && t.isContentEditable)) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        e.preventDefault();   // stop the default page scroll on Space
+        setAutoRotate(!app.autoRotate);
     });
 
     rotateSpeedInput?.addEventListener('input', () => {

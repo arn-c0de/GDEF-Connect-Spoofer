@@ -74,6 +74,10 @@ export function createApp(myIpCoords) {
             const v = Number(localStorage.getItem('autoRotateSpeed'));
             return Number.isFinite(v) && v > 0 ? Math.min(60, Math.max(1, v)) : 8;
         })(),
+        // Opt-in spacebar shortcut: when on, pressing Space toggles auto-rotation
+        // on/off. Off by default so Space never hijacks typing or page scroll
+        // until the operator enables it from the Rotation panel.
+        spaceRotate: JSON.parse(localStorage.getItem('spaceRotate') ?? 'false'),
 
         // ── Globe data mode ───────────────────────────────────
         // 'live'    -> the real-time in-memory points (default);
