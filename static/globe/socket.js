@@ -17,6 +17,40 @@ export function setupSocket(app) {
     const connectionStatus = document.getElementById('connectionStatus');
     app.connectionStatus = connectionStatus;
 
+    // ── Live capture-pipeline health (top status bar) ─────
+    const capHealthEl = document.getElementById('captureHealth');
+    const capRate = document.getElementById('capRate');
+    const capProcessed = document.getElementById('capProcessed');
+    const capDropped = document.getElementById('capDropped');
+    const capQueue = document.getElementById('capQueue');
+    const capState = document.getElementById('capState');
+    const fmtNum = n => {
+        n = Number(n) || 0;
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+        return String(n);
+    };
+    const CAP_LABEL = { ok: 'OK', busy: 'BUSY', overload: 'OVERLOAD' };
+    function updateCaptureHealth(cap) {
+        if (!cap || !capHealthEl) return;
+        capRate.textContent = fmtNum(cap.rate);
+        capProcessed.textContent = fmtNum(cap.processed);
+        capDropped.textContent = fmtNum(cap.dropped);
+        // queue_depth is -1 where the platform can't report it; show "—" then.
+        capQueue.textContent = (cap.queue_depth != null && cap.queue_depth >= 0)
+            ? fmtNum(cap.queue_depth) : '—';
+        const level = cap.level || 'ok';
+        capHealthEl.classList.remove('cap-ok', 'cap-busy', 'cap-overload');
+        capHealthEl.classList.add('cap-' + level);
+        capHealthEl.classList.toggle('cap-has-drops', (Number(cap.dropped) || 0) > 0);
+        capState.textContent = CAP_LABEL[level] || 'OK';
+        capHealthEl.title = `Capture pipeline — ${cap.workers || '?'} worker(s)\n` +
+            `Throughput: ${cap.rate}/s processed\n` +
+            `Drops: ${cap.dropped} total (${cap.drop_rate}/s now)\n` +
+            `Backlog: ${cap.queue_depth >= 0 ? cap.queue_depth : 'n/a'} / ${cap.queue_capacity} queued`;
+    }
+    app.updateCaptureHealth = updateCaptureHealth;
+
     // ── Socket.IO ─────────────────────────────────────────
     let socketUrl;
     try {
@@ -65,6 +99,7 @@ export function setupSocket(app) {
     socket.on('network_stats', data => {
         app.lastStats = data || app.lastStats;
         app.renderStats();
+        updateCaptureHealth(data && data.capture);
     });
 
     // ── Device registry ───────────────────────────────────

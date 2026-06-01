@@ -143,3 +143,30 @@ SOCKET_RATE_WINDOW = float(os.environ.get('SOCKET_RATE_WINDOW', '1.0'))  # windo
 MAX_KNOWN_IPS = 10000
 MAX_CACHE_SIZE = 5000
 IP_UPDATE_INTERVAL = 1.0  # Min seconds between updates for the same IP
+
+# --- Packet-processing throughput -------------------------------------------
+# The capture path (live sniffer, forked internal scanner, FritzDump reader) all
+# feed ONE cross-process PacketQueue that worker threads drain into the DB write
+# buffer. Under a burst from a single high-traffic device the queue used to fill
+# faster than a single consumer could drain it, so packets — including the very
+# first packet to a brand-new external IP (e.g. a freshly connected VPN server) —
+# were dropped before they were ever registered, and no new data point appeared.
+#
+# PACKET_WORKERS: how many parallel threads drain the queue. They share the same
+# lock-guarded in-memory state (write buffer, tcp_connections, known_ips, enrich
+# queues), so adding threads is safe and overlaps the IPC wait of queue.get with
+# the per-packet work. Defaults to half the cores, clamped to [2, 8].
+def _default_packet_workers():
+    cores = os.cpu_count() or 4
+    return max(2, min(8, cores // 2))
+
+PACKET_WORKERS = max(1, int(os.environ.get('PACKET_WORKERS', str(_default_packet_workers()))))
+# Per-lane capacity of the PacketQueue (high/low priority). Larger absorbs bigger
+# bursts before dropping; each slot is a small dict, so 20000 is cheap.
+PACKET_QUEUE_MAX = max(1000, int(os.environ.get('PACKET_QUEUE_MAX', '20000')))
+# Parallel geo-enrichment workers. A new external IP is shown at a placeholder
+# location immediately, then a worker resolves its real coordinates via a network
+# lookup. With one worker a burst of new IPs resolves strictly serially (each
+# lookup can take up to API_TIMEOUT), so points crawl to their real spot; a small
+# pool lets independent lookups overlap. Defaults to 4.
+GEO_WORKERS = max(1, int(os.environ.get('GEO_WORKERS', '4')))

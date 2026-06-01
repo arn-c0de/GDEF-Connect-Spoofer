@@ -67,3 +67,58 @@
     flex-shrink: 0;
     transition: background 0.3s;
 }
+
+/* --- Live capture-pipeline health strip ---------------------------------- */
+.cap-health {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 2px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: rgba(40, 40, 40, 0.9);
+    font-size: 10px;
+    line-height: 1.3;
+    white-space: nowrap;
+    transition: border-color 0.3s, background 0.3s;
+}
+
+.cap-health .cap-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: #3ad17a;
+    box-shadow: 0 0 6px currentColor;
+    color: #3ad17a;
+}
+
+.cap-metric { display: inline-flex; align-items: baseline; gap: 3px; }
+.cap-metric .cap-val { font-weight: bold; color: var(--text); font-variant-numeric: tabular-nums; }
+.cap-metric .cap-unit { color: #888; font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; }
+
+.cap-state {
+    font-weight: bold;
+    font-size: 9px;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    background: rgba(58, 209, 122, 0.18);
+    color: #3ad17a;
+}
+
+/* drops are always worth flagging, even at "ok" throughput */
+.cap-health.cap-has-drops .cap-drops .cap-val { color: #ff7043; }
+
+/* state tints */
+.cap-health.cap-ok       { border-color: rgba(58, 209, 122, 0.35); }
+.cap-health.cap-busy     { border-color: rgba(255, 193, 7, 0.45); background: rgba(60, 50, 20, 0.9); }
+.cap-health.cap-busy     .cap-dot   { background: #ffc107; color: #ffc107; }
+.cap-health.cap-busy     .cap-state { background: rgba(255, 193, 7, 0.18); color: #ffc107; }
+.cap-health.cap-overload { border-color: rgba(244, 67, 54, 0.6); background: rgba(70, 25, 25, 0.92); }
+.cap-health.cap-overload .cap-dot   { background: #f44336; color: #f44336; animation: capPulse 1s ease-in-out infinite; }
+.cap-health.cap-overload .cap-state { background: rgba(244, 67, 54, 0.2); color: #ff6f60; }
+
+@keyframes capPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

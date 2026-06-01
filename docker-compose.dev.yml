@@ -22,5 +22,8 @@ services:
       - ./netutils.py:/app/netutils.py
       - ./validators.py:/app/validators.py
       - ./packet_pipeline.py:/app/packet_pipeline.py
+      - ./capture_core.py:/app/capture_core.py
+      - ./capture_sources.py:/app/capture_sources.py
+      - ./device_crypto.py:/app/device_crypto.py
       - ./static:/app/static
       - ./templates:/app/templates

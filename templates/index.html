@@ -173,6 +173,18 @@
             </div>
 
             <div id="connectionStatus">Connecting…</div>
+
+            <!-- Live capture-pipeline health: throughput, drops, backlog and an
+                 overload indicator. Populated from network_stats.capture by
+                 globe/capture-health.js. -->
+            <div id="captureHealth" class="cap-health cap-ok" title="Live packet-capture pipeline health">
+                <span class="cap-dot"></span>
+                <span class="cap-metric"><span class="cap-val" id="capRate">0</span><span class="cap-unit">pkt/s</span></span>
+                <span class="cap-metric"><span class="cap-val" id="capProcessed">0</span><span class="cap-unit">processed</span></span>
+                <span class="cap-metric cap-drops"><span class="cap-val" id="capDropped">0</span><span class="cap-unit">dropped</span></span>
+                <span class="cap-metric"><span class="cap-val" id="capQueue">0</span><span class="cap-unit">queued</span></span>
+                <span class="cap-state" id="capState">OK</span>
+            </div>
         </div>
 
         <!-- Globe -->

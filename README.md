@@ -410,6 +410,30 @@ Generated runtime files live in `database/` and are ignored by Git where appropr
 
 Application state (live IPs, pinned IPs, settings, MAC cache, threat list) is stored in **PostgreSQL** — see [Database (PostgreSQL)](#database-postgresql).
 
+### Performance / throughput tuning
+
+The capture path (live sniffer, the forked internal scanner, and the FritzDump reader) all feed **one** cross-process priority queue, which a pool of worker threads drains into the database. If a single high-traffic device bursts faster than the workers can keep up, the queue fills and packets are **dropped** — and the dropped packet can be the very *first* one to a brand-new external IP (e.g. a freshly connected VPN server), so its point never appears on the globe. When that happens you'll see a throttled `PacketQueue full: N packet(s) dropped` warning in the log; raise the values below until it stops.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PACKET_WORKERS` | half the CPU cores, clamped to `[2, 8]` | Parallel worker threads draining the capture queue into the DB write buffer. Increase if packets are dropped under load. |
+| `PACKET_QUEUE_MAX` | `20000` | Per-lane capacity of the priority capture queue (high/low). Larger absorbs bigger bursts before dropping; each slot is a small dict, so it's cheap. |
+| `GEO_WORKERS` | `4` | Parallel geo-lookup workers. A new IP is shown at a placeholder location immediately, then a worker resolves its real coordinates; a small pool lets a burst of new IPs resolve concurrently instead of one slow lookup at a time. |
+| `IP_WRITE_FLUSH_INTERVAL` | `1.0` | Seconds between batched DB flushes of buffered IP updates. |
+| `IP_WRITE_BUFFER_MAX` | `20000` | Max distinct IPs buffered between flushes (a unique-IP flood beyond this is dropped and logged, never silently). |
+
+The two lanes are **fair-scheduled**: external traffic keeps priority, but the internal (LAN) lane is guaranteed a slice every few dequeues, so a sustained external flood (e.g. all traffic tunnelled to one VPN endpoint) can no longer starve a busy LAN device's packets. *Note:* LAN/private IPs are only drawn as their own nodes when **Show local network** is enabled in the overlay — otherwise only their external peers are shown.
+
+#### Capture-health status bar
+
+The top bar shows a live read-out of the capture pipeline, refreshed every 5 s, so you can see at a glance whether everything is being processed:
+
+- **pkt/s** — packets processed per second (throughput)
+- **processed** — total processed this session
+- **dropped** — packets dropped because the queue was full (turns red as soon as it is non-zero)
+- **queued** — current backlog waiting in the queue
+- **OK / BUSY / OVERLOAD** — an at-a-glance indicator; it goes **OVERLOAD** (pulsing red) while packets are actively being dropped or the queue is ≥ 90 % full. If you see this, raise `PACKET_WORKERS` / `PACKET_QUEUE_MAX`.
+
 ## Project Structure
 
 ```text
@@ -492,6 +516,23 @@ A DNS-level blocker (AdGuard Home / Pi-hole — e.g. HaGeZi's Ultimate Blocklist
 ### `Interface:`, `Adapter:` and `Speed:` are always empty in the top bar
 The dashboard template reads `backend_config.interface_name`, `.adapter_description` and `.speed`, but only the `network_interface` key is ever written to `database/backend_conf.json` (`scripts/select_interface.py`). These three fields therefore have no data source and render blank — unrelated to the geolocation issue above.
 - **Status**: Cosmetic. The capture interface itself still works (it is read from `network_interface` / the `NETWORK_INTERFACE` env var).
+
+### FritzDump: a Wi-Fi device (e.g. a phone) never shows up, while wired/other-band devices do
+A device that only ever connects over **2.4 GHz Wi-Fi** produces no data on the globe, even though it is actively online. Its row in the DB stays frozen (`last_seen` stops advancing) while LAN and 5 GHz devices update in real time.
+
+- **Cause**: FritzDump's `home` mode captures three FRITZ!Box interfaces — LAN (`1-lan`), Wi-Fi 5 GHz (`4-133`) and Wi-Fi 2.4 GHz. On some FRITZ!OS firmwares the *logical* 2.4 GHz AP interface (`4-135`, "AP2 (2.4 GHz)") **accepts the capture but streams zero packets** — its pcap stays at 24 bytes (just the global header). The actual 2.4 GHz client traffic appears on the **raw radio interface `1-ath0`** instead (delivered as Ethernet frames, which the reader already decodes). Capturing `4-135` therefore silently lost every 2.4 GHz-only device.
+- **Fix**: `home` mode now captures `1-ath0` for the 2.4 GHz band by default. If your box numbers its interfaces differently, list them with `./run.sh test` (inside `modules/FritzDump`) and override the whole set via the `FRITZ_HOME_IFACES` env var — a space-separated list of `name:iface` pairs:
+  ```bash
+  FRITZ_HOME_IFACES="lan:1-lan wifi_5ghz:4-133 wifi_24ghz:1-ath0"
+  ```
+- **Diagnosing it yourself**: the FritzDump status log now prints a per-interface parse breakdown, e.g.
+  `FritzDump status: 3 capture file(s), 135889 packet(s) parsed [lan_1-lan.pcap=78019, wifi_5ghz_4-133.pcap=52870, wifi_24ghz_1-ath0.pcap=...]`.
+  A capture file stuck at `0` (or absent from the list) is being silently dropped by the box — try a different interface ID for that band. Quick probe of a single interface:
+  ```bash
+  # inside the app container, from modules/FritzDump:
+  timeout 10 python fritzdump.py --iface 1-ath0 --to dumps/probe.pcap; ls -l dumps/probe.pcap
+  ```
+  A file larger than 24 bytes means that interface actually carries traffic.
 
 ## License
 

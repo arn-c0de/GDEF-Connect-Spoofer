@@ -158,6 +158,8 @@ class FritzDumpSource:
     def __init__(self, dump_dir):
         self.dump_dir = dump_dir
         self.readers = {}        # path -> PcapTailReader
+        self._rr = 0             # round-robin start offset for fair file ordering
+        self.parsed_by_file = {}  # path -> cumulative packets parsed (diagnostics)
 
     def _discover(self):
         files = []
@@ -172,25 +174,42 @@ class FritzDumpSource:
 
     def poll(self, byte_budget=8 * 1024 * 1024, max_packets=5000):
         """Discover capture files and return all packets newly appended since the
-        last poll across all of them."""
+        last poll across ALL of them.
+
+        Every file is serviced on every poll, each with its OWN ``max_packets`` /
+        ``byte_budget`` cap. Earlier code stopped the whole poll once the combined
+        count hit ``max_packets``; because the file order was stable, a single busy
+        interface (typically the wired LAN) permanently starved the others — a
+        FRITZ!Box captures LAN + both Wi-Fi bands into separate pcaps, so a phone on
+        Wi-Fi could see its packets never read while its dump grew unbounded. Per-
+        file caps already bound memory (files x max_packets), so reading them all is
+        what keeps every interface flowing. A rotating start offset keeps the order
+        fair even if a future caller re-introduces a global cap."""
         out = []
-        present = self._discover()
+        present = sorted(self._discover())
+        if present:
+            # Rotate which file is serviced first each poll so no file is
+            # permanently first (defensive fairness; order is otherwise stable).
+            self._rr = (self._rr + 1) % len(present)
+            present = present[self._rr:] + present[:self._rr]
         for path in present:
             reader = self.readers.get(path)
             if reader is None:
                 reader = PcapTailReader(path)
                 self.readers[path] = reader
             try:
-                out.extend(reader.read_new(byte_budget=byte_budget,
-                                           max_packets=max_packets))
+                pkts = reader.read_new(byte_budget=byte_budget,
+                                       max_packets=max_packets)
             except Exception:
                 # A single unreadable file must never stop the others.
                 continue
-            if len(out) >= max_packets:
-                break
+            if pkts:
+                self.parsed_by_file[path] = self.parsed_by_file.get(path, 0) + len(pkts)
+                out.extend(pkts)
         # Forget readers whose files vanished, so the dict can't grow unbounded
         # across FritzDump's rotate-and-delete cycles.
         present_set = set(present)
         for gone in [p for p in self.readers if p not in present_set]:
             del self.readers[gone]
+            self.parsed_by_file.pop(gone, None)
         return out

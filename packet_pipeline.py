@@ -15,14 +15,56 @@ from capture_core import is_private_ip
 logger = logging.getLogger(__name__)
 
 
+# Minimum seconds between "queue full, packets dropped" warnings. Logging EVERY
+# dropped packet turns a traffic burst into a logging storm that itself slows the
+# capture path and bloats the log file, so drops are counted and summarized at
+# most this often instead.
+_DROP_LOG_INTERVAL = 5.0
+
+
 class PacketQueue:
     def __init__(self, maxsize=5000):
         # multiprocessing.Queue is FIFO, so putting (priority, item) into one
         # queue did not actually prioritize external traffic. Two queues keep the
         # capture path non-blocking while process_packets drains external packets
         # first and only uses internal traffic when the high-priority lane is idle.
+        self.maxsize = maxsize
         self.high = Queue(maxsize=maxsize)
         self.low = Queue(maxsize=maxsize)
+        # Dropped-packet accounting. multiprocessing.Value so drops from the
+        # forked internal-scanner process and the in-process sniffer thread sum
+        # into one figure; throttle the warning to _DROP_LOG_INTERVAL.
+        self._dropped = Value('q', 0)
+        self._last_drop_log = Value('d', 0.0)
+        # Round-robin turn counter for fair lane scheduling (see get()).
+        self._turn = Value('q', 0)
+
+    def _note_drop(self):
+        with self._dropped.get_lock():
+            self._dropped.value += 1
+            total = self._dropped.value
+        now = time.monotonic()
+        with self._last_drop_log.get_lock():
+            if now - self._last_drop_log.value >= _DROP_LOG_INTERVAL:
+                self._last_drop_log.value = now
+                should_log = True
+            else:
+                should_log = False
+        if should_log:
+            logger.warning(f"PacketQueue full: {total} packet(s) dropped so far "
+                           "(raise PACKET_QUEUE_MAX / PACKET_WORKERS if sustained)")
+
+    def dropped(self):
+        with self._dropped.get_lock():
+            return self._dropped.value
+
+    def depth(self):
+        """Current number of queued items across both lanes (capture backlog), or
+        -1 where the platform doesn't implement qsize (e.g. macOS)."""
+        try:
+            return self.high.qsize() + self.low.qsize()
+        except NotImplementedError:
+            return -1
 
     def _is_external(self, item):
         if 'ip_src' in item or 'ip_dst' in item:
@@ -39,7 +81,7 @@ class PacketQueue:
             target.put_nowait((priority, item))
             logger.debug(f"Packet queued: {item.get('protocol')}, {'external' if is_external else 'internal'}")
         except Full:
-            logger.warning("Queue full, packet dropped")
+            self._note_drop()
 
     # Idle poll interval (seconds). Reached only when BOTH lanes are empty (see
     # get): bounds how soon a low-lane packet that lands during true idle is
@@ -49,20 +91,36 @@ class PacketQueue:
     # wakeups (~10/s here vs ~100/s at the old 10ms).
     _POLL_INTERVAL = 0.1
 
+    # Fair-scheduling weight: out of every _LOW_EVERY dequeues, one services the
+    # low (internal) lane FIRST. Strictly preferring the high lane starved the low
+    # lane completely whenever the high lane stayed backlogged — e.g. a VPN flood
+    # of external packets meant a LAN device's traffic (low lane) was never
+    # processed at all. A 1-in-N slice guarantees internal traffic always drains
+    # while still giving external packets the large majority of throughput.
+    _LOW_EVERY = 4
+
+    def _next_prefers_low(self):
+        with self._turn.get_lock():
+            self._turn.value += 1
+            return self._turn.value % self._LOW_EVERY == 0
+
     def get(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            # Drain ready items first, high lane before low, WITHOUT blocking, so a
-            # backlog on either lane is serviced at full throughput. (Blocking on
-            # the high lane first — as this used to — made every low-lane packet
-            # pay the poll interval whenever the high lane was idle, capping
-            # internal-traffic throughput at ~1/interval.)
+            # Drain ready items WITHOUT blocking so a backlog on either lane is
+            # serviced at full throughput. Order is high-lane-first MOST of the
+            # time, but every _LOW_EVERY-th call probes the low lane first so a
+            # permanently-backlogged high lane can no longer starve internal
+            # traffic. (Blocking on the high lane first — as this once did — made
+            # every low-lane packet pay the poll interval whenever the high lane
+            # was idle, capping internal-traffic throughput at ~1/interval.)
+            first, second = (self.low, self.high) if self._next_prefers_low() else (self.high, self.low)
             try:
-                return self.high.get_nowait()
+                return first.get_nowait()
             except Empty:
                 pass
             try:
-                return self.low.get_nowait()
+                return second.get_nowait()
             except Empty:
                 pass
             if timeout == 0:
@@ -96,7 +154,8 @@ class SharedStats:
     hard IPC bottleneck at high packet rates and makes the sniffer drop frames at
     the kernel. Value uses a shared-memory cell with a tiny lock, which is orders
     of magnitude cheaper. Created before fork so children share the same cells."""
-    _FIELDS = ('tcp_packets', 'udp_packets', 'icmp_packets', 'total_bytes', 'active_connections', 'fragmented_packets')
+    _FIELDS = ('tcp_packets', 'udp_packets', 'icmp_packets', 'total_bytes',
+               'active_connections', 'fragmented_packets', 'processed_packets')
 
     def __init__(self):
         # 'q' = signed 64-bit, so total_bytes cannot overflow under sustained load.

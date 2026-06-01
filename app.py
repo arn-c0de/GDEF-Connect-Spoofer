@@ -57,6 +57,7 @@ from config import (
     FRITZDUMP_WORKER_LOG,
     SOCKET_RATE_LIMIT, SOCKET_RATE_WINDOW,
     MAX_KNOWN_IPS, MAX_CACHE_SIZE,
+    PACKET_WORKERS, PACKET_QUEUE_MAX, GEO_WORKERS,
 )
 
 # Logging Setup
@@ -302,6 +303,8 @@ last_ip_updates = {}
 
 # PacketQueue and SharedStats live in packet_pipeline.py (imported above). The
 # instances are still created in this module's __main__ (before the sniffer fork).
+# Set by start_sniffing so the stats payload can read live queue backlog/drops.
+_capture_queue = None
 
 # MAC_RE / is_valid_mac live in capture_core (shared with the sensor). They
 # validate any MAC before it is interpolated into an outbound API URL, preventing
@@ -2599,10 +2602,53 @@ def save_persisted_stats(stats):
         logger.error(f"Could not save persisted stats: {e}")
 
 
+# Capture-health sampler state: previous cumulative counters + wall time, so each
+# emit can derive per-second rates over the elapsed interval.
+_cap_health_prev = {"t": None, "processed": 0, "dropped": 0}
+
+def _capture_health(stats):
+    """Live capture-pipeline health for the status bar: throughput, drops and
+    backlog over the last interval, plus an at-a-glance overload level."""
+    snap = stats.snapshot()
+    processed = int(snap.get("processed_packets", 0))
+    q = _capture_queue
+    dropped = q.dropped() if q is not None else 0
+    depth = q.depth() if q is not None else -1
+    capacity = (q.maxsize * 2) if q is not None else 0  # two lanes
+    now = time.time()
+    prev = _cap_health_prev
+    rate = drop_rate = 0.0
+    if prev["t"] is not None:
+        dt = now - prev["t"]
+        if dt > 0:
+            rate = max(0.0, (processed - prev["processed"]) / dt)
+            drop_rate = max(0.0, (dropped - prev["dropped"]) / dt)
+    prev.update({"t": now, "processed": processed, "dropped": dropped})
+    # Overload heuristic: actively dropping, or the backlog is filling the queue.
+    fill = (depth / capacity) if (capacity and depth >= 0) else 0.0
+    if drop_rate > 0 or fill >= 0.9:
+        level = "overload"
+    elif fill >= 0.5:
+        level = "busy"
+    else:
+        level = "ok"
+    return {
+        "rate": round(rate, 1),
+        "drop_rate": round(drop_rate, 1),
+        "processed": processed,
+        "dropped": dropped,
+        "queue_depth": depth,
+        "queue_capacity": capacity,
+        "workers": PACKET_WORKERS,
+        "level": level,
+    }
+
 def send_network_stats(stats):
     while True:
         try:
-            socketio.emit('network_stats', _device_stats_payload(stats))
+            payload = _device_stats_payload(stats)
+            payload["capture"] = _capture_health(stats)
+            socketio.emit('network_stats', payload)
             save_persisted_stats(stats)
             with active_clients_lock:
                 count = len(active_clients)
@@ -3166,8 +3212,15 @@ def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
             now = time.time()
             if now - last_status >= 20:
                 nfiles = len(source.readers)
+                # Per-interface breakdown so a starved/silent capture file (e.g. a
+                # Wi-Fi band carrying a specific device) is immediately visible
+                # instead of hiding inside the combined total.
+                per_file = ", ".join(
+                    f"{os.path.basename(p)}={n}"
+                    for p, n in sorted(source.parsed_by_file.items())
+                ) or "none"
                 logger.info(f"FritzDump status: {nfiles} capture file(s) in {FRITZDUMP_DIR}, "
-                            f"{total_packets} packet(s) parsed")
+                            f"{total_packets} packet(s) parsed [{per_file}]")
                 if nfiles > 0 and total_packets == 0 and not warned_no_parse:
                     logger.warning("FritzDump: capture files exist but no packets parsed yet — "
                                    "the box may be writing slowly, or the files are not classic "
@@ -3180,10 +3233,14 @@ def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
             logger.error(f"FritzDump reader error: {e}")
             time.sleep(FRITZDUMP_POLL_INTERVAL)
 
-def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener):
+def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener, stats=None):
     while True:
         try:
             priority, packet_data = queue.get(timeout=0.1)
+            # Count every item actually taken off the queue, so the UI can show a
+            # live "processed/s" rate and compare it against drops/backlog.
+            if stats is not None:
+                stats.incr('processed_packets')
             logger.debug(f"Dequeued packet: {packet_data}")
             try:
                 # Which device this packet belongs to (live capture omits it ->
@@ -3295,14 +3352,34 @@ def index():
 def start_sniffing(my_geo_data, my_local_ip, my_public_ip, queue, stats, mdns_listener, showAllUDPPackets):
     validate_interface()
     init_db()
+    # Expose the capture queue so the stats payload can report live backlog/drops.
+    # Set before send_network_stats starts so its first emit already sees it.
+    global _capture_queue
+    _capture_queue = queue
     # Worker threads + the FritzDump reader need no raw-socket privileges, so they
     # start regardless of admin: a host that can only read FritzDump pcaps (no
     # CAP_NET_RAW) still fully works as a hub.
     threading.Thread(target=cleanup_expired_ips, args=(stats,), daemon=True).start()
     threading.Thread(target=send_network_stats, args=(stats,), daemon=True).start()
-    threading.Thread(target=process_packets, args=(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener), daemon=True).start()
+    # Pool of packet-processing workers draining the shared queue. A single
+    # consumer could not keep up with a burst from a high-traffic device, so the
+    # queue filled and dropped packets — including the first packet to a new
+    # external IP, which is why a freshly connected VPN server sometimes never
+    # showed up. The state these workers touch is lock-guarded, so they scale out
+    # safely. Count is configurable via PACKET_WORKERS.
+    for i in range(PACKET_WORKERS):
+        threading.Thread(
+            target=process_packets,
+            args=(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener, stats),
+            name=f"process_packets-{i}", daemon=True).start()
+    logger.info(f"Started {PACKET_WORKERS} packet-processing worker(s), "
+                f"queue capacity {PACKET_QUEUE_MAX}/lane")
     threading.Thread(target=mac_enrichment_worker, daemon=True).start()
-    threading.Thread(target=geo_enrichment_worker, args=(my_geo_data,), daemon=True).start()
+    # Pool of geo-enrichment workers so a burst of new IPs resolves in parallel
+    # instead of one slow network lookup at a time (GEO_WORKERS).
+    for i in range(GEO_WORKERS):
+        threading.Thread(target=geo_enrichment_worker, args=(my_geo_data,),
+                         name=f"geo_enrichment-{i}", daemon=True).start()
     threading.Thread(target=flush_ip_writes, daemon=True).start()
     # The FritzDump reader/worker only runs when the module is switched on.
     if FRITZDUMP_ENABLED:
@@ -3361,7 +3438,7 @@ if __name__ == "__main__":
     settings = load_settings()
     is_internal_search_active = manager.Value('b', settings.get('is_internal_search_active', True))
     showAllUDPPackets = manager.Value('b', settings.get('show_all_udp_packets', True))
-    packet_queue = PacketQueue()
+    packet_queue = PacketQueue(maxsize=PACKET_QUEUE_MAX)
     # Validate/auto-detect the capture interface BEFORE forking the internal
     # scanner. The child inherits NETWORK_INTERFACE as it is at fork time, so a
     # stale value (e.g. a Windows \Device\NPF_... path in backend_conf.json after
