@@ -7,6 +7,7 @@ created in app.py's __main__.
 """
 import time
 import logging
+import itertools
 from multiprocessing import Queue, Value
 from queue import Empty, Full
 
@@ -36,8 +37,16 @@ class PacketQueue:
         # into one figure; throttle the warning to _DROP_LOG_INTERVAL.
         self._dropped = Value('q', 0)
         self._last_drop_log = Value('d', 0.0)
-        # Round-robin turn counter for fair lane scheduling (see get()).
-        self._turn = Value('q', 0)
+        # Round-robin turn counter for fair lane scheduling (see get()). Every
+        # dequeue advances it, so it is the single hottest operation on the queue.
+        # It is deliberately a process-local itertools.count, NOT a shared
+        # multiprocessing.Value: get() is only ever called by the hub's in-process
+        # worker threads (the forked internal scanner is a pure producer and only
+        # calls put()), so the counter never needs to be shared across the fork.
+        # next() on an itertools.count is a single C call under the GIL — atomic
+        # and lock-free — which removes an OS-semaphore acquire from every single
+        # dequeue and idle poll across all PACKET_WORKERS threads.
+        self._turn = itertools.count(1)
 
     def _note_drop(self):
         with self._dropped.get_lock():
@@ -100,9 +109,8 @@ class PacketQueue:
     _LOW_EVERY = 4
 
     def _next_prefers_low(self):
-        with self._turn.get_lock():
-            self._turn.value += 1
-            return self._turn.value % self._LOW_EVERY == 0
+        # next() on itertools.count is atomic under the GIL — no lock needed.
+        return next(self._turn) % self._LOW_EVERY == 0
 
     def get(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout

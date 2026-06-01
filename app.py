@@ -1975,60 +1975,76 @@ def flush_ip_writes():
 
             org_lists = load_org_lists()  # loaded once per flush, not per packet
             broadcasts = []
+            # Pre-resolve threat levels WITHOUT a round-trip per IP. The org-list
+            # classification is pure/in-memory, so only the IPs it can't classify
+            # need the threat_list table — collect those and fetch them in ONE
+            # `= ANY(...)` query below instead of a SELECT per buffered IP. Under a
+            # unique-IP burst this turns N small queries (each holding db_lock) into
+            # one, which is what keeps the flush from starving the UI's db_lock.
+            base_levels = {}
+            need_lookup = set()
+            for key_di, e in batch.items():
+                lvl = classify_org_threat(e.get("org", "Unknown"), org_lists)
+                base_levels[key_di] = lvl
+                if lvl is None:
+                    need_lookup.add(key_di[1])  # (device_id, ip) -> ip
             with locked(db_lock):
                 try:
                     with db.get_connection() as conn:
                         c = conn.cursor()
+                        threat_map = {}
+                        if need_lookup:
+                            c.execute("SELECT ip, threat_level FROM threat_list WHERE ip = ANY(%s)",
+                                      (list(need_lookup),))
+                            threat_map = {r[0]: r[1] for r in c.fetchall()}
                         for (device_id, ip), e in batch.items():
                             org = e.get("org", "Unknown")
-                            threat_level = classify_org_threat(org, org_lists)
-                            if threat_level is None:
-                                c.execute("SELECT threat_level FROM threat_list WHERE ip = %s", (ip,))
-                                r = c.fetchone()
-                                threat_level = r[0] if r else "No Threat"
-                            threat_level = apply_country_threat(threat_level, e.get("country"))
-                            c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE device_id = %s AND ip = %s",
-                                      (device_id, ip))
-                            row = c.fetchone()
-                            if row:
-                                inc, out = row[0] + e["in_delta"], row[1] + e["out_delta"]
-                                # Don't let a buffered placeholder clobber a value
-                                # an async enrichment worker may have already
-                                # resolved into the row. geo_enrichment_worker owns
-                                # lat/lon/city/country/org; mac_enrichment_worker
-                                # owns vendor. Both write fine-grained UPDATEs on
-                                # disjoint columns, but this full-row flush could
-                                # still overwrite them with the placeholder that was
-                                # buffered before resolution (last-writer-wins). Gate
-                                # those columns on a resolved-flag so we only write
-                                # them when the buffer actually carries real data.
-                                geo_ok = 1 if (e["city"] != "Unknown" or e["country"] != "Unknown") else 0
-                                vendor_ok = 1 if e["vendor"] not in (None, "", "Unknown") else 0
-                                c.execute('''UPDATE ip_data SET
-                                             lat = CASE WHEN %s=1 THEN %s ELSE lat END,
-                                             lon = CASE WHEN %s=1 THEN %s ELSE lon END,
-                                             city = CASE WHEN %s=1 THEN %s ELSE city END,
-                                             country = CASE WHEN %s=1 THEN %s ELSE country END,
-                                             org = CASE WHEN %s=1 THEN %s ELSE org END,
-                                             last_seen = %s, src_port = %s, dst_port = %s, protocol = %s,
-                                             incoming_count = %s, outgoing_count = %s, mac = %s,
-                                             vendor = CASE WHEN %s=1 THEN %s ELSE vendor END,
-                                             hostname = %s, os = %s, threat_level = %s,
-                                             local_ip = COALESCE(%s, local_ip)
-                                             WHERE device_id = %s AND ip = %s''',
-                                          (geo_ok, e["lat"], geo_ok, e["lon"], geo_ok, e["city"],
-                                           geo_ok, e["country"], geo_ok, org,
-                                           e["last_seen"], e["src_port"], e["dst_port"], e["protocol"],
-                                           inc, out, e["mac"], vendor_ok, e["vendor"],
-                                           e["hostname"], e["os"], threat_level, e.get("local_ip"), device_id, ip))
-                            else:
-                                inc, out = e["in_delta"], e["out_delta"]
-                                c.execute('''INSERT INTO ip_data (device_id, ip, lat, lon, city, country, last_seen, org, src_port, dst_port,
-                                             protocol, incoming_count, outgoing_count, mac, vendor, hostname, os, local_ip, threat_level)
-                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
-                                          (device_id, ip, e["lat"], e["lon"], e["city"], e["country"], e["last_seen"], org,
-                                           e["src_port"], e["dst_port"], e["protocol"], inc, out,
-                                           e["mac"], e["vendor"], e["hostname"], e["os"], e.get("local_ip"), threat_level))
+                            lvl = base_levels[(device_id, ip)]
+                            if lvl is None:
+                                lvl = threat_map.get(ip, "No Threat")
+                            threat_level = apply_country_threat(lvl, e.get("country"))
+                            # Don't let a buffered placeholder clobber a value an
+                            # async enrichment worker may have already resolved into
+                            # the row. geo_enrichment_worker owns lat/lon/city/
+                            # country/org; mac_enrichment_worker owns vendor. Gate
+                            # those columns on a resolved-flag so the full-row flush
+                            # only writes them when the buffer carries real data.
+                            geo_ok = 1 if (e["city"] != "Unknown" or e["country"] != "Unknown") else 0
+                            vendor_ok = 1 if e["vendor"] not in (None, "", "Unknown") else 0
+                            # One upsert replaces the old SELECT-counts + UPDATE/
+                            # INSERT (3 round-trips -> 1). Counts accumulate in SQL
+                            # (ip_data.x + EXCLUDED.x), so two flushers/enrichers can
+                            # never lose an update the way SELECT-then-write could,
+                            # and RETURNING hands back the post-merge totals for the
+                            # broadcast without re-reading the row.
+                            c.execute('''INSERT INTO ip_data
+                                             (device_id, ip, lat, lon, city, country, last_seen, org,
+                                              src_port, dst_port, protocol, incoming_count, outgoing_count,
+                                              mac, vendor, hostname, os, local_ip, threat_level)
+                                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                         ON CONFLICT (device_id, ip) DO UPDATE SET
+                                             lat = CASE WHEN %s=1 THEN EXCLUDED.lat ELSE ip_data.lat END,
+                                             lon = CASE WHEN %s=1 THEN EXCLUDED.lon ELSE ip_data.lon END,
+                                             city = CASE WHEN %s=1 THEN EXCLUDED.city ELSE ip_data.city END,
+                                             country = CASE WHEN %s=1 THEN EXCLUDED.country ELSE ip_data.country END,
+                                             org = CASE WHEN %s=1 THEN EXCLUDED.org ELSE ip_data.org END,
+                                             last_seen = EXCLUDED.last_seen, src_port = EXCLUDED.src_port,
+                                             dst_port = EXCLUDED.dst_port, protocol = EXCLUDED.protocol,
+                                             incoming_count = ip_data.incoming_count + EXCLUDED.incoming_count,
+                                             outgoing_count = ip_data.outgoing_count + EXCLUDED.outgoing_count,
+                                             mac = EXCLUDED.mac,
+                                             vendor = CASE WHEN %s=1 THEN EXCLUDED.vendor ELSE ip_data.vendor END,
+                                             hostname = EXCLUDED.hostname, os = EXCLUDED.os,
+                                             threat_level = EXCLUDED.threat_level,
+                                             local_ip = COALESCE(EXCLUDED.local_ip, ip_data.local_ip)
+                                         RETURNING incoming_count, outgoing_count''',
+                                      (device_id, ip, e["lat"], e["lon"], e["city"], e["country"],
+                                       e["last_seen"], org, e["src_port"], e["dst_port"], e["protocol"],
+                                       e["in_delta"], e["out_delta"], e["mac"], e["vendor"],
+                                       e["hostname"], e["os"], e.get("local_ip"), threat_level,
+                                       geo_ok, geo_ok, geo_ok, geo_ok, geo_ok, vendor_ok))
+                            cnt_row = c.fetchone()
+                            inc, out = (cnt_row[0], cnt_row[1]) if cnt_row else (e["in_delta"], e["out_delta"])
                             # Permanent ledger upsert. RETURNING (xmax = 0) is the
                             # standard ON CONFLICT trick to tell an INSERT (brand-new
                             # IP, xmax=0 -> is_new=True) from an UPDATE (already known);
@@ -3234,13 +3250,29 @@ def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
             time.sleep(FRITZDUMP_POLL_INTERVAL)
 
 def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener, stats=None):
+    # Coalesce the shared 'processed' counter. stats.incr takes a multiprocessing
+    # Value lock (an OS semaphore); doing it per packet makes every worker contend
+    # on the same semaphore for a number the UI only samples every few seconds, so
+    # under a burst the whole pool serializes on a counter. Count locally and flush
+    # in batches — and whenever the queue drains — so the live processed/s rate
+    # stays accurate (lag <= one batch) without per-packet cross-process locking.
+    _processed_local = 0
+    _PROCESSED_FLUSH = 64
+
+    def _flush_processed():
+        nonlocal _processed_local
+        if stats is not None and _processed_local:
+            stats.incr('processed_packets', _processed_local)
+        _processed_local = 0
+
     while True:
         try:
             priority, packet_data = queue.get(timeout=0.1)
             # Count every item actually taken off the queue, so the UI can show a
             # live "processed/s" rate and compare it against drops/backlog.
-            if stats is not None:
-                stats.incr('processed_packets')
+            _processed_local += 1
+            if _processed_local >= _PROCESSED_FLUSH:
+                _flush_processed()
             logger.debug(f"Dequeued packet: {packet_data}")
             try:
                 # Which device this packet belongs to (live capture omits it ->
@@ -3313,6 +3345,9 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
             except Exception as e:
                 logger.error(f"Error processing packet: {e}")
         except Empty:
+            # Queue drained: flush the local processed count so an idle worker's
+            # tail packets are reflected in the live rate without delay.
+            _flush_processed()
             continue
         except Exception as e:
             logger.error(f"Error in process_packets: {e}")
