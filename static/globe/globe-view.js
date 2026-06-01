@@ -388,6 +388,70 @@ export function setupGlobe(app) {
         globe.pointOfView({ lat: myIpCoords.lat, lng: myIpCoords.lng, altitude: 2.5 }, 1000);
     });
 
+    // ── Globe auto-rotation ───────────────────────────────
+    // Globe.gl 2.x uses TrackballControls (no built-in autoRotate), so spin the
+    // globe by advancing the camera longitude every frame. Reading the live
+    // point-of-view each frame means a user drag/zoom still composes naturally;
+    // we only pause the advance while the pointer is held so dragging doesn't
+    // fight the spin. The dot/arc layers live in the WebGL scene and rotate with
+    // the globe automatically — only the HTML count-badge overlay needs a manual
+    // repaint per frame to track the motion.
+    const autoRotateButton  = document.getElementById('globeAutoRotate');
+    const rotateSpeedInput   = document.getElementById('globeRotateSpeed');
+    const rotateSpeedVal     = document.getElementById('globeRotateSpeedVal');
+    const rotateSpeedRow     = document.getElementById('globeRotateSpeedRow');
+    let _rotRAF = null, _rotLast = 0, _pointerDown = false;
+
+    globeContainer.addEventListener('pointerdown', () => { _pointerDown = true; });
+    window.addEventListener('pointerup', () => { _pointerDown = false; });
+
+    function rotateFrame(ts) {
+        if (!app.autoRotate) { _rotRAF = null; _rotLast = 0; return; }
+        if (!_rotLast) _rotLast = ts;
+        const dt = Math.min(0.1, (ts - _rotLast) / 1000);   // clamp after a tab-away
+        _rotLast = ts;
+        if (!_pointerDown) {
+            const pov = globe.pointOfView();
+            let lng = pov.lng + app.autoRotateSpeed * dt;
+            if (lng > 180) lng -= 360; else if (lng < -180) lng += 360;
+            globe.pointOfView({ lat: pov.lat, lng, altitude: pov.altitude }, 0);
+            renderBadgeOverlay();
+        }
+        _rotRAF = requestAnimationFrame(rotateFrame);
+    }
+
+    app.applyAutoRotate = () => {
+        if (app.autoRotate) {
+            if (!_rotRAF) { _rotLast = 0; _rotRAF = requestAnimationFrame(rotateFrame); }
+        } else if (_rotRAF) {
+            cancelAnimationFrame(_rotRAF); _rotRAF = null; _rotLast = 0;
+        }
+    };
+
+    app.syncGlobeRotationControls = () => {
+        autoRotateButton?.classList.toggle('active', app.autoRotate);
+        if (rotateSpeedInput) rotateSpeedInput.value = app.autoRotateSpeed;
+        if (rotateSpeedVal)   rotateSpeedVal.textContent = `${app.autoRotateSpeed}°/s`;
+        if (rotateSpeedRow)   rotateSpeedRow.style.display = app.autoRotate ? '' : 'none';
+    };
+
+    autoRotateButton?.addEventListener('click', () => {
+        app.autoRotate = !app.autoRotate;
+        localStorage.setItem('autoRotate', JSON.stringify(app.autoRotate));
+        app.syncGlobeRotationControls();
+        app.applyAutoRotate();
+    });
+
+    rotateSpeedInput?.addEventListener('input', () => {
+        const v = Math.min(60, Math.max(1, Number(rotateSpeedInput.value) || 8));
+        app.autoRotateSpeed = v;
+        localStorage.setItem('autoRotateSpeed', String(v));
+        if (rotateSpeedVal) rotateSpeedVal.textContent = `${v}°/s`;
+    });
+
+    app.syncGlobeRotationControls();
+    app.applyAutoRotate();   // resume rotation if it was left on
+
     // ── Arc bookkeeping ───────────────────────────────────
     app.deleteArcsOfIp = ip => { for (const k in app.arcs) if (app.arcs[k].ip === ip) delete app.arcs[k]; };
     app.expireArcsOfIp = ip => { for (const k in app.arcs) if (app.arcs[k].ip === ip) app.arcs[k].expired = true; };

@@ -29,6 +29,7 @@ export function setupOverlay(app) {
         globeQuickMenu.classList.toggle('open', open);
         app.syncNetworkFilterButtons?.();
         app.syncGlobeDisplayToggles?.();
+        app.syncGlobeRotationControls?.();
     });
     document.addEventListener('click', e => {
         if (!globeQuickMenu?.classList.contains('open')) return;

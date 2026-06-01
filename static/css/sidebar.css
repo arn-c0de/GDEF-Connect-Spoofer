@@ -96,6 +96,21 @@
     font-size: 0.7rem;
 }
 
+.globe-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.globe-slider-label { color: var(--text-dim); font-size: 0.7rem; min-width: 38px; }
+.globe-slider-val   { color: var(--accent-light); font-size: 0.7rem; min-width: 36px; text-align: right; }
+.globe-slider-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent-light);
+    cursor: pointer;
+    height: 4px;
+}
+
 /* ============================================================
    Sidebar
    ============================================================ */

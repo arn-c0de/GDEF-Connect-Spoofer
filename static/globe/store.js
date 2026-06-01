@@ -66,6 +66,15 @@ export function createApp(myIpCoords) {
         showLabelsThroughGlobe: JSON.parse(localStorage.getItem('showLabelsThroughGlobe') ?? 'false'),
         countriesData: [],
 
+        // ── Globe auto-rotation ───────────────────────────────
+        // Spin the globe around its own (polar) axis at autoRotateSpeed degrees
+        // of longitude per second while autoRotate is on.
+        autoRotate: JSON.parse(localStorage.getItem('autoRotate') ?? 'false'),
+        autoRotateSpeed: (() => {
+            const v = Number(localStorage.getItem('autoRotateSpeed'));
+            return Number.isFinite(v) && v > 0 ? Math.min(60, Math.max(1, v)) : 8;
+        })(),
+
         // ── Collapse state ────────────────────────────────────
         isInternalNetworkCollapsed:
             JSON.parse(localStorage.getItem('isInternalNetworkCollapsed') ?? 'false'),
