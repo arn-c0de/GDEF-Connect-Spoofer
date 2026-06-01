@@ -48,6 +48,7 @@ from config import (
     DEFAULT_COORDS, EXPIRATION_SECONDS, RETENTION_SECONDS, MAX_IP_ROWS, SNIFF_TIMEOUT,
     SOCKETIO_PING_TIMEOUT, SOCKETIO_PING_INTERVAL,
     TRUSTED_ORGS_PATH, IP_LABELS_PATH,
+    HIGH_RISK_COUNTRIES, HIGH_RISK_COUNTRY_THREAT_LEVEL,
     LOCAL_DEVICE_ID, LOCAL_DEVICE_COLOR, HUB_DEVICE_NAME, DEVICE_KEYS_DIR,
     FRITZDUMP_DEVICE_ID, FRITZDUMP_ENABLED, FRITZDUMP_DEVICE_NAME,
     FRITZDUMP_DEVICE_COLOR, FRITZDUMP_REDACT, FRITZDUMP_DIR, FRITZDUMP_POLL_INTERVAL,
@@ -1454,22 +1455,39 @@ def classify_org_threat(org, org_lists):
         return "No Threat"
     return None
 
-def compute_org_threat(ip, org):
+# Threat severity ranking (higher = worse). Used to merge the org/threat-list
+# verdict with the geo (country) verdict without ever downgrading it.
+THREAT_RANK = {"No Threat": 0, "Low": 1, "Medium": 2, "High": 3}
+
+def apply_country_threat(threat_level, country):
+    """Elevate a threat level when the IP sits in a high-risk country
+    (config.HIGH_RISK_COUNTRIES, e.g. RU). Only ever raises the verdict — an
+    org/threat-list rule that already assigns an equal-or-higher level wins, and
+    a country never downgrades it. Returns 'No Threat' instead of None so callers
+    always get a valid level."""
+    base = threat_level or "No Threat"
+    if country and country.upper() in HIGH_RISK_COUNTRIES:
+        if THREAT_RANK.get(HIGH_RISK_COUNTRY_THREAT_LEVEL, 0) > THREAT_RANK.get(base, 0):
+            return HIGH_RISK_COUNTRY_THREAT_LEVEL
+    return base
+
+def compute_org_threat(ip, org, country=None):
     """Classify an IP's threat level from its org, falling back to the
-    threat_list table. Used by the background geo worker."""
+    threat_list table, then elevate for high-risk countries. Used by the
+    background geo worker."""
     tl = classify_org_threat(org, load_org_lists())
-    if tl is not None:
-        return tl
-    # Read-only: lock-free connection (runs in the background geo worker).
-    try:
-        with db_connect() as conn:
-            c = conn.cursor()
-            c.execute("SELECT threat_level FROM threat_list WHERE ip = %s", (ip,))
-            threat = c.fetchone()
-            return threat[0] if threat else "No Threat"
-    except db.DBError as e:
-        logger.error(f"Error fetching threat level for IP {ip}: {e}")
-        return "No Threat"
+    if tl is None:
+        # Read-only: lock-free connection (runs in the background geo worker).
+        try:
+            with db_connect() as conn:
+                c = conn.cursor()
+                c.execute("SELECT threat_level FROM threat_list WHERE ip = %s", (ip,))
+                threat = c.fetchone()
+                tl = threat[0] if threat else "No Threat"
+        except db.DBError as e:
+            logger.error(f"Error fetching threat level for IP {ip}: {e}")
+            tl = "No Threat"
+    return apply_country_threat(tl, country)
 
 def get_geo_data_cached(ip, my_geo_data=None):
     """Non-blocking geo lookup for the packet-processing hot path.
@@ -1531,7 +1549,7 @@ def geo_enrichment_worker(my_geo_data):
             if not geo:
                 continue
             org = geo.get("org", "Unknown")
-            threat_level = compute_org_threat(ip, org)
+            threat_level = compute_org_threat(ip, org, geo.get("country"))
             # If a write for this IP is still buffered (geo resolved before the
             # first flush), patch it so the flush persists the resolved location
             # instead of the placeholder.
@@ -1737,6 +1755,7 @@ def flush_ip_writes():
                                 c.execute("SELECT threat_level FROM threat_list WHERE ip = %s", (ip,))
                                 r = c.fetchone()
                                 threat_level = r[0] if r else "No Threat"
+                            threat_level = apply_country_threat(threat_level, e.get("country"))
                             c.execute("SELECT incoming_count, outgoing_count FROM ip_data WHERE device_id = %s AND ip = %s",
                                       (device_id, ip))
                             row = c.fetchone()

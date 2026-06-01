@@ -13,6 +13,30 @@ GDEF-L1NK is a modular network intelligence component of the **GDEF Suite**. It 
 
 It is designed as a standalone module that can be run independently today and integrated into larger GDEF Suite workflows over time.
 
+## Navigation
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+  - [Docker (Linux)](#docker-linux--the-standard-way-to-run-it)
+  - [Windows](#windows-recommended)
+- [Service Commands](#service-commands-linux--docker)
+  - [Development (live code reload)](#development-live-code-reload)
+- [Database (PostgreSQL)](#database-postgresql)
+- [Multi-Device Monitoring (Sensors)](#multi-device-monitoring-sensors)
+  - [Dashboard overlay tabs](#dashboard-overlay-tabs)
+  - [FritzDump module](#fritzdump-module-capture-from-pcap-files)
+- [Security & Privacy](#security--privacy)
+  - [Security Environment Variables](#security-environment-variables)
+- [Python Workflow](#python-workflow)
+- [Configuration](#configuration)
+- [Project Structure](#project-structure)
+- [Security Notice](#security-notice)
+- [Troubleshooting](#troubleshooting)
+- [Known Issues](#known-issues)
+- [License](#license)
+- [Author](#author)
+
 ## Features
 
 - **Live packet visibility**: Captures TCP, UDP, and ICMP traffic with Scapy.
@@ -444,6 +468,24 @@ The dashboard is locked by default.
 
 ### Wrong capture interface
 Set `NETWORK_INTERFACE` in `.env` to a real host interface (e.g. `enp3s0`, `wlan0`), then `./run.sh restart`. List interfaces with `python scripts/debug_interfaces.py` or `ip -br link`.
+
+## Known Issues
+
+A running list of known bugs and their fixes / workarounds.
+
+### Own position shows in the ocean (0,0) / Provider, IP, Country all "Unknown"
+A DNS-level blocker (AdGuard Home / Pi-hole — e.g. HaGeZi's Ultimate Blocklist) sinkholes the geolocation providers, so determining your *own* public IP and location fails. The app then falls back to `DEFAULT_COORDS = [0, 0]` ("Null Island" in the Gulf of Guinea — the middle of the sea). Foreign IPs still resolve correctly because they use the offline MaxMind DB (`database/datasets/*.mmdb`), which needs no DNS — only the self-lookup hits the network.
+- **Symptom in the log**: `Error at api.ipify (https): ... [Errno 111] Connection refused` (the domain resolves to the blocker's own IP).
+- **Fix**: Allowlist the two domains the self-lookup needs in your DNS blocker. In AdGuard Home → **Filters → Custom filtering rules**:
+  ```
+  @@||api.ipify.org^
+  @@||ipinfo.io^
+  ```
+  Save, then reload the dashboard (no restart needed — `index()` re-fetches the geo data on every page load).
+
+### `Interface:`, `Adapter:` and `Speed:` are always empty in the top bar
+The dashboard template reads `backend_config.interface_name`, `.adapter_description` and `.speed`, but only the `network_interface` key is ever written to `database/backend_conf.json` (`scripts/select_interface.py`). These three fields therefore have no data source and render blank — unrelated to the geolocation issue above.
+- **Status**: Cosmetic. The capture interface itself still works (it is read from `network_interface` / the `NETWORK_INTERFACE` env var).
 
 ## License
 

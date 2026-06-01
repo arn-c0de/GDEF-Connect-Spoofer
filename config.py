@@ -53,6 +53,22 @@ TRUSTED_ORGS_PATH = os.path.join(DATABASE_DIR, "trusted_organisations.json")
 # Display-only; surfaced in the dashboard's "LAN device" columns.
 IP_LABELS_PATH = os.path.join(DATABASE_DIR, "ip_labels.json")
 
+# --- Geo-based threat flagging ----------------------------------------------
+# Connections to/from these ISO-3166 alpha-2 country codes are flagged at
+# HIGH_RISK_COUNTRY_THREAT_LEVEL. This only ever ELEVATES a verdict: an org or
+# threat-list rule that already assigns an equal-or-higher level wins, and a
+# country never downgrades it. Comma-separated codes via the env var; default
+# flags Russia (RU). Set HIGH_RISK_COUNTRIES="" to disable entirely.
+HIGH_RISK_COUNTRIES = {
+    c.strip().upper()
+    for c in os.environ.get("HIGH_RISK_COUNTRIES", "RU").split(",")
+    if c.strip()
+}
+# Threat level applied to high-risk-country IPs: High | Medium | Low.
+HIGH_RISK_COUNTRY_THREAT_LEVEL = (
+    os.environ.get("HIGH_RISK_COUNTRY_THREAT_LEVEL", "High").strip() or "High"
+)
+
 # --- Multi-device (sensor) identity -----------------------------------------
 # Every captured connection belongs to a "device". The hub's own local capture
 # is the built-in device 'local'; remote sensors register their own ids. Devices
