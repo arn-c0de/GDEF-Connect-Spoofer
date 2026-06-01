@@ -616,9 +616,11 @@ export function setupGlobe(app) {
     // traffic means no arc at all — only the (fading) dot remains. So a moving
     // arc always means "a packet flowed just now".
     function arcPassesFilters(a) {
-        // Live comets belong to the live view only; History mode shows stored
-        // points without the real-time packet rays.
-        return app.globeMode !== 'history' && !a.expired && app.isDeviceVisible(a.device_id) &&
+        // Live packet comets are drawn in BOTH modes: in History the stored points
+        // form the clustered backdrop while live rays keep flying on top, so
+        // switching to History no longer drops the real-time traffic. The Rays
+        // toggle (showArcs) and the network/protocol filters still gate them.
+        return !a.expired && app.isDeviceVisible(a.device_id) &&
             (app.showTCPOnly ? a.protocol === 'TCP' : true) &&
             ((app.showLocalNetwork    && isLocalNetwork(a.ip, a.org)) ||
              (app.showExternalNetwork && !isLocalNetwork(a.ip, a.org)));
