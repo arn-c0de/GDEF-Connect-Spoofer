@@ -118,7 +118,7 @@ export function setupOverlay(app) {
                   '</div>' +
                   '<div class="ov-head-search" id="ovSearchBar">' +
                     '<input type="text" id="ovSearch" class="search-input" autocomplete="off"' +
-                      ' placeholder="Search IP, host, org, country, MAC…">' +
+                      ' placeholder="Search name, IP, host, org, country, MAC…">' +
                     '<div class="ov-filters" id="ovFilters">' +
                       '<label class="ov-filter">Country' +
                         '<select id="ovFilterCountry"><option value="">All</option></select></label>' +
@@ -205,7 +205,7 @@ export function setupOverlay(app) {
                 searchInput.placeholder = 'Search devices…';
                 searchInput.value = app.deviceQuery;
             } else {
-                searchInput.placeholder = 'Search IP, host, org, country, MAC…';
+                searchInput.placeholder = 'Search name, IP, host, org, country, MAC…';
                 searchInput.value = app.ovQuery;
             }
             const mode = document.getElementById('ovMode');

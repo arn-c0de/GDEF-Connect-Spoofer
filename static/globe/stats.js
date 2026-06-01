@@ -55,6 +55,7 @@ export function setupStats(app) {
         const q = app.ovQuery;
         if (!q) return true;
         return (p.ip || '').toLowerCase().includes(q) ||
+            (app.ipLabel(p.ip) || '').toLowerCase().includes(q) ||
             (p.hostname || '').toLowerCase().includes(q) ||
             (p.org || '').toLowerCase().includes(q) ||
             (p.country || '').toLowerCase().includes(q) ||

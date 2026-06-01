@@ -744,6 +744,20 @@ _CONN_PROTOCOLS = ("TCP", "UDP", "ICMP")
 _EMPTY_CONN_SUMMARY = {"packets": 0, "lan_devices": 0, "protocol": {}, "threat": {}, "countries": []}
 
 
+def _load_ip_labels():
+    """Read the operator's IP -> friendly-name map (flat JSON, display-only).
+    Returns {} if the file is missing or unreadable."""
+    try:
+        with open(IP_LABELS_PATH, 'r') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.error(f"Error reading ip labels: {e}")
+        return {}
+
+
 def _connections_where(device, q, filters):
     """Build the shared WHERE clause + params for the historical connections
     query from the device scope, exact-match filters, free-text search, and the
@@ -769,9 +783,18 @@ def _connections_where(device, q, filters):
             params.append(val)
     if q:
         like = f"%{q}%"
-        ors = " OR ".join(f"{col} ILIKE %s" for col in _CONN_SEARCH_COLS)
-        clauses.append(f"({ors})")
-        params.extend([like] * len(_CONN_SEARCH_COLS))
+        ors = [f"{col} ILIKE %s" for col in _CONN_SEARCH_COLS]
+        search_params = [like] * len(_CONN_SEARCH_COLS)
+        # Also match the operator's custom IP/device names (stored off-DB in a
+        # JSON file, not in ip_data): any IP whose friendly name contains the
+        # query should surface too, mirroring the live-mode search.
+        ql = q.lower()
+        label_ips = [ip for ip, name in _load_ip_labels().items() if ql in name.lower()]
+        if label_ips:
+            ors.append("d.ip = ANY(%s)")
+            search_params.append(label_ips)
+        clauses.append("(" + " OR ".join(ors) + ")")
+        params.extend(search_params)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -1016,14 +1039,7 @@ def api_ip_labels():
     Stored as a flat JSON object, e.g. {"192.168.178.100": "PC-E1"}. Used purely
     for display (the dashboard shows the name next to a LAN IP)."""
     if request.method == 'GET':
-        try:
-            with open(IP_LABELS_PATH, 'r') as f:
-                return jsonify(json.load(f))
-        except FileNotFoundError:
-            return jsonify({})
-        except Exception as e:
-            logger.error(f"Error reading ip labels: {e}")
-            return jsonify({"error": "read failed"}), 500
+        return jsonify(_load_ip_labels())
 
     # PUT — replace the whole map. Validate it's a flat {str: str} object and
     # cap the size so a stray client can't write an unbounded file.

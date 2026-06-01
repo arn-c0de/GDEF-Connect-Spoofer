@@ -340,6 +340,8 @@ export function setupLists(app) {
         const matchesSearch = p =>
             !app.filterText ||
             p.ip.includes(app.filterText) ||
+            (app.ipLabel(p.ip)       || '').toLowerCase().includes(app.filterText) ||
+            (app.localPeersText(p)   || '').toLowerCase().includes(app.filterText) ||
             (p.hostname || '').toLowerCase().includes(app.filterText) ||
             (p.org      || '').toLowerCase().includes(app.filterText) ||
             (p.country  || '').toLowerCase().includes(app.filterText);
