@@ -3256,6 +3256,69 @@ def fritzdump_reader(queue, mdns_listener, showAllUDPPackets):
             logger.error(f"FritzDump reader error: {e}")
             time.sleep(FRITZDUMP_POLL_INTERVAL)
 
+def process_internal_packet_item(packet_data, device_id, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active):
+    """Process a single-IP internal-scanner packet (the 'ip' payload shape)."""
+    ip = packet_data["ip"]
+    if not packet_data.get("vendor") or packet_data.get("vendor") == "Unknown":
+        queue_mac_enrichment(packet_data.get("mac"))
+    if is_private_ip(ip) and not is_internal_search_active.value:
+        # Hot path: the pin set is tiny and changes only via UI events, so keep
+        # it in memory instead of borrowing a DB connection for every private packet.
+        if not is_ip_pinned_cached(ip):
+            return
+    update_ip(
+        ip,
+        packet_data["direction"],
+        packet_data["protocol"],
+        packet_data["src_port"],
+        packet_data["dst_port"],
+        my_geo_data,
+        my_local_ip,
+        my_public_ip,
+        packet_data["mac"],
+        packet_data["vendor"],
+        packet_data.get("src_ip"),
+        packet_data.get("dst_ip"),
+        packet_data.get("ttl"),
+        packet_data.get("hostname"),
+        device_id=device_id
+    )
+
+
+def process_external_packet_item(packet_data, device_id, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active):
+    """Process a dual-IP external-traffic packet (the ip_src/ip_dst shape).
+
+    External endpoints (non-private, not us) are always stored. When internal
+    search is on, private endpoints that aren't us are stored too.
+    """
+    ip_src = packet_data["ip_src"]
+    ip_dst = packet_data["ip_dst"]
+    protocol = packet_data["protocol"]
+    src_port = packet_data["src_port"]
+    dst_port = packet_data["dst_port"]
+    src_mac = packet_data["src_mac"]
+    dst_mac = packet_data["dst_mac"]
+    src_vendor = packet_data.get("src_vendor", "Unknown")
+    dst_vendor = packet_data.get("dst_vendor", "Unknown")
+    if not src_vendor or src_vendor == "Unknown":
+        queue_mac_enrichment(src_mac)
+    if not dst_vendor or dst_vendor == "Unknown":
+        queue_mac_enrichment(dst_mac)
+    direction = packet_data["direction"]
+    ttl = packet_data.get("ttl")
+    hostname_src = packet_data.get("hostname_src")
+    hostname_dst = packet_data.get("hostname_dst")
+    if ip_src != my_local_ip and ip_src != my_public_ip and not is_private_ip(ip_src):
+        update_ip(ip_src, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, src_mac, src_vendor, ip_src, ip_dst, ttl, hostname_src, device_id=device_id)
+    if ip_dst != my_local_ip and ip_dst != my_public_ip and not is_private_ip(ip_dst):
+        update_ip(ip_dst, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, dst_mac, dst_vendor, ip_src, ip_dst, ttl, hostname_dst, device_id=device_id)
+    elif is_internal_search_active.value:
+        if is_private_ip(ip_src) and ip_src != my_local_ip and ip_src != my_public_ip:
+            update_ip(ip_src, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, src_mac, src_vendor, ip_src, ip_dst, ttl, hostname_src, device_id=device_id)
+        if is_private_ip(ip_dst) and ip_dst != my_local_ip and ip_dst != my_public_ip:
+            update_ip(ip_dst, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, dst_mac, dst_vendor, ip_src, ip_dst, ttl, hostname_dst, device_id=device_id)
+
+
 def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active, mdns_listener, stats=None):
     # Coalesce the shared 'processed' counter. stats.incr takes a multiprocessing
     # Value lock (an OS semaphore); doing it per packet makes every worker contend
@@ -3296,59 +3359,9 @@ def process_packets(queue, my_geo_data, my_local_ip, my_public_ip, is_internal_s
                     incr_device_stat(device_id, packet_data.get("protocol"),
                                      1, packet_data.get("length"))
                 if 'ip' in packet_data:
-                    ip = packet_data["ip"]
-                    if not packet_data.get("vendor") or packet_data.get("vendor") == "Unknown":
-                        queue_mac_enrichment(packet_data.get("mac"))
-                    if is_private_ip(ip) and not is_internal_search_active.value:
-                        # Hot path: the pin set is tiny and changes only via UI
-                        # events, so keep it in memory instead of borrowing a DB
-                        # connection for every private packet.
-                        if not is_ip_pinned_cached(ip):
-                            continue
-                    update_ip(
-                        ip,
-                        packet_data["direction"],
-                        packet_data["protocol"],
-                        packet_data["src_port"],
-                        packet_data["dst_port"],
-                        my_geo_data,
-                        my_local_ip,
-                        my_public_ip,
-                        packet_data["mac"],
-                        packet_data["vendor"],
-                        packet_data.get("src_ip"),
-                        packet_data.get("dst_ip"),
-                        packet_data.get("ttl"),
-                        packet_data.get("hostname"),
-                        device_id=device_id
-                    )
+                    process_internal_packet_item(packet_data, device_id, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active)
                 else:
-                    ip_src = packet_data["ip_src"]
-                    ip_dst = packet_data["ip_dst"]
-                    protocol = packet_data["protocol"]
-                    src_port = packet_data["src_port"]
-                    dst_port = packet_data["dst_port"]
-                    src_mac = packet_data["src_mac"]
-                    dst_mac = packet_data["dst_mac"]
-                    src_vendor = packet_data.get("src_vendor", "Unknown")
-                    dst_vendor = packet_data.get("dst_vendor", "Unknown")
-                    if not src_vendor or src_vendor == "Unknown":
-                        queue_mac_enrichment(src_mac)
-                    if not dst_vendor or dst_vendor == "Unknown":
-                        queue_mac_enrichment(dst_mac)
-                    direction = packet_data["direction"]
-                    ttl = packet_data.get("ttl")
-                    hostname_src = packet_data.get("hostname_src")
-                    hostname_dst = packet_data.get("hostname_dst")
-                    if ip_src != my_local_ip and ip_src != my_public_ip and not is_private_ip(ip_src):
-                        update_ip(ip_src, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, src_mac, src_vendor, ip_src, ip_dst, ttl, hostname_src, device_id=device_id)
-                    if ip_dst != my_local_ip and ip_dst != my_public_ip and not is_private_ip(ip_dst):
-                        update_ip(ip_dst, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, dst_mac, dst_vendor, ip_src, ip_dst, ttl, hostname_dst, device_id=device_id)
-                    elif is_internal_search_active.value:
-                        if is_private_ip(ip_src) and ip_src != my_local_ip and ip_src != my_public_ip:
-                            update_ip(ip_src, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, src_mac, src_vendor, ip_src, ip_dst, ttl, hostname_src, device_id=device_id)
-                        if is_private_ip(ip_dst) and ip_dst != my_local_ip and ip_dst != my_public_ip:
-                            update_ip(ip_dst, direction, protocol, src_port, dst_port, my_geo_data, my_local_ip, my_public_ip, dst_mac, dst_vendor, ip_src, ip_dst, ttl, hostname_dst, device_id=device_id)
+                    process_external_packet_item(packet_data, device_id, my_geo_data, my_local_ip, my_public_ip, is_internal_search_active)
             except Exception as e:
                 logger.error(f"Error processing packet: {e}")
         except Empty:
