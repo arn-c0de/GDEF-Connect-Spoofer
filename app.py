@@ -577,10 +577,28 @@ def load_or_create_secret_key():
         return secrets.token_urlsafe(32)
 
 app.config['SECRET_KEY'] = load_or_create_secret_key()
+
+# Secure-by-default: mark the session cookie Secure (HTTPS-only) UNLESS this is a
+# loopback-only HTTP dev run, where forcing Secure would silently break login
+# over http://localhost. So the cookie is Secure whenever the app is bound to a
+# non-loopback address (i.e. exposed on a LAN) or sits behind a TLS-terminating
+# proxy (TRUST_PROXY). An explicit SESSION_COOKIE_SECURE=0/1 always wins, so an
+# operator can override either way (e.g. plain HTTP on a trusted LAN).
+_bind_host = os.environ.get('APP_HOST', '127.0.0.1')
+_loopback_bind = _bind_host in ('127.0.0.1', 'localhost', '::1', '')
+_secure_override = os.environ.get('SESSION_COOKIE_SECURE', '').strip().lower()
+if _secure_override in ('1', 'true', 'yes'):
+    _cookie_secure = True
+elif _secure_override in ('0', 'false', 'no'):
+    _cookie_secure = False
+else:
+    _behind_tls_proxy = os.environ.get('TRUST_PROXY', '').lower() in ('1', 'true', 'yes')
+    _cookie_secure = (not _loopback_bind) or _behind_tls_proxy
+
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
-    SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes'),
+    SESSION_COOKIE_SECURE=_cookie_secure,
     PERMANENT_SESSION_LIFETIME=3600
 )
 
@@ -604,23 +622,74 @@ def add_security_headers(response):
     response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' https://unpkg.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*; connect-src 'self' ws: wss: https://raw.githubusercontent.com https://api.macvendors.com https://maclookup.app http://ip-api.com https://ipinfo.io https://api.ipify.org; frame-ancestors 'none';"
     return response
 
+# Same-origin allow-list shared by the CSRF guard (below) and the Socket.IO
+# handshake (cors_allowed_origins). Defaults to the localhost dev URLs; override
+# with SOCKETIO_CORS_ORIGINS (comma-separated) when the dashboard is served from
+# a real host/port — that same list then also gates which Origins may make
+# state-changing API calls.
+web_allowed_origins = os.environ.get('SOCKETIO_CORS_ORIGINS')
+if web_allowed_origins:
+    web_allowed_origins = [o.strip() for o in web_allowed_origins.split(',') if o.strip()]
+else:
+    app_port = os.environ.get('APP_PORT', '8000')
+    web_allowed_origins = [f"http://127.0.0.1:{app_port}", f"http://localhost:{app_port}"]
+
+_CSRF_SAFE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS', 'TRACE'})
+
+
+def _request_is_same_origin():
+    """Classify the request against ``web_allowed_origins``.
+
+    Returns True if its Origin/Referer is allow-listed, False if it is plainly
+    cross-origin, and None if neither header is present (indeterminate)."""
+    origin = request.headers.get('Origin')
+    if origin:
+        return origin in web_allowed_origins
+    referer = request.headers.get('Referer')
+    if referer:
+        return any(referer == o or referer.startswith(o + '/') for o in web_allowed_origins)
+    return None
+
+
 @app.before_request
 def csrf_protect():
-    # /socket.io is exempt because Socket.IO POSTs carry no form CSRF token; it is
-    # instead protected by its own handshake and the cors_allowed_origins allow-list
-    # (see socketio_origins below). Keep that in mind before adding any
-    # state-changing/admin action over a socket event — such handlers must do their
-    # own origin/permission check, since this guard won't cover them.
-    # /api/ingest is a machine-to-machine endpoint authenticated by a per-device
-    # Fernet key (no browser session, no form token), so the form-CSRF check can't
-    # apply; it does its own auth. The JSON device-management API under /api/devices
-    # is session-authenticated and, like the existing /api/organisations PUT, relies
-    # on SameSite=Lax cookies to block cross-site state changes rather than the
-    # single-use form token (which a fetch() body can't carry).
-    csrf_exempt = (request.path == '/api/ingest'
-                   or request.path == '/api/devices'
-                   or request.path.startswith('/api/devices/'))
-    if request.method == "POST" and not request.path.startswith('/socket.io') and not csrf_exempt:
+    # CSRF defence in two layers:
+    #
+    #   Layer 1 (every unsafe method) — Origin/Referer same-origin enforcement.
+    #   Modern browsers attach an Origin header to all state-changing fetch()/XHR
+    #   requests, same-origin ones included, so this is the primary guard for the
+    #   JSON API (POST/PUT/PATCH/DELETE that cannot carry a form token). Validating
+    #   the Origin is stronger than leaning on SameSite=Lax alone and is the
+    #   recommended 2026 practice for cookie-authenticated JSON APIs.
+    #
+    #   Layer 2 (traditional form POSTs) — the single-use hidden _csrf_token,
+    #   retained for the login form and any future server-rendered <form>.
+    #
+    # Exemptions: /socket.io has its own handshake + cors_allowed_origins
+    # allow-list; /api/ingest is machine-to-machine, authenticated by a per-device
+    # Fernet key (no browser, no Origin), so neither layer applies to it. Any
+    # state-changing socket event must still do its own origin/permission check.
+    method = request.method
+    if method in _CSRF_SAFE_METHODS:
+        return
+    path = request.path
+    if path.startswith('/socket.io') or path == '/api/ingest':
+        return
+
+    same_origin = _request_is_same_origin()
+    if same_origin is False:
+        logger.warning(f"CSRF: cross-origin {method} {path} rejected (Origin/Referer not allow-listed) from {request.remote_addr}")
+        return "Forbidden: cross-origin request rejected", 403
+    if same_origin is None and path.startswith('/api/'):
+        # A browser fetch() to the JSON API always carries an Origin or Referer;
+        # their absence on an unsafe-method API call is not a normal same-origin
+        # browser request, so refuse it rather than let it through unprotected.
+        logger.warning(f"CSRF: {method} {path} with no Origin/Referer rejected from {request.remote_addr}")
+        return "Forbidden: missing Origin/Referer", 403
+
+    # Layer 2 — form token for non-API POSTs (e.g. the login form). The JSON API
+    # cannot carry it and is already covered by the same-origin check above.
+    if method == "POST" and not path.startswith('/api/'):
         token = session.pop('_csrf_token', None)
         if not token or token != request.form.get('_csrf_token'):
             logger.warning(f"CSRF attempt detected from {request.remote_addr}")
@@ -632,14 +701,8 @@ def generate_csrf_token():
     return session['_csrf_token']
 
 app.jinja_env.globals['csrf_token'] = generate_csrf_token
-socketio_origins = os.environ.get('SOCKETIO_CORS_ORIGINS')
-if socketio_origins:
-    socketio_origins = [origin.strip() for origin in socketio_origins.split(',') if origin.strip()]
-else:
-    app_port = os.environ.get('APP_PORT', '8000')
-    socketio_origins = [f"http://127.0.0.1:{app_port}", f"http://localhost:{app_port}"]
 
-socketio = SocketIO(app, cors_allowed_origins=socketio_origins, async_mode='threading',
+socketio = SocketIO(app, cors_allowed_origins=web_allowed_origins, async_mode='threading',
                     ping_timeout=SOCKETIO_PING_TIMEOUT, ping_interval=SOCKETIO_PING_INTERVAL)
 
 @app.route('/login', methods=['GET', 'POST'])

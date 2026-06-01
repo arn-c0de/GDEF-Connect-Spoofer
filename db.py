@@ -17,7 +17,7 @@ Configuration (env):
     PGPORT              default 5432
     PGDATABASE          default gdef_l1nk
     PGUSER              default gdef_l1nk
-    PGPASSWORD          default gdef_l1nk
+    PGPASSWORD          required (no built-in default); set empty for trust auth
     DB_POOL_SIZE        max pooled connections per process (default 10)
     DB_CONNECT_TIMEOUT  seconds to wait for a connection (default 15)
 """
@@ -37,13 +37,11 @@ logger = logging.getLogger("GDEF-L1NK")
 DBError = psycopg.Error
 
 
-# Built-in fallback password. Fine for a localhost-only dev run, but a known
-# constant — anything reachable on a non-loopback PGHOST must override it.
-_DEFAULT_PW = "gdef_l1nk"
-_warned_default_pw = False
+class MissingDBCredentials(RuntimeError):
+    """No DB password source configured — raised instead of using a constant."""
+
 
 def _dsn():
-    global _warned_default_pw
     url = os.environ.get("DATABASE_URL")
     if url:
         return url
@@ -51,13 +49,17 @@ def _dsn():
     port = os.environ.get("PGPORT", "5432")
     name = os.environ.get("PGDATABASE", "gdef_l1nk")
     user = os.environ.get("PGUSER", "gdef_l1nk")
-    pw = os.environ.get("PGPASSWORD", _DEFAULT_PW)
-    if pw == _DEFAULT_PW and not _warned_default_pw:
-        _warned_default_pw = True
-        logger.warning(
-            "PGPASSWORD is unset: using the built-in default DB password (a known "
-            "constant). Set PGPASSWORD or DATABASE_URL to a strong secret before "
-            "PostgreSQL is reachable on anything other than 127.0.0.1.")
+    # Fail fast rather than fall back to a built-in constant password. A
+    # credential baked into source is no secret at all and becomes a real risk
+    # the moment PostgreSQL is reachable off-loopback, so we require the operator
+    # to supply one explicitly. Set an empty PGPASSWORD= to opt into local
+    # trust/peer auth where PostgreSQL itself requires no password.
+    if "PGPASSWORD" not in os.environ:
+        raise MissingDBCredentials(
+            "No database credentials configured. Set DATABASE_URL, or PGPASSWORD "
+            "(use an empty PGPASSWORD= for local trust/peer auth). Refusing to "
+            "fall back to a built-in default password.")
+    pw = os.environ["PGPASSWORD"]
     return f"host={host} port={port} dbname={name} user={user} password={pw}"
 
 

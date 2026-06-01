@@ -137,12 +137,14 @@ To run the app outside Docker against your own PostgreSQL, configure the connect
 | `PGPORT` | `5432` | Database port |
 | `PGDATABASE` | `gdef_l1nk` | Database name |
 | `PGUSER` | `gdef_l1nk` | Database user |
-| `PGPASSWORD` | `gdef_l1nk` | Database password |
+| `PGPASSWORD` | *(required)* | Database password — **no built-in default**. The app refuses to start if neither this nor `DATABASE_URL` is set; set it to an empty value (`PGPASSWORD=`) only to opt into local `trust`/`peer` auth where PostgreSQL itself needs no password. |
 | `DB_POOL_SIZE` | `10` | Max pooled connections per process |
 | `DB_CONNECT_TIMEOUT` | `15` | Seconds to wait for a connection |
 | `NETWORK_INTERFACE` | *(from config)* | Capture interface; overrides `database/backend_conf.json` (useful in containers) |
 
 The app waits for PostgreSQL to accept connections on startup and creates its schema automatically (`init_db`).
+
+> **No default DB password.** Earlier versions fell back to a hardcoded constant password when `PGPASSWORD` was unset. That fallback is gone: a credential baked into source is no secret and becomes a real risk the moment PostgreSQL is reachable off-loopback. The app now **fails fast** with a clear error instead, and `docker compose up` aborts until `POSTGRES_PASSWORD` is set in `.env`. The Docker stack passes the value through `DATABASE_URL`, so set it once in `.env` and both the `db` container and the app pick it up.
 
 ## Multi-Device Monitoring (Sensors)
 
@@ -350,9 +352,10 @@ run FritzDump yourself and have the hub only **read** the pcaps.
 
 GDEF-L1NK is built with a **Security-First** approach:
 - **Authentication**: Mandatory token-based login (Timing-safe comparison).
-- **Hardened Sessions**: HTTPOnly, SameSite=Lax, and Secure-cookie support.
+- **Hardened Sessions**: HTTPOnly, SameSite=Lax, and **Secure-by-default** cookies — the Secure flag is enabled automatically whenever the app is bound to a non-loopback address (LAN-exposed) or sits behind a TLS-terminating proxy (`TRUST_PROXY=1`), and only relaxed for the loopback-HTTP dev case. Override either way with `SESSION_COOKIE_SECURE`.
 - **XSS Protection**: Strict HTML escaping and a robust Content Security Policy (CSP).
-- **CSRF Protection**: Cryptographic tokens for all state-changing actions.
+- **CSRF Protection**: An Origin/Referer same-origin allow-list guards **every** state-changing request (the JSON API's `fetch()` POST/PUT/PATCH/DELETE included — these can't carry a form token), backed by SameSite=Lax cookies and a single-use token on the login form. The allow-list is the same one used for Socket.IO (`SOCKETIO_CORS_ORIGINS`).
+- **No hardcoded secrets**: the database password has no built-in default; the app fails fast unless it is configured (see [Database](#database-postgresql)).
 - **DoS Resilience**: In-memory resource limits and Socket.IO rate limiting.
 - **Data Protection**:
     - **Windows**: ACL hardening (icacls) for sensitive data.
@@ -364,7 +367,8 @@ GDEF-L1NK is built with a **Security-First** approach:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FLASK_SECRET_KEY` | random | Stable session signing key |
-| `SESSION_COOKIE_SECURE` | off | Set to `1` when using HTTPS |
+| `SESSION_COOKIE_SECURE` | auto | Session cookie Secure (HTTPS-only) flag. Auto: **on** for a non-loopback `APP_HOST` or `TRUST_PROXY=1`, **off** for loopback HTTP dev. Set `1`/`0` to force it. |
+| `SOCKETIO_CORS_ORIGINS` | `http://127.0.0.1:APP_PORT`, `http://localhost:APP_PORT` | Comma-separated browser origins allowed to open the Socket.IO stream **and** to make state-changing API calls (CSRF same-origin allow-list). Set when serving from a real hostname/port. |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Failed logins per IP before lockout |
 | `SOCKET_RATE_LIMIT` | `5` | Max Socket.IO events per second per client |
 | `ALLOW_INSECURE_GEO_API`| `0` | Geo lookups are HTTPS-only by default; set to `1` to allow the unencrypted `http://ip-api.com` fallback |

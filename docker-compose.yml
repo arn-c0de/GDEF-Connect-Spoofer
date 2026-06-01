@@ -18,7 +18,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-gdef_l1nk}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gdef_l1nk}
+      # Fail fast if unset rather than bake in a known constant: `docker compose
+      # up` aborts with this message until POSTGRES_PASSWORD is set in .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
       POSTGRES_DB: ${POSTGRES_DB:-gdef_l1nk}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
@@ -49,7 +51,7 @@ services:
     environment:
       # Host networking → connect to the db container's published loopback port.
       # Set explicitly here so it always wins over any DATABASE_URL left in .env.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-gdef_l1nk}:${POSTGRES_PASSWORD:-gdef_l1nk}@127.0.0.1:${POSTGRES_PORT:-55432}/${POSTGRES_DB:-gdef_l1nk}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gdef_l1nk}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}@127.0.0.1:${POSTGRES_PORT:-55432}/${POSTGRES_DB:-gdef_l1nk}
     volumes:
       # geo .mmdb datasets + generated secrets/config persist on the host.
       - ./database:/app/database

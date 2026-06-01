@@ -255,6 +255,11 @@ def main():
     MY_PUBLIC_IP = get_public_ip()
     logger.info("GDEF-L1NK sensor %s starting: iface=%s local_ip=%s public_ip=%s -> %s",
                 DEVICE_ID[:8], INTERFACE or "(default)", MY_LOCAL_IP, MY_PUBLIC_IP, INGEST_URL)
+    if INGEST_URL.startswith("https://") and not VERIFY_TLS:
+        logger.warning("SENSOR_VERIFY_TLS is disabled: the hub's TLS certificate is "
+                       "NOT verified, so the HTTPS connection can be MITM'd. The batch "
+                       "stays Fernet-encrypted, but only use this for a self-signed hub "
+                       "on a trusted LAN — pin a CA instead where possible.")
     threading.Thread(target=_flush_loop, daemon=True).start()
     bpf = capture_core.build_bpf_filter()  # ip or icmp
     try:
