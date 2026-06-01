@@ -430,6 +430,35 @@ export function setupStats(app) {
         renderStatList(body.querySelector('#statListHost'), conns);
     }
 
+    // Shared renderer for the live + history Connections tables. They differ
+    // only in their row source, the LAN-device cell, the last-seen format, the
+    // count line, and what a header click does (live re-sorts the page in place,
+    // history re-queries the server). Live rows pass onRowClick=undefined.
+    function renderConnectionTable(body, { rows, countHtml, lanCell, lastSeenFmt, onSort, onRowClick }) {
+        const { key, dir } = app.connSort;
+        const cols = [['ip', 'IP'], ['local_ip', 'LAN device(s)'], ['country', 'Country'], ['org', 'Org'], ['protocol', 'Proto'],
+                      ['incoming_count', 'In'], ['outgoing_count', 'Out'], ['threat_level', 'Threat'], ['last_seen', 'Last seen']];
+        const head = cols.map(([k, l]) =>
+            `<th data-k="${k}">${l}${key === k ? (dir < 0 ? ' ▼' : ' ▲') : ''}</th>`).join('');
+        const trs = rows.map(p =>
+            `<tr><td>${escapeHTML(p.ip)}</td><td class="ell">${escapeHTML(lanCell(p) || '—')}</td><td>${escapeHTML(p.country || '')}</td>` +
+            `<td class="ell">${escapeHTML(p.org || '')}</td><td>${escapeHTML(p.protocol || '')}</td>` +
+            `<td>${formatNum(p.incoming_count || 0)}</td><td>${formatNum(p.outgoing_count || 0)}</td>` +
+            `<td>${escapeHTML(p.threat_level || 'No Threat')}</td>` +
+            `<td>${p.last_seen ? lastSeenFmt(p.last_seen) : ''}</td></tr>`).join('');
+        body.innerHTML = `<div class="conn-count">${countHtml}</div>` +
+            `<div class="conn-table-wrap"><table class="conn-table"><thead><tr>${head}</tr></thead><tbody>${trs}</tbody></table></div>`;
+        body.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {
+            const k = th.dataset.k;
+            if (app.connSort.key === k) app.connSort.dir *= -1; else { app.connSort.key = k; app.connSort.dir = -1; }
+            onSort();
+        }));
+        if (onRowClick) {
+            const rowEls = body.querySelectorAll('tbody tr');
+            rows.forEach((p, i) => rowEls[i] && rowEls[i].addEventListener('click', () => onRowClick(p)));
+        }
+    }
+
     function renderConnTab(body) {
         if (app.histMode === 'history') return renderConnHistory(body);
         const dev = ovDevice();
@@ -439,23 +468,13 @@ export function setupStats(app) {
             if (numeric(key)) return ((a[key] || 0) - (b[key] || 0)) * dir;
             return String(a[key] || '').localeCompare(String(b[key] || '')) * dir;
         });
-        const cols = [['ip', 'IP'], ['local_ip', 'LAN device(s)'], ['country', 'Country'], ['org', 'Org'], ['protocol', 'Proto'],
-                      ['incoming_count', 'In'], ['outgoing_count', 'Out'], ['threat_level', 'Threat'], ['last_seen', 'Last seen']];
-        const head = cols.map(([k, l]) =>
-            `<th data-k="${k}">${l}${key === k ? (dir < 0 ? ' ▼' : ' ▲') : ''}</th>`).join('');
-        const trs = rows.slice(0, 500).map(p =>
-            `<tr><td>${escapeHTML(p.ip)}</td><td class="ell">${escapeHTML(app.localPeersText(p) || '—')}</td><td>${escapeHTML(p.country || '')}</td>` +
-            `<td class="ell">${escapeHTML(p.org || '')}</td><td>${escapeHTML(p.protocol || '')}</td>` +
-            `<td>${formatNum(p.incoming_count || 0)}</td><td>${formatNum(p.outgoing_count || 0)}</td>` +
-            `<td>${escapeHTML(p.threat_level || 'No Threat')}</td>` +
-            `<td>${p.last_seen ? new Date(p.last_seen * 1000).toLocaleTimeString() : ''}</td></tr>`).join('');
-        body.innerHTML = `<div class="conn-count">${rows.length} connections</div>` +
-            `<div class="conn-table-wrap"><table class="conn-table"><thead><tr>${head}</tr></thead><tbody>${trs}</tbody></table></div>`;
-        body.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {
-            const k = th.dataset.k;
-            if (app.connSort.key === k) app.connSort.dir *= -1; else { app.connSort.key = k; app.connSort.dir = -1; }
-            renderConnTab(body);
-        }));
+        renderConnectionTable(body, {
+            rows: rows.slice(0, 500),
+            countHtml: `${rows.length} connections`,
+            lanCell: p => app.localPeersText(p),
+            lastSeenFmt: ts => new Date(ts * 1000).toLocaleTimeString(),
+            onSort: () => renderConnTab(body),
+        });
     }
 
     // ── History renderers (DB-backed; see app.fetchHistory) ───────────────
@@ -467,30 +486,18 @@ export function setupStats(app) {
         if (app.histLoading && !data) { body.innerHTML = '<div class="conn-count muted">Loading history…</div>'; return; }
         const rows = (data && data.rows) || [];
         const total = (data && data.total) || 0;
-        const { key, dir } = app.connSort;
-        const cols = [['ip', 'IP'], ['local_ip', 'LAN device(s)'], ['country', 'Country'], ['org', 'Org'], ['protocol', 'Proto'],
-                      ['incoming_count', 'In'], ['outgoing_count', 'Out'], ['threat_level', 'Threat'], ['last_seen', 'Last seen']];
-        const head = cols.map(([k, l]) =>
-            `<th data-k="${k}">${l}${key === k ? (dir < 0 ? ' ▼' : ' ▲') : ''}</th>`).join('');
-        const trs = rows.map(p =>
-            `<tr><td>${escapeHTML(p.ip)}</td><td class="ell">${escapeHTML(p.local_ip || '—')}</td><td>${escapeHTML(p.country || '')}</td>` +
-            `<td class="ell">${escapeHTML(p.org || '')}</td><td>${escapeHTML(p.protocol || '')}</td>` +
-            `<td>${formatNum(p.incoming_count || 0)}</td><td>${formatNum(p.outgoing_count || 0)}</td>` +
-            `<td>${escapeHTML(p.threat_level || 'No Threat')}</td>` +
-            `<td>${p.last_seen ? new Date(p.last_seen * 1000).toLocaleString() : ''}</td></tr>`).join('');
         const note = total > rows.length ? ` (showing ${rows.length} of ${total})` : '';
-        body.innerHTML = `<div class="conn-count">${formatNum(total)} connections${note} · history ~30 days</div>` +
-            `<div class="conn-table-wrap"><table class="conn-table"><thead><tr>${head}</tr></thead><tbody>${trs}</tbody></table></div>`;
-        body.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {
-            const k = th.dataset.k;
-            if (app.connSort.key === k) app.connSort.dir *= -1; else { app.connSort.key = k; app.connSort.dir = -1; }
-            app.fetchHistory();
-        }));
-        const rowEls = body.querySelectorAll('tbody tr');
-        rows.forEach((p, i) => rowEls[i] && rowEls[i].addEventListener('click', () => {
-            app.showDataList(p);
-            if (isValidCoord(p.lat, p.lng)) app.globe.pointOfView({ lat: p.lat, lng: p.lng, altitude: 2.5 }, 1000);
-        }));
+        renderConnectionTable(body, {
+            rows,
+            countHtml: `${formatNum(total)} connections${note} · history ~30 days`,
+            lanCell: p => p.local_ip,
+            lastSeenFmt: ts => new Date(ts * 1000).toLocaleString(),
+            onSort: () => app.fetchHistory(),
+            onRowClick: p => {
+                app.showDataList(p);
+                if (isValidCoord(p.lat, p.lng)) app.globe.pointOfView({ lat: p.lat, lng: p.lng, altitude: 2.5 }, 1000);
+            },
+        });
     }
 
     // The Statistics page over the full retained history: KPIs/charts from the
@@ -513,6 +520,8 @@ export function setupStats(app) {
             ['ICMP', formatNum(proto.ICMP || 0), ''],
             ['Suspicious', formatNum(suspicious), suspicious ? 'warn' : ''],
             ['High', formatNum(threat.High || 0), (threat.High ? 'danger' : '')],
+            // How much disk the retained history is using (whole DB, pg_database_size).
+            ['Storage', formatBytes(sum.db_size || 0), ''],
         ];
         const protoSeg = [
             { label: 'TCP', value: proto.TCP || 0, color: '#4FC3F7' },

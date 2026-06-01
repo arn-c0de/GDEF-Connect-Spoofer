@@ -744,7 +744,28 @@ _CONN_SEARCH_COLS = ("d.ip", "d.hostname", "d.org", "d.country", "d.city",
 _CONN_FILTER_COLS = {"country": "d.country", "threat": "d.threat_level", "protocol": "d.protocol"}
 _CONN_THREATS = ("High", "Medium", "Low", "No Threat")
 _CONN_PROTOCOLS = ("TCP", "UDP", "ICMP")
-_EMPTY_CONN_SUMMARY = {"packets": 0, "lan_devices": 0, "protocol": {}, "threat": {}, "countries": []}
+_EMPTY_CONN_SUMMARY = {"packets": 0, "lan_devices": 0, "protocol": {}, "threat": {}, "countries": [], "db_size": 0}
+
+# Total on-disk size of the database, cached briefly. The History view shows it so
+# the operator can see how much storage the retained history is using, but
+# pg_database_size reads the catalog and the History query re-fires on every
+# search/sort/filter keystroke — so cache it (the size barely moves second to
+# second) instead of running it per request.
+_db_size_cache = {"bytes": 0, "ts": 0.0}
+_DB_SIZE_TTL = 30.0
+
+
+def _db_size_bytes(c):
+    now = time.time()
+    if _db_size_cache["bytes"] and now - _db_size_cache["ts"] < _DB_SIZE_TTL:
+        return _db_size_cache["bytes"]
+    try:
+        c.execute("SELECT pg_database_size(current_database())")
+        size = int(c.fetchone()[0] or 0)
+        _db_size_cache.update(bytes=size, ts=now)
+        return size
+    except Exception:
+        return _db_size_cache["bytes"]
 
 
 def _load_ip_labels():
@@ -848,7 +869,9 @@ def api_connections():
     base_where, base_params = _connections_where(device, q, {})
     where, params = _connections_where(device, q, filters)
     if where is None:  # scope is a stopped device -> nothing to show
-        return jsonify({"rows": [], "total": 0, "summary": dict(_EMPTY_CONN_SUMMARY), "facets": {"countries": []}})
+        empty_summary = dict(_EMPTY_CONN_SUMMARY)
+        empty_summary["db_size"] = _db_size_cache["bytes"]  # last-known, no extra query
+        return jsonify({"rows": [], "total": 0, "summary": empty_summary, "facets": {"countries": []}})
 
     cols = ("d.device_id, d.ip, d.local_ip, d.lat, d.lon, d.city, d.country, d.org, "
             "d.last_seen, d.protocol, d.src_port, d.dst_port, d.mac, d.vendor, "
@@ -883,6 +906,7 @@ def api_connections():
             c.execute(f"SELECT d.country, COUNT(DISTINCT d.ip) AS n FROM ip_data d{facet_where} "
                       f"GROUP BY d.country ORDER BY n DESC LIMIT 200", base_params)
             facet_countries = [[r[0], r[1]] for r in c.fetchall()]
+            db_size = _db_size_bytes(c)
         return jsonify({
             "rows": rows,
             "total": int(total or 0),
@@ -892,6 +916,7 @@ def api_connections():
                 "protocol": protocol,
                 "threat": threat,
                 "countries": countries,
+                "db_size": db_size,
             },
             "facets": {"countries": facet_countries},
         })
