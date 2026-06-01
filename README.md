@@ -7,9 +7,13 @@
 ![Network](https://img.shields.io/badge/Network-Monitoring-critical?logo=wireshark)
 ![Backend](https://img.shields.io/badge/Backend-Flask-black?logo=flask)
 
-![GDEF-L1NK globe](media/videos/gdef-l1nk-rot-main.gif)
+<p align="center">
+  <img src="media/videos/gdef-l1nk-rot-main.gif" alt="GDEF-L1NK globe" width="640">
+</p>
 
-![GDEF-L1NK screenshot](media/images/gdef-l1nk-link.png)
+<p align="center">
+  <img src="media/images/gdef-l1nk-link.png" alt="GDEF-L1NK screenshot" width="900">
+</p>
 
 GDEF-L1NK is a modular network intelligence component of the **GDEF Suite**. It captures authorized network traffic, enriches observed endpoints, and visualizes live connections on an interactive 3D globe for defensive analysis, lab work, and internal security operations.
 
