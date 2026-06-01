@@ -416,7 +416,7 @@ export function setupStats(app) {
                 '<div class="chart-grid">' +
                     `<div class="chart-card"><h5>Protocols</h5>${svgDonut(protoSeg, 140)}${legendHtml(protoSeg)}</div>` +
                     `<div class="chart-card"><h5>Threats</h5>${svgDonut(threatSeg, 140)}${legendHtml(threatSeg)}</div>` +
-                    `<div class="chart-card wide"><h5>Top countries</h5>${countries.length ? svgBars(countries, '#3b82f6') : '<p class="muted">no data</p>'}</div>` +
+                    `<div class="chart-card wide"><h5>Top countries (IPs)</h5>${countries.length ? svgBars(countries, '#3b82f6') : '<p class="muted">no data</p>'}</div>` +
                 '</div>' +
             '</div>' +
             '<div class="stat-section"><h4 class="stat-section-title">LAN devices</h4>' +
@@ -534,7 +534,7 @@ export function setupStats(app) {
                 '<div class="chart-grid">' +
                     `<div class="chart-card"><h5>Protocols</h5>${svgDonut(protoSeg, 140)}${legendHtml(protoSeg)}</div>` +
                     `<div class="chart-card"><h5>Threats</h5>${svgDonut(threatSeg, 140)}${legendHtml(threatSeg)}</div>` +
-                    `<div class="chart-card wide"><h5>Top countries</h5>${countries.length ? svgBars(countries, '#3b82f6') : '<p class="muted">no data</p>'}</div>` +
+                    `<div class="chart-card wide"><h5>Top countries (IPs)</h5>${countries.length ? svgBars(countries, '#3b82f6') : '<p class="muted">no data</p>'}</div>` +
                 '</div>' +
             '</div>' +
             '<div class="stat-section"><h4 class="stat-section-title">Top connections by packets</h4>' +

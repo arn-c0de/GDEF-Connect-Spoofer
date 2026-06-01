@@ -220,20 +220,26 @@ export function setupOverlay(app) {
         app.syncCountryFilter = () => {
             const sel = document.getElementById('ovFilterCountry');
             if (!sel) return;
-            let countries;
+            let pairs;  // [[country, ipCount], …], most IPs first
             if (app.histMode === 'history' && app.histData && app.histData.facets) {
-                countries = (app.histData.facets.countries || []).filter(Boolean);
+                pairs = (app.histData.facets.countries || []).filter(p => p && p[0]);
             } else {
-                countries = [...new Set(Object.values(app.points)
-                    .map(p => p.country).filter(c => c && c !== 'Unknown'))].sort();
+                const counts = {};
+                for (const ip in app.points) {
+                    const p = app.points[ip];
+                    if (p.expired || !p.country || p.country === 'Unknown') continue;
+                    counts[p.country] = (counts[p.country] || 0) + 1;
+                }
+                pairs = Object.entries(counts).sort((a, b) => b[1] - a[1]);
             }
-            const want = ['', ...countries];
-            const have = Array.from(sel.options).map(o => o.value);
-            if (want.join('') !== have.join('')) {
+            // Rebuild only when the option set actually changed (cheap signature).
+            const sig = pairs.map(p => p[0] + ':' + p[1]).join('|');
+            if (sel.dataset.sig !== sig) {
+                sel.dataset.sig = sig;
                 const frag = document.createDocumentFragment();
                 const mk = (text, value) => { const o = document.createElement('option'); o.textContent = text; o.value = value; return o; };
-                frag.appendChild(mk('All', ''));
-                countries.forEach(cn => frag.appendChild(mk(cn, cn)));
+                frag.appendChild(mk('All countries', ''));
+                pairs.forEach(([cn, n]) => frag.appendChild(mk(`${cn} (${Number(n).toLocaleString()})`, cn)));
                 sel.replaceChildren(frag);
             }
             sel.value = app.ovFilters.country;

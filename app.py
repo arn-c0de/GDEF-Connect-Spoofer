@@ -846,13 +846,17 @@ def api_connections():
             protocol = {(r[0] or 'Other'): r[1] for r in c.fetchall()}
             c.execute(f"SELECT d.threat_level, COUNT(*) FROM ip_data d{where} GROUP BY d.threat_level", params)
             threat = {(r[0] or 'No Threat'): r[1] for r in c.fetchall()}
-            c.execute(f"SELECT d.country, COUNT(*) AS n FROM ip_data d{country_where} "
+            # Count DISTINCT IPs per country (not rows): "how many IPs are in
+            # this country", deduped across capture devices.
+            c.execute(f"SELECT d.country, COUNT(DISTINCT d.ip) AS n FROM ip_data d{country_where} "
                       f"GROUP BY d.country ORDER BY n DESC LIMIT 15", params)
             countries = [[r[0], r[1]] for r in c.fetchall()]
-            # Country facet: distinct list (filter-independent) for the dropdown.
-            c.execute(f"SELECT DISTINCT d.country FROM ip_data d{facet_where} "
-                      f"ORDER BY d.country LIMIT 200", base_params)
-            facet_countries = [r[0] for r in c.fetchall()]
+            # Country facet for the dropdown: every country (filter-independent)
+            # with its distinct-IP count, so each option can show how many IPs it
+            # holds. Ordered by count so the busiest countries surface first.
+            c.execute(f"SELECT d.country, COUNT(DISTINCT d.ip) AS n FROM ip_data d{facet_where} "
+                      f"GROUP BY d.country ORDER BY n DESC LIMIT 200", base_params)
+            facet_countries = [[r[0], r[1]] for r in c.fetchall()]
         return jsonify({
             "rows": rows,
             "total": int(total or 0),

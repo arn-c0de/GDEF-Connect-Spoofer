@@ -118,16 +118,26 @@ export function setupThreatTicker(app) {
     // ── per-row controller (scroll OR step) ────────────────
     function makeRow(trackEl, stampFn, emptyMsg) {
         let points = [], sig = null, stepIdx = 0, stepTimer = null;
+        // Marquee rebuild coalescing: rebuilding innerHTML restarts the CSS
+        // animation, so doing it on every 400ms refresh makes the track snap back
+        // to the start ~2-3×/sec (severe stutter). Rebuild at most once per
+        // MIN_REBUILD_MS; between rebuilds only the "x ago" text is refreshed in
+        // place. animStart/animDur track the animation phase so a rebuild can
+        // resume mid-scroll instead of jumping to 0.
+        const MIN_REBUILD_MS = 5000;
+        let buildTimer = null, lastBuild = 0, animDur = 0, animStart = 0;
 
         function clearStep() { if (stepTimer) { clearInterval(stepTimer); stepTimer = null; } }
+        function clearBuild() { if (buildTimer) { clearTimeout(buildTimer); buildTimer = null; } }
 
-        function renderScroll() {
+        function renderScroll(preservePhase) {
             clearStep();
             if (!points.length) {
                 trackEl.style.animation = 'none';
                 trackEl.style.transform = 'none';
                 trackEl.className = 'ticker-track';
                 trackEl.innerHTML = `<span class="ticker-item ticker-none">${escapeHTML(emptyMsg)}</span>`;
+                animDur = 0;
                 return;
             }
             const sep = '<span class="ticker-sep">•</span>';
@@ -137,18 +147,28 @@ export function setupThreatTicker(app) {
             trackEl.className = 'ticker-track';
             trackEl.innerHTML = seq + sep + seq + sep;
             trackEl.style.transform = '';
-            applyScrollSpeed();
+            applyScrollSpeed(preservePhase);
         }
 
         // Constant linear speed: duration = half the track width / px-per-second,
         // so BOTH rows move at exactly settings.speed px/s regardless of how many
         // items each holds (identical visual speed — no length-based scaling, no
-        // floor that would slow a short row down).
-        function applyScrollSpeed() {
+        // floor that would slow a short row down). With preservePhase we resume at
+        // the same fraction of the loop (via a negative animation-delay) so a
+        // content change doesn't reset the scroll position to the start.
+        function applyScrollSpeed(preservePhase) {
             const half = trackEl.scrollWidth / 2;
-            if (half < 1) { trackEl.style.animation = 'none'; return; }
+            if (half < 1) { trackEl.style.animation = 'none'; animDur = 0; return; }
             const dur = half / Math.max(10, settings.speed);
+            let delay = 0;
+            if (preservePhase && animDur > 0) {
+                const elapsed = (performance.now() - animStart) / 1000;
+                delay = -(elapsed % dur);           // resume at the current phase
+            }
             trackEl.style.animation = `tickerScroll ${dur}s linear infinite`;
+            trackEl.style.animationDelay = `${delay}s`;
+            animDur = dur;
+            animStart = performance.now() + delay * 1000;   // virtual phase-0 time
         }
 
         // Update only the "x ago" text in place — no innerHTML rebuild, so the
@@ -192,29 +212,49 @@ export function setupThreatTicker(app) {
         }
 
         return {
-            // Feed fresh data; rebuild only on membership change, else just refresh
-            // the visible times (scroll) — keeps the animation uninterrupted.
+            // Feed fresh data. On a membership change, rebuild the marquee at most
+            // once per MIN_REBUILD_MS (coalescing the rest into in-place time
+            // refreshes) so the scroll animation isn't restarted on every 400ms
+            // refresh. Reordering / "x ago" changes never rebuild.
             update(newPoints) {
                 points = newPoints;
                 const newSig = sigOf(points);
                 const changed = newSig !== sig;
                 sig = newSig;
-                if (settings.scroll) {
-                    if (changed) renderScroll();
-                    else refreshTimes();
-                } else {
+                if (!settings.scroll) {
                     if (changed) renderStep();
                     else renderStepFrame();
+                    return;
+                }
+                if (!changed) { refreshTimes(); return; }
+                const now = performance.now();
+                const since = now - lastBuild;
+                if (since >= MIN_REBUILD_MS) {
+                    clearBuild();
+                    lastBuild = now;
+                    renderScroll(true);             // resume mid-scroll, no snap-back
+                } else {
+                    refreshTimes();                 // show fresh times immediately
+                    if (!buildTimer) {              // …and fold the rebuild in later
+                        buildTimer = setTimeout(() => {
+                            buildTimer = null;
+                            lastBuild = performance.now();
+                            renderScroll(true);
+                        }, MIN_REBUILD_MS - since);
+                    }
                 }
             },
-            // Re-apply after a settings change (mode/speed/interval).
+            // Re-apply after a settings change (mode/speed/interval). User-initiated
+            // and rare, so a fresh build (no phase preservation) is fine.
             relayout() {
+                clearBuild();
                 sig = sigOf(points);   // force the next update to refresh, not rebuild
-                if (settings.scroll) renderScroll();
+                lastBuild = performance.now();
+                if (settings.scroll) renderScroll(false);
                 else renderStep();
             },
             tickTimes() { if (settings.scroll) refreshTimes(); },
-            destroy() { clearStep(); },
+            destroy() { clearStep(); clearBuild(); },
         };
     }
 
