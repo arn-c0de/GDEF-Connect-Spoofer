@@ -57,6 +57,13 @@ export function setupGlobe(app) {
             return Math.min(0.45 + Math.log10(point.count + 1) * 0.4
                                  + Math.log10((point._recent || 0) + 1) * 0.2, 1.5);
         }
+        // Historic ("ghost") dots have no live rate; size them by total packets,
+        // capped small so the map of past activity stays readable and visibly
+        // calmer than the live, rate-driven dots.
+        if (!point.isOrigin && app.globeMode === 'history') {
+            const total = (point.incoming_count || 0) + (point.outgoing_count || 0);
+            return Math.min(0.28 + Math.log10(total + 1) * 0.28, 1.4);
+        }
         const recent = recentPacketCount(point, Date.now() / 1000);
         let r = recent <= 0 ? 0.3 : Math.min(0.3 + Math.log10(recent + 1) * 0.6, 3.0);
         // White (no-threat / unclassified) dots are the bulk and least notable —
@@ -181,6 +188,10 @@ export function setupGlobe(app) {
             const base = point.isOrigin
                 ? (point.color || '#FFFF00')
                 : getCircleColor(point.threat_level, point.org);
+            // Historic dots render at a fixed low opacity so they read as "past"
+            // — clearly dimmer than the live, freshness-faded dots — while keeping
+            // their threat colour so suspicious history still stands out.
+            if (!point.isOrigin && app.globeMode === 'history') return toRGBA(base, 0.5);
             // Dots/clusters linger and fade over EXPIRATION_SECONDS (origins solid).
             return toRGBA(base, freshnessAlpha(point, app.EXPIRATION_SECONDS));
         })
@@ -207,7 +218,10 @@ export function setupGlobe(app) {
         // more severe, so suspicious/dangerous dots stand proud of the plain ones
         // instead of being buried among them. No-threat dots and origins stay flat.
         // Clusters lift by their worst member's threat (carried on threat_level).
-        .pointAltitude(d => 0.1 + threatRank(d.threat_level) * 0.03)
+        // Historic dots hug the surface (flat) so they sit visibly "below" the
+        // raised live dots, reinforcing the live-vs-history distinction.
+        .pointAltitude(d => (!d.isOrigin && app.globeMode === 'history')
+            ? 0.01 : 0.1 + threatRank(d.threat_level) * 0.03)
         // No grow-in tween on data updates. updateGlobeData() re-pushes pointsData
         // on every zoom-settle (re-clustering, so points enter/leave the set) and
         // once a second (size decay); with the default 1000ms transition each
@@ -452,6 +466,49 @@ export function setupGlobe(app) {
     app.syncGlobeRotationControls();
     app.applyAutoRotate();   // resume rotation if it was left on
 
+    // ── Live / History data mode ──────────────────────────
+    const globeModeLiveBtn    = document.getElementById('globeModeLive');
+    const globeModeHistoryBtn = document.getElementById('globeModeHistory');
+
+    app.syncGlobeModeControls = () => {
+        globeModeLiveBtn?.classList.toggle('active', app.globeMode === 'live');
+        globeModeHistoryBtn?.classList.toggle('active', app.globeMode === 'history');
+    };
+
+    // Pull every located IP from the DB for the History view. Latest-wins via a
+    // token so a slow response can't overwrite a newer request / a mode switch.
+    app.fetchGlobeHistory = async () => {
+        const token = ++app._globeHistToken;
+        try {
+            const res = await fetch('/api/globe/points', { credentials: 'same-origin' });
+            if (token !== app._globeHistToken) return;
+            const d = res.ok ? await res.json() : { points: [] };
+            app.historyPoints = Array.isArray(d.points) ? d.points : [];
+        } catch (_) {
+            if (token !== app._globeHistToken) return;
+            app.historyPoints = [];
+        }
+        if (token !== app._globeHistToken) return;
+        if (app.globeMode === 'history') app.updateGlobeData();
+    };
+
+    function setGlobeMode(mode) {
+        if (app.globeMode === mode) return;
+        app.globeMode = mode;
+        localStorage.setItem('globeMode', mode);
+        app.syncGlobeModeControls();
+        if (mode === 'history') {
+            showToast('Loading history…', 'low');
+            app.fetchGlobeHistory();
+        }
+        app.updateGlobeData();   // immediate redraw (history fills in once fetched)
+    }
+    globeModeLiveBtn?.addEventListener('click', () => setGlobeMode('live'));
+    globeModeHistoryBtn?.addEventListener('click', () => setGlobeMode('history'));
+
+    app.syncGlobeModeControls();
+    if (app.globeMode === 'history') app.fetchGlobeHistory();   // restore on load
+
     // ── Arc bookkeeping ───────────────────────────────────
     app.deleteArcsOfIp = ip => { for (const k in app.arcs) if (app.arcs[k].ip === ip) delete app.arcs[k]; };
     app.expireArcsOfIp = ip => { for (const k in app.arcs) if (app.arcs[k].ip === ip) app.arcs[k].expired = true; };
@@ -462,7 +519,9 @@ export function setupGlobe(app) {
     // traffic means no arc at all — only the (fading) dot remains. So a moving
     // arc always means "a packet flowed just now".
     function arcPassesFilters(a) {
-        return !a.expired && app.isDeviceVisible(a.device_id) &&
+        // Live comets belong to the live view only; History mode shows stored
+        // points without the real-time packet rays.
+        return app.globeMode !== 'history' && !a.expired && app.isDeviceVisible(a.device_id) &&
             (app.showTCPOnly ? a.protocol === 'TCP' : true) &&
             ((app.showLocalNetwork    && isLocalNetwork(a.ip, a.org)) ||
              (app.showExternalNetwork && !isLocalNetwork(a.ip, a.org)));
@@ -583,12 +642,20 @@ export function setupGlobe(app) {
     // ── Globe data (points + cluster badges; arcs are driven by tickArcs) ──
     app.updateGlobeData = () => {
         const nowSec = Date.now() / 1000;
-        const visiblePoints = Object.values(app.points).filter(p =>
-            !p.expired && app.pointDeviceVisible(p) &&
-            (app.showTCPOnly ? p.protocol === 'TCP' : true) &&
-            ((app.showLocalNetwork    && isLocalNetwork(p.ip, p.org)) ||
-             (app.showExternalNetwork && !isLocalNetwork(p.ip, p.org)))
-        );
+        // History mode draws the located IPs pulled from the DB (app.historyPoints,
+        // respecting per-device visibility via device_id); live mode draws the
+        // in-memory points. Both honour the same network/protocol filters.
+        const visiblePoints = app.globeMode === 'history'
+            ? (app.historyPoints || []).filter(p =>
+                isValidCoord(p.lat, p.lng) && app.isDeviceVisible(p.device_id) &&
+                (app.showTCPOnly ? p.protocol === 'TCP' : true) &&
+                ((app.showLocalNetwork    && isLocalNetwork(p.ip, p.org)) ||
+                 (app.showExternalNetwork && !isLocalNetwork(p.ip, p.org))))
+            : Object.values(app.points).filter(p =>
+                !p.expired && app.pointDeviceVisible(p) &&
+                (app.showTCPOnly ? p.protocol === 'TCP' : true) &&
+                ((app.showLocalNetwork    && isLocalNetwork(p.ip, p.org)) ||
+                 (app.showExternalNetwork && !isLocalNetwork(p.ip, p.org))));
         // Clear any fan-out offset from a previous expand; re-applied below only
         // for members of a pile the user has opened.
         for (const p of visiblePoints) {

@@ -894,6 +894,49 @@ def api_device_stats():
         return jsonify({"error": "device stats unavailable"}), 500
 
 
+@app.route('/api/globe/points')
+@login_required
+def api_globe_points():
+    """Every retained IP that has a known location, for the globe's History view.
+    Lightweight projection (coordinates + the label/threat fields the globe needs);
+    rows without coordinates and stopped devices are excluded, and the result is
+    capped at MAX_IP_ROWS so a huge ledger can't blow up the payload."""
+    try:
+        with locked(disabled_devices_lock):
+            disabled = list(disabled_devices)
+        clauses = ["d.lat IS NOT NULL", "d.lon IS NOT NULL", "NOT (d.lat = 0 AND d.lon = 0)"]
+        params = []
+        if disabled:
+            clauses.append("d.device_id <> ALL(%s)")
+            params.append(disabled)
+        where = " WHERE " + " AND ".join(clauses)
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute(f"""SELECT d.device_id, d.ip, d.local_ip, d.lat, d.lon, d.city, d.country,
+                          d.org, d.last_seen, d.protocol, d.incoming_count, d.outgoing_count,
+                          d.hostname, d.threat_level
+                          FROM ip_data d{where}
+                          ORDER BY d.last_seen DESC NULLS LAST LIMIT %s""",
+                      (*params, MAX_IP_ROWS))
+            rows = c.fetchall()
+        pts = []
+        for (device_id, ip, local_ip, lat, lon, city, country, org, last_seen, protocol,
+             inc, out, hostname, threat_level) in rows:
+            pts.append({
+                "device_id": device_id, "ip": ip, "local_ip": local_ip,
+                "lat": lat, "lng": lon, "city": city, "country": country, "org": org,
+                "last_seen": last_seen, "protocol": protocol,
+                "incoming_count": inc or 0, "outgoing_count": out or 0,
+                "packet_count": (inc or 0) + (out or 0),
+                "hostname": ip if is_private_ip(ip) else hostname,
+                "threat_level": threat_level or "No Threat",
+            })
+        return jsonify({"points": pts})
+    except Exception as e:
+        logger.error(f"Error in api_globe_points: {e}")
+        return jsonify({"error": "globe points unavailable"}), 500
+
+
 @app.route('/api/export/csv')
 @login_required
 def api_export_csv():

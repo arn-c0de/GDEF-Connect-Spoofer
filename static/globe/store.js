@@ -75,6 +75,14 @@ export function createApp(myIpCoords) {
             return Number.isFinite(v) && v > 0 ? Math.min(60, Math.max(1, v)) : 8;
         })(),
 
+        // ── Globe data mode ───────────────────────────────────
+        // 'live'    -> the real-time in-memory points (default);
+        // 'history' -> every located IP from the DB, drawn as dimmed "ghost"
+        //              dots so historic activity is visibly distinct from live.
+        globeMode: localStorage.getItem('globeMode') || 'live',
+        historyPoints: [],          // /api/globe/points result (history mode)
+        _globeHistToken: 0,
+
         // ── Collapse state ────────────────────────────────────
         isInternalNetworkCollapsed:
             JSON.parse(localStorage.getItem('isInternalNetworkCollapsed') ?? 'false'),

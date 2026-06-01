@@ -30,6 +30,7 @@ export function setupOverlay(app) {
         app.syncNetworkFilterButtons?.();
         app.syncGlobeDisplayToggles?.();
         app.syncGlobeRotationControls?.();
+        app.syncGlobeModeControls?.();
     });
     document.addEventListener('click', e => {
         if (!globeQuickMenu?.classList.contains('open')) return;
