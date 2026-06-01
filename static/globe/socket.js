@@ -228,7 +228,11 @@ export function setupSocket(app) {
             // only cleared after the 5s linger. During that first batch we just
             // seed the per-arc baseline so the first genuinely live packet triggers.
             const arcTotal = data.packet_count || ((data.incoming_count || 0) + (data.outgoing_count || 0));
-            const arcGrew  = arc.packet_count === undefined || arcTotal > arc.packet_count;
+            // arc.expired is still true here (cleared below), so include it in the
+            // trigger condition: a returning expired arc always gets an animation even
+            // if cumulative counts happen to match (e.g. initial-batch seeded the same
+            // value right before this live update arrived on a reconnect).
+            const arcGrew  = arc.packet_count === undefined || arcTotal > arc.packet_count || arc.expired;
             if (app.initialLoadDone && arcGrew) app.triggerArc(arc);
             arc.packet_count   = arcTotal;
             arc.hostname       = data.hostname || 'Unknown';
