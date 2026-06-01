@@ -48,3 +48,14 @@ export function isLocalNetwork(ip, org) {
            (a === 172 && b >= 16 && b <= 31) ||
            org === 'Local Network';
 }
+
+// The shared network/protocol visibility gate: TCP-only filter plus the
+// local/external network toggles. Applied wherever points or arcs are filtered
+// for display (sidebar list, globe points, arc comets) so the toggles behave
+// identically everywhere. Device visibility and search are checked separately
+// by each caller since they differ per view.
+export function passesNetworkFilters(app, item) {
+    return (app.showTCPOnly ? item.protocol === 'TCP' : true) &&
+        ((app.showLocalNetwork    && isLocalNetwork(item.ip, item.org)) ||
+         (app.showExternalNetwork && !isLocalNetwork(item.ip, item.org)));
+}

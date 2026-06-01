@@ -149,6 +149,188 @@ export function setupSocket(app) {
     });
 
     // ── IP data processing ────────────────────────────────
+    // Fold an incoming IP record into the point store. Mutate the existing
+    // point object in place (instead of replacing it with a fresh object) so
+    // the globe keeps the same reference and does NOT remove + re-add the
+    // marker on every packet — that re-add was the visible "flash" on busy
+    // connections.
+    function mergePoint(data, nowSec) {
+        const ip    = data.ip;
+        const total = (data.incoming_count || 0) + (data.outgoing_count || 0);
+        const pt = app.points[ip] || (app.points[ip] = {});
+        pt.ip             = data.ip;
+        pt.lat            = data.lat;
+        pt.lng            = data.lon;
+        pt.label          = `${data.hostname || data.ip} (${data.os || 'Unknown'})`;
+        pt.city           = data.city;
+        pt.country        = data.country;
+        pt.region         = data.region;
+        pt.org            = data.org;
+        pt.protocol       = data.protocol;
+        pt.src_port       = data.src_port;
+        pt.dst_port       = data.dst_port;
+        pt.incoming_count = data.incoming_count || 0;
+        pt.outgoing_count = data.outgoing_count || 0;
+        pt.color          = getCircleColor(data.threat_level, data.org);
+        pt.last_seen      = data.last_seen;
+        pt.mac            = data.mac;
+        pt.vendor         = data.vendor;
+        pt.packet_count   = data.packet_count || 0;
+        pt.hostname       = data.hostname     || 'Unknown';
+        pt.local_ip       = data.local_ip     || pt.local_ip || null;
+        // Several LAN hosts often hit the SAME external server (e.g. .100,
+        // .90, .44 all reaching one CDN), so collect every LAN peer we see
+        // for this external IP rather than only the latest one.
+        if (data.local_ip) (pt.local_ips || (pt.local_ips = new Set())).add(data.local_ip);
+        pt.os             = data.os           || 'Unknown';
+        pt.threat_level   = data.threat_level || 'No Threat';
+        pt.expired        = false;
+        // When this client first laid eyes on the IP — drives the "Newest" list.
+        if (pt._firstSeen === undefined) pt._firstSeen = nowSec;
+        // Permanent ledger info from the server: first_seen = when this IP was
+        // EVER first observed (survives retention/restarts); is_new = the server
+        // had never seen it before this update. Keep is_new sticky for the
+        // session so a genuinely-new connection stays flagged in the UI.
+        if (data.first_seen) pt.first_seen_ever = data.first_seen;
+        if (data.is_new) pt.is_new = true;
+        recordPacketRate(pt, total, nowSec);
+        return pt;
+    }
+
+    // One arc per (device, ip): each device draws its own line from its own
+    // origin to this IP. In-place mutation keeps the dash animation from
+    // restarting on every packet.
+    function mergeArc(data, pt) {
+        const ip = data.ip;
+        const deviceId = data.device_id || LOCAL_ID;
+        // Track which devices reported this IP so the lists/globe can hide a
+        // point the moment its only device is stopped.
+        (pt.devices || (pt.devices = new Set())).add(deviceId);
+        const origin   = app.origins[deviceId] || app.origins[LOCAL_ID];
+        // Coord-less origins (e.g. the FritzDump module, which has no public
+        // IP) anchor their arcs at the hub's own location.
+        const endLat = isValidCoord(origin.lat, origin.lng) ? origin.lat : app.origins[LOCAL_ID].lat;
+        const endLng = isValidCoord(origin.lat, origin.lng) ? origin.lng : app.origins[LOCAL_ID].lng;
+        const ack      = app.ckey(deviceId, ip);
+        const arc = app.arcs[ack] || (app.arcs[ack] = {});
+        arc.ip             = data.ip;
+        arc.device_id      = deviceId;
+        arc.city           = data.city;
+        arc.country        = data.country;
+        arc.org            = data.org;
+        // Kept on the arc so its threat colour (matching the dot) survives even
+        // if the point is evicted from app.points (see arcColor in globe-view).
+        arc.threat_level   = data.threat_level || 'No Threat';
+        arc.protocol       = data.protocol;
+        // Travel direction of THIS burst: compare the new counters against the
+        // arc's previous ones so the comet flies the way the just-arrived
+        // packets actually went (outgoing = your LAN → external, incoming =
+        // external → your LAN). Sticky on a tie / no change, and on first sight
+        // fall back to whichever counter dominates, so an arc always has a
+        // stable direction. Read deltas BEFORE overwriting the stored counts.
+        const _newIn  = data.incoming_count || 0;
+        const _newOut = data.outgoing_count || 0;
+        const _dIn    = _newIn  - (arc.incoming_count || 0);
+        const _dOut   = _newOut - (arc.outgoing_count || 0);
+        if (_dOut > _dIn)      arc.dir = 'outgoing';
+        else if (_dIn > _dOut) arc.dir = 'incoming';
+        else if (!arc.dir)     arc.dir = _newOut >= _newIn ? 'outgoing' : 'incoming';
+        arc.incoming_count = _newIn;
+        arc.outgoing_count = _newOut;
+        // The comet always sweeps start -> end (the only direction three-globe
+        // renders cleanly, see tickArcs), so the TRAVEL direction is encoded in
+        // which endpoint is the start: incoming flies external -> home, outgoing
+        // flies home -> external. Both ends are the same two points, so swapping
+        // them only reverses the animation — the drawn line stays put.
+        if (arc.dir === 'outgoing') {
+            arc.startLat = endLat;   arc.startLng = endLng;   // home is the source
+            arc.endLat   = data.lat; arc.endLng   = data.lon; // external is the target
+        } else {
+            arc.startLat = data.lat; arc.startLng = data.lon; // external is the source
+            arc.endLat   = endLat;   arc.endLng   = endLng;   // home is the target
+        }
+        arc.last_seen      = data.last_seen;
+        // Fly one comet whenever fresh packets actually arrive (the count
+        // grew) or a brand-new IP shows up live — triggerArc queues at most one
+        // replay if a comet is already in flight, so a moving arc means
+        // "flowing now". Crucially this is gated on initialLoadDone: the bulk
+        // batch restored on a page refresh carries every DB row with an
+        // undefined baseline, which would otherwise fire an arc at once for ALL
+        // of them (traffic that happened minutes ago) — the "arc storm" that
+        // only cleared after the 5s linger. During that first batch we just
+        // seed the per-arc baseline so the first genuinely live packet triggers.
+        const arcTotal = data.packet_count || ((data.incoming_count || 0) + (data.outgoing_count || 0));
+        // arc.expired is still true here (cleared below), so include it in the
+        // trigger condition: a returning expired arc always gets an animation even
+        // if cumulative counts happen to match (e.g. initial-batch seeded the same
+        // value right before this live update arrived on a reconnect).
+        const arcGrew  = arc.packet_count === undefined || arcTotal > arc.packet_count || arc.expired;
+        if (app.initialLoadDone && arcGrew) app.triggerArc(arc);
+        arc.packet_count   = arcTotal;
+        arc.hostname       = data.hostname || 'Unknown';
+        arc.os             = data.os       || 'Unknown';
+        arc.expired        = false;
+    }
+
+    // Mirror LAN peers into the internal-packet store when internal search is
+    // on or the IP is pinned, so the internal-network list can show them.
+    function mergeInternalPacket(data) {
+        const ip = data.ip;
+        if (!(isLocalNetwork(data.ip, data.org) && (app.isInternalSearchActive || app.pinnedIPs[ip]))) return;
+        const ipkt = app.internalPackets[ip] || (app.internalPackets[ip] = {});
+        ipkt.ip             = data.ip;
+        ipkt.lat            = data.lat;
+        ipkt.lng            = data.lon;
+        ipkt.city           = data.city;
+        ipkt.country        = data.country;
+        ipkt.region         = data.region;
+        ipkt.org            = data.org;
+        ipkt.protocol       = data.protocol;
+        ipkt.src_port       = data.src_port;
+        ipkt.dst_port       = data.dst_port;
+        ipkt.incoming_count = data.incoming_count || 0;
+        ipkt.outgoing_count = data.outgoing_count || 0;
+        ipkt.last_seen      = data.last_seen;
+        ipkt.mac            = data.mac;
+        ipkt.vendor         = data.vendor;
+        ipkt.packet_count   = data.packet_count   || 0;
+        ipkt.hostname       = data.hostname       || 'Unknown';
+        ipkt.os             = data.os             || 'Unknown';
+        ipkt.threat_level   = data.threat_level   || 'No Threat';
+        ipkt.expired        = false;
+    }
+
+    // Evict oldest non-pinned entries when the point/internal-packet limits
+    // are exceeded.
+    function evictOldest() {
+        if (Object.keys(app.points).length > app.MAX_POINTS) {
+            const oldest = Object.keys(app.points)
+                .filter(k => !app.pinnedIPs[k] && k !== 'Your IP')
+                .sort((a, b) => app.points[a].last_seen - app.points[b].last_seen)[0];
+            if (oldest) { delete app.points[oldest]; app.deleteArcsOfIp(oldest); }
+        }
+        if (Object.keys(app.internalPackets).length > app.MAX_INTERNAL_PACKETS) {
+            const oldest = Object.keys(app.internalPackets)
+                .filter(k => !app.pinnedIPs[k])
+                .sort((a, b) => app.internalPackets[a].last_seen - app.internalPackets[b].last_seen)[0];
+            if (oldest) delete app.internalPackets[oldest];
+        }
+    }
+
+    // Alert on new high-threat IPs — only after the initial bulk load is done
+    // so we don't spam the user with notifications on every page reload.
+    function maybeNotifyThreat(ip, data, isNewIP) {
+        if (app.initialLoadDone && isNewIP &&
+            data.threat_level === 'High' && !notifiedHighThreatIPs.has(ip)) {
+            notifiedHighThreatIPs.add(ip);
+            showToast(
+                `[!] High Threat: ${ip} — ${data.org || 'Unknown'} (${data.country || ''})`,
+                'high'
+            );
+            notifyHighThreat(ip, data.org, data.country);
+        }
+    }
+
     function applyIpUpdate(data) {
         if (!data.ip) { console.warn('ip_update without IP field:', data); return; }
         try {
@@ -156,174 +338,16 @@ export function setupSocket(app) {
             if (data.lat === 0 && data.lon === 0 && data.org !== 'Local Network') return;
 
             const ip      = data.ip;
+            // Read before mergePoint creates the point so the threat alert can
+            // tell a genuinely new IP from an update to a known one.
             const isNewIP = !app.points[ip];
-            const total   = (data.incoming_count || 0) + (data.outgoing_count || 0);
             const nowSec  = Date.now() / 1000;
 
-            // Mutate the existing point object in place (instead of replacing it with
-            // a fresh object) so the globe keeps the same reference and does NOT
-            // remove + re-add the marker on every packet — that re-add was the
-            // visible "flash" on busy connections.
-            const pt = app.points[ip] || (app.points[ip] = {});
-            pt.ip             = data.ip;
-            pt.lat            = data.lat;
-            pt.lng            = data.lon;
-            pt.label          = `${data.hostname || data.ip} (${data.os || 'Unknown'})`;
-            pt.city           = data.city;
-            pt.country        = data.country;
-            pt.region         = data.region;
-            pt.org            = data.org;
-            pt.protocol       = data.protocol;
-            pt.src_port       = data.src_port;
-            pt.dst_port       = data.dst_port;
-            pt.incoming_count = data.incoming_count || 0;
-            pt.outgoing_count = data.outgoing_count || 0;
-            pt.color          = getCircleColor(data.threat_level, data.org);
-            pt.last_seen      = data.last_seen;
-            pt.mac            = data.mac;
-            pt.vendor         = data.vendor;
-            pt.packet_count   = data.packet_count || 0;
-            pt.hostname       = data.hostname     || 'Unknown';
-            pt.local_ip       = data.local_ip     || pt.local_ip || null;
-            // Several LAN hosts often hit the SAME external server (e.g. .100,
-            // .90, .44 all reaching one CDN), so collect every LAN peer we see
-            // for this external IP rather than only the latest one.
-            if (data.local_ip) (pt.local_ips || (pt.local_ips = new Set())).add(data.local_ip);
-            pt.os             = data.os           || 'Unknown';
-            pt.threat_level   = data.threat_level || 'No Threat';
-            pt.expired        = false;
-            // When this client first laid eyes on the IP — drives the "Newest" list.
-            if (pt._firstSeen === undefined) pt._firstSeen = nowSec;
-            // Permanent ledger info from the server: first_seen = when this IP was
-            // EVER first observed (survives retention/restarts); is_new = the server
-            // had never seen it before this update. Keep is_new sticky for the
-            // session so a genuinely-new connection stays flagged in the UI.
-            if (data.first_seen) pt.first_seen_ever = data.first_seen;
-            if (data.is_new) pt.is_new = true;
-            recordPacketRate(pt, total, nowSec);
-
-            // One arc per (device, ip): each device draws its own line from its
-            // own origin to this IP. In-place mutation keeps the dash animation
-            // from restarting on every packet.
-            const deviceId = data.device_id || LOCAL_ID;
-            // Track which devices reported this IP so the lists/globe can hide a
-            // point the moment its only device is stopped.
-            (pt.devices || (pt.devices = new Set())).add(deviceId);
-            const origin   = app.origins[deviceId] || app.origins[LOCAL_ID];
-            // Coord-less origins (e.g. the FritzDump module, which has no public
-            // IP) anchor their arcs at the hub's own location.
-            const endLat = isValidCoord(origin.lat, origin.lng) ? origin.lat : app.origins[LOCAL_ID].lat;
-            const endLng = isValidCoord(origin.lat, origin.lng) ? origin.lng : app.origins[LOCAL_ID].lng;
-            const ack      = app.ckey(deviceId, ip);
-            const arc = app.arcs[ack] || (app.arcs[ack] = {});
-            arc.ip             = data.ip;
-            arc.device_id      = deviceId;
-            arc.city           = data.city;
-            arc.country        = data.country;
-            arc.org            = data.org;
-            // Kept on the arc so its threat colour (matching the dot) survives even
-            // if the point is evicted from app.points (see arcColor in globe-view).
-            arc.threat_level   = data.threat_level || 'No Threat';
-            arc.protocol       = data.protocol;
-            // Travel direction of THIS burst: compare the new counters against the
-            // arc's previous ones so the comet flies the way the just-arrived
-            // packets actually went (outgoing = your LAN → external, incoming =
-            // external → your LAN). Sticky on a tie / no change, and on first sight
-            // fall back to whichever counter dominates, so an arc always has a
-            // stable direction. Read deltas BEFORE overwriting the stored counts.
-            const _newIn  = data.incoming_count || 0;
-            const _newOut = data.outgoing_count || 0;
-            const _dIn    = _newIn  - (arc.incoming_count || 0);
-            const _dOut   = _newOut - (arc.outgoing_count || 0);
-            if (_dOut > _dIn)      arc.dir = 'outgoing';
-            else if (_dIn > _dOut) arc.dir = 'incoming';
-            else if (!arc.dir)     arc.dir = _newOut >= _newIn ? 'outgoing' : 'incoming';
-            arc.incoming_count = _newIn;
-            arc.outgoing_count = _newOut;
-            // The comet always sweeps start -> end (the only direction three-globe
-            // renders cleanly, see tickArcs), so the TRAVEL direction is encoded in
-            // which endpoint is the start: incoming flies external -> home, outgoing
-            // flies home -> external. Both ends are the same two points, so swapping
-            // them only reverses the animation — the drawn line stays put.
-            if (arc.dir === 'outgoing') {
-                arc.startLat = endLat;   arc.startLng = endLng;   // home is the source
-                arc.endLat   = data.lat; arc.endLng   = data.lon; // external is the target
-            } else {
-                arc.startLat = data.lat; arc.startLng = data.lon; // external is the source
-                arc.endLat   = endLat;   arc.endLng   = endLng;   // home is the target
-            }
-            arc.last_seen      = data.last_seen;
-            // Fly one comet whenever fresh packets actually arrive (the count
-            // grew) or a brand-new IP shows up live — triggerArc queues at most one
-            // replay if a comet is already in flight, so a moving arc means
-            // "flowing now". Crucially this is gated on initialLoadDone: the bulk
-            // batch restored on a page refresh carries every DB row with an
-            // undefined baseline, which would otherwise fire an arc at once for ALL
-            // of them (traffic that happened minutes ago) — the "arc storm" that
-            // only cleared after the 5s linger. During that first batch we just
-            // seed the per-arc baseline so the first genuinely live packet triggers.
-            const arcTotal = data.packet_count || ((data.incoming_count || 0) + (data.outgoing_count || 0));
-            // arc.expired is still true here (cleared below), so include it in the
-            // trigger condition: a returning expired arc always gets an animation even
-            // if cumulative counts happen to match (e.g. initial-batch seeded the same
-            // value right before this live update arrived on a reconnect).
-            const arcGrew  = arc.packet_count === undefined || arcTotal > arc.packet_count || arc.expired;
-            if (app.initialLoadDone && arcGrew) app.triggerArc(arc);
-            arc.packet_count   = arcTotal;
-            arc.hostname       = data.hostname || 'Unknown';
-            arc.os             = data.os       || 'Unknown';
-            arc.expired        = false;
-
-            if (isLocalNetwork(data.ip, data.org) && (app.isInternalSearchActive || app.pinnedIPs[ip])) {
-                const ipkt = app.internalPackets[ip] || (app.internalPackets[ip] = {});
-                ipkt.ip             = data.ip;
-                ipkt.lat            = data.lat;
-                ipkt.lng            = data.lon;
-                ipkt.city           = data.city;
-                ipkt.country        = data.country;
-                ipkt.region         = data.region;
-                ipkt.org            = data.org;
-                ipkt.protocol       = data.protocol;
-                ipkt.src_port       = data.src_port;
-                ipkt.dst_port       = data.dst_port;
-                ipkt.incoming_count = data.incoming_count || 0;
-                ipkt.outgoing_count = data.outgoing_count || 0;
-                ipkt.last_seen      = data.last_seen;
-                ipkt.mac            = data.mac;
-                ipkt.vendor         = data.vendor;
-                ipkt.packet_count   = data.packet_count   || 0;
-                ipkt.hostname       = data.hostname       || 'Unknown';
-                ipkt.os             = data.os             || 'Unknown';
-                ipkt.threat_level   = data.threat_level   || 'No Threat';
-                ipkt.expired        = false;
-            }
-
-            // Evict oldest non-pinned entries when limits are exceeded.
-            if (Object.keys(app.points).length > app.MAX_POINTS) {
-                const oldest = Object.keys(app.points)
-                    .filter(k => !app.pinnedIPs[k] && k !== 'Your IP')
-                    .sort((a, b) => app.points[a].last_seen - app.points[b].last_seen)[0];
-                if (oldest) { delete app.points[oldest]; app.deleteArcsOfIp(oldest); }
-            }
-            if (Object.keys(app.internalPackets).length > app.MAX_INTERNAL_PACKETS) {
-                const oldest = Object.keys(app.internalPackets)
-                    .filter(k => !app.pinnedIPs[k])
-                    .sort((a, b) => app.internalPackets[a].last_seen - app.internalPackets[b].last_seen)[0];
-                if (oldest) delete app.internalPackets[oldest];
-            }
-
-            // Alert on new high-threat IPs — only after the initial bulk load is done
-            // so we don't spam the user with notifications on every page reload.
-            if (app.initialLoadDone && isNewIP &&
-                data.threat_level === 'High' && !notifiedHighThreatIPs.has(ip)) {
-                notifiedHighThreatIPs.add(ip);
-                showToast(
-                    `[!] High Threat: ${ip} — ${data.org || 'Unknown'} (${data.country || ''})`,
-                    'high'
-                );
-                notifyHighThreat(ip, data.org, data.country);
-            }
-
+            const pt = mergePoint(data, nowSec);
+            mergeArc(data, pt);
+            mergeInternalPacket(data);
+            evictOldest();
+            maybeNotifyThreat(ip, data, isNewIP);
         } catch (err) {
             console.error('Error processing ip_update:', err);
         }

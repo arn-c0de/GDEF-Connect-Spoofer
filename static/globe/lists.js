@@ -4,7 +4,7 @@
 // the per-IP detail panel, the throttled view refresh that coalesces socket
 // bursts, the filter toggle buttons + search inputs, and the IP-label editor.
 
-import { isValidCoord, isLocalNetwork } from './net.js';
+import { isValidCoord, isLocalNetwork, passesNetworkFilters } from './net.js';
 import { getCircleColor } from './classify.js';
 import {
     PORT_SERVICES, timeAgo, formatNum, truncate,
@@ -70,52 +70,34 @@ export function setupLists(app) {
         activeConnectionsList.style.height = app.isActiveConnectionsCollapsed ? '42px' : '';
     });
 
-    const toggleLocalNetworkButton = document.getElementById('toggleLocalNetwork');
-    app.toggleLocalNetworkButton = toggleLocalNetworkButton;
-    toggleLocalNetworkButton.classList.toggle('active', app.showLocalNetwork);
-    let _localDebounce;
-    toggleLocalNetworkButton.addEventListener('click', () => {
-        clearTimeout(_localDebounce);
-        _localDebounce = setTimeout(() => {
-            app.showLocalNetwork = !app.showLocalNetwork;
-            toggleLocalNetworkButton.classList.toggle('active', app.showLocalNetwork);
-            app.syncNetworkFilterButtons?.();
-            app.socket.emit('set_local_network', { showLocalNetwork: app.showLocalNetwork });
-            app.refreshViews();
-        }, 300);
-    });
+    // Each network-filter button flips one app flag, mirrors it as a CSS
+    // `active` class, tells the server, and refreshes the views. The same
+    // table drives setNetworkFilter() below (the overlay controls).
+    const NETWORK_FILTERS = {
+        local:    { buttonId: 'toggleLocalNetwork',    flag: 'showLocalNetwork',    event: 'set_local_network', debounceMs: 300 },
+        external: { buttonId: 'toggleExternalNetwork', flag: 'showExternalNetwork', event: 'set_external_network' },
+        tcp:      { buttonId: 'toggleTCPOnly',         flag: 'showTCPOnly',         event: 'set_tcp_only' },
+        udp:      { buttonId: 'toggleAllUDPPackets',   flag: 'showAllUDPPackets',   event: 'set_udp_filter' },
+    };
 
-    const toggleExternalNetworkButton = document.getElementById('toggleExternalNetwork');
-    app.toggleExternalNetworkButton = toggleExternalNetworkButton;
-    toggleExternalNetworkButton.classList.toggle('active', app.showExternalNetwork);
-    toggleExternalNetworkButton.addEventListener('click', () => {
-        app.showExternalNetwork = !app.showExternalNetwork;
-        toggleExternalNetworkButton.classList.toggle('active', app.showExternalNetwork);
-        app.syncNetworkFilterButtons?.();
-        app.socket.emit('set_external_network', { showExternalNetwork: app.showExternalNetwork });
-        app.refreshViews();
-    });
+    const emitNetworkFilter = cfg => app.socket.emit(cfg.event, { [cfg.flag]: app[cfg.flag] });
 
-    const toggleTCPOnlyButton = document.getElementById('toggleTCPOnly');
-    app.toggleTCPOnlyButton = toggleTCPOnlyButton;
-    toggleTCPOnlyButton.classList.toggle('active', app.showTCPOnly);
-    toggleTCPOnlyButton.addEventListener('click', () => {
-        app.showTCPOnly = !app.showTCPOnly;
-        toggleTCPOnlyButton.classList.toggle('active', app.showTCPOnly);
-        app.syncNetworkFilterButtons?.();
-        app.socket.emit('set_tcp_only', { showTCPOnly: app.showTCPOnly });
-        app.refreshViews();
-    });
-
-    const toggleAllUDPPacketsButton = document.getElementById('toggleAllUDPPackets');
-    app.toggleAllUDPPacketsButton = toggleAllUDPPacketsButton;
-    toggleAllUDPPacketsButton.classList.toggle('active', app.showAllUDPPackets);
-    toggleAllUDPPacketsButton.addEventListener('click', () => {
-        app.showAllUDPPackets = !app.showAllUDPPackets;
-        toggleAllUDPPacketsButton.classList.toggle('active', app.showAllUDPPackets);
-        app.syncNetworkFilterButtons?.();
-        app.socket.emit('set_udp_filter', { showAllUDPPackets: app.showAllUDPPackets });
-        app.refreshViews();
+    Object.values(NETWORK_FILTERS).forEach(cfg => {
+        const button = document.getElementById(cfg.buttonId);
+        app[cfg.buttonId + 'Button'] = button;
+        button.classList.toggle('active', app[cfg.flag]);
+        let debounce;
+        button.addEventListener('click', () => {
+            const apply = () => {
+                app[cfg.flag] = !app[cfg.flag];
+                button.classList.toggle('active', app[cfg.flag]);
+                app.syncNetworkFilterButtons?.();
+                emitNetworkFilter(cfg);
+                app.refreshViews();
+            };
+            if (cfg.debounceMs) { clearTimeout(debounce); debounce = setTimeout(apply, cfg.debounceMs); }
+            else apply();
+        });
     });
 
     app.syncNetworkFilterButtons = () => {
@@ -131,18 +113,10 @@ export function setupLists(app) {
     };
 
     app.setNetworkFilter = (key, value) => {
-        if (key === 'local') {
-            app.showLocalNetwork = value;
-            app.socket.emit('set_local_network', { showLocalNetwork: app.showLocalNetwork });
-        } else if (key === 'external') {
-            app.showExternalNetwork = value;
-            app.socket.emit('set_external_network', { showExternalNetwork: app.showExternalNetwork });
-        } else if (key === 'tcp') {
-            app.showTCPOnly = value;
-            app.socket.emit('set_tcp_only', { showTCPOnly: app.showTCPOnly });
-        } else if (key === 'udp') {
-            app.showAllUDPPackets = value;
-            app.socket.emit('set_udp_filter', { showAllUDPPackets: app.showAllUDPPackets });
+        const cfg = NETWORK_FILTERS[key];
+        if (cfg) {
+            app[cfg.flag] = value;
+            emitNetworkFilter(cfg);
         }
         app.syncNetworkFilterButtons();
         app.refreshViews();
@@ -348,9 +322,7 @@ export function setupLists(app) {
 
         const filtered = Object.values(app.points).filter(p =>
             !p.expired && app.pointDeviceVisible(p) &&
-            (app.showTCPOnly ? p.protocol === 'TCP' : true) &&
-            ((app.showLocalNetwork    && isLocalNetwork(p.ip, p.org)) ||
-             (app.showExternalNetwork && !isLocalNetwork(p.ip, p.org))) &&
+            passesNetworkFilters(app, p) &&
             matchesSearch(p)
         );
 

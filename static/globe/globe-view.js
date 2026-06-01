@@ -7,7 +7,7 @@
 //
 // `Globe` is provided as a global by globe.gl (loaded via <script> in the page).
 
-import { isValidCoord, recentPacketCount, isLocalNetwork } from './net.js';
+import { isValidCoord, recentPacketCount, passesNetworkFilters } from './net.js';
 import { getCircleColor } from './classify.js';
 import { escapeHTML, showToast, toRGBA, timeAgo, formatNum, truncate } from './format.js';
 
@@ -649,10 +649,7 @@ export function setupGlobe(app) {
         // form the clustered backdrop while live rays keep flying on top, so
         // switching to History no longer drops the real-time traffic. The Rays
         // toggle (showArcs) and the network/protocol filters still gate them.
-        return !a.expired && app.isDeviceVisible(a.device_id) &&
-            (app.showTCPOnly ? a.protocol === 'TCP' : true) &&
-            ((app.showLocalNetwork    && isLocalNetwork(a.ip, a.org)) ||
-             (app.showExternalNetwork && !isLocalNetwork(a.ip, a.org)));
+        return !a.expired && app.isDeviceVisible(a.device_id) && passesNetworkFilters(app, a);
     }
 
     // Called on every fresh packet for an arc. If no comet is in flight, start
@@ -776,14 +773,10 @@ export function setupGlobe(app) {
         const visiblePoints = app.globeMode === 'history'
             ? (app.historyPoints || []).filter(p =>
                 isValidCoord(p.lat, p.lng) && app.isDeviceVisible(p.device_id) &&
-                (app.showTCPOnly ? p.protocol === 'TCP' : true) &&
-                ((app.showLocalNetwork    && isLocalNetwork(p.ip, p.org)) ||
-                 (app.showExternalNetwork && !isLocalNetwork(p.ip, p.org))))
+                passesNetworkFilters(app, p))
             : Object.values(app.points).filter(p =>
                 !p.expired && app.pointDeviceVisible(p) &&
-                (app.showTCPOnly ? p.protocol === 'TCP' : true) &&
-                ((app.showLocalNetwork    && isLocalNetwork(p.ip, p.org)) ||
-                 (app.showExternalNetwork && !isLocalNetwork(p.ip, p.org))));
+                passesNetworkFilters(app, p));
         // Clear any fan-out offset from a previous expand; re-applied below only
         // for members of a pile the user has opened.
         for (const p of visiblePoints) {
