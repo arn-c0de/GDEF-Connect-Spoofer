@@ -769,18 +769,35 @@ def _db_size_bytes(c):
         return _db_size_cache["bytes"]
 
 
+# Cache for the IP-label map, invalidated by the file's mtime. _load_ip_labels is
+# called on EVERY history search (/api/connections, per keystroke) and the labels
+# endpoint, so re-reading + JSON-parsing the file each time is pure waste when it
+# almost never changes. Keyed on mtime so an external edit is still picked up at
+# once, with no fixed TTL staleness window.
+_ip_labels_cache = {"mtime": None, "data": {}}
+
 def _load_ip_labels():
     """Read the operator's IP -> friendly-name map (flat JSON, display-only).
-    Returns {} if the file is missing or unreadable."""
+    Cached and only re-read when the file's mtime changes. Returns {} if the file
+    is missing or unreadable."""
+    try:
+        mtime = os.path.getmtime(IP_LABELS_PATH)
+    except OSError:
+        # Missing/unreadable: clear any stale cache and report empty.
+        if _ip_labels_cache["mtime"] is not None:
+            _ip_labels_cache.update(mtime=None, data={})
+        return _ip_labels_cache["data"]
+    if mtime == _ip_labels_cache["mtime"]:
+        return _ip_labels_cache["data"]
     try:
         with open(IP_LABELS_PATH, 'r') as f:
             data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except FileNotFoundError:
-        return {}
+        data = data if isinstance(data, dict) else {}
+        _ip_labels_cache.update(mtime=mtime, data=data)
+        return data
     except Exception as e:
         logger.error(f"Error reading ip labels: {e}")
-        return {}
+        return _ip_labels_cache["data"]
 
 
 def _connections_where(device, q, filters):
@@ -1806,10 +1823,14 @@ def geo_enrichment_worker(my_geo_data):
                     with db.get_connection() as conn:
                         c = conn.cursor()
                         # One row per device that has seen this ip.
-                        c.execute('''SELECT device_id, incoming_count, outgoing_count, src_port, dst_port, protocol,
-                                     mac, vendor, hostname, os,
-                                     (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = ip_data.ip)
-                                     FROM ip_data WHERE ip = %s''', (ip,))
+                        # pinned_ips LEFT JOINed (PK ip, no fan-out) rather than a
+                        # per-row correlated subquery.
+                        c.execute('''SELECT d.device_id, d.incoming_count, d.outgoing_count, d.src_port, d.dst_port, d.protocol,
+                                     d.mac, d.vendor, d.hostname, d.os,
+                                     p.packet_count
+                                     FROM ip_data d
+                                     LEFT JOIN pinned_ips p ON p.ip = d.ip
+                                     WHERE d.ip = %s''', (ip,))
                         rows = c.fetchall()
                         if rows:
                             # Geo applies to every device's row for this ip.
@@ -3024,16 +3045,21 @@ def send_all_ips_to_client(sid=None):
             # threat_level is the PERSISTED column (not re-derived here), so a
             # threat survives the reload instead of arriving as "No Threat".
             # first_seen comes from the permanent ledger for the detail popup.
+            # pinned_ips is LEFT JOINed (ip is its PK, so no row fan-out) instead
+            # of pulled via a per-row correlated subquery AND a separate WHERE
+            # semi-join: p.packet_count gives the count and `p.ip IS NOT NULL`
+            # tests "is pinned", so both pinned_ips touches collapse into one join.
             c.execute('''SELECT d.device_id, d.ip, d.lat, d.lon, d.city, d.country, d.org, d.last_seen,
                          d.src_port, d.dst_port, d.protocol, d.incoming_count, d.outgoing_count, d.mac,
                          d.vendor, d.hostname, d.os, d.local_ip, d.threat_level,
-                         (SELECT packet_count FROM pinned_ips WHERE pinned_ips.ip = d.ip) as packet_count,
+                         p.packet_count,
                          s.first_seen
                          FROM ip_data d
                          LEFT JOIN ip_seen s ON s.ip = d.ip
+                         LEFT JOIN pinned_ips p ON p.ip = d.ip
                          WHERE d.last_seen > %s
                             OR d.threat_level IN ('High', 'Medium', 'Low')
-                            OR d.ip IN (SELECT ip FROM pinned_ips)''',
+                            OR p.ip IS NOT NULL''',
                       (time.time() - EXPIRATION_SECONDS,))
             rows = c.fetchall()
     except db.DBError as e:

@@ -300,19 +300,30 @@ export function setupSocket(app) {
         ipkt.expired        = false;
     }
 
+    // Find the single oldest non-pinned key in a store in ONE linear pass.
+    // evictOldest runs on every ip_update (and every item of a batch), so once the
+    // store is at its cap — the steady state on a busy network — it runs per
+    // packet. A full .sort() there is O(n log n) per packet just to read element
+    // [0]; scanning for the minimum is O(n) and allocates nothing.
+    function oldestKey(store, skip) {
+        let oldest = null, oldestSeen = Infinity;
+        for (const k in store) {
+            if (app.pinnedIPs[k] || k === skip) continue;
+            const seen = store[k].last_seen;
+            if (seen < oldestSeen) { oldestSeen = seen; oldest = k; }
+        }
+        return oldest;
+    }
+
     // Evict oldest non-pinned entries when the point/internal-packet limits
     // are exceeded.
     function evictOldest() {
         if (Object.keys(app.points).length > app.MAX_POINTS) {
-            const oldest = Object.keys(app.points)
-                .filter(k => !app.pinnedIPs[k] && k !== 'Your IP')
-                .sort((a, b) => app.points[a].last_seen - app.points[b].last_seen)[0];
+            const oldest = oldestKey(app.points, 'Your IP');
             if (oldest) { delete app.points[oldest]; app.deleteArcsOfIp(oldest); }
         }
         if (Object.keys(app.internalPackets).length > app.MAX_INTERNAL_PACKETS) {
-            const oldest = Object.keys(app.internalPackets)
-                .filter(k => !app.pinnedIPs[k])
-                .sort((a, b) => app.internalPackets[a].last_seen - app.internalPackets[b].last_seen)[0];
+            const oldest = oldestKey(app.internalPackets, null);
             if (oldest) delete app.internalPackets[oldest];
         }
     }
