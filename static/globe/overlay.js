@@ -102,11 +102,36 @@ export function setupOverlay(app) {
               '</nav>' +
               '<section class="ov-main">' +
                 '<header class="ov-pagehead">' +
-                  '<h2 id="ovTitle">Statistics</h2>' +
-                  '<div class="ov-head-tools">' +
-                    '<label class="ov-scope" id="ovScope">Device&nbsp;' +
-                      '<select id="ovDeviceSel" class="stat-device-sel"></select></label>' +
-                    '<button id="ovClose" class="ov-close" title="Close (Esc)">' + icon('close') + '</button>' +
+                  '<div class="ov-head-top">' +
+                    '<h2 id="ovTitle">Statistics</h2>' +
+                    '<div class="ov-head-tools">' +
+                      '<div class="ov-mode seg-ctrl" id="ovMode">' +
+                        '<button class="seg active" data-mode="live" title="Real-time view (last hour)">Live</button>' +
+                        '<button class="seg" data-mode="history" title="Full retained history (~30 days)">History</button>' +
+                      '</div>' +
+                      '<label class="ov-scope" id="ovScope">Device&nbsp;' +
+                        '<select id="ovDeviceSel" class="stat-device-sel"></select></label>' +
+                      '<button id="ovClose" class="ov-close" title="Close (Esc)">' + icon('close') + '</button>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div class="ov-head-search" id="ovSearchBar">' +
+                    '<input type="text" id="ovSearch" class="search-input" autocomplete="off"' +
+                      ' placeholder="Search IP, host, org, country, MAC…">' +
+                    '<div class="ov-filters" id="ovFilters">' +
+                      '<label class="ov-filter">Country' +
+                        '<select id="ovFilterCountry"><option value="">All</option></select></label>' +
+                      '<label class="ov-filter">Threat' +
+                        '<select id="ovFilterThreat"><option value="">All</option>' +
+                          '<option value="High">High</option><option value="Medium">Medium</option>' +
+                          '<option value="Low">Low</option><option value="No Threat">No Threat</option>' +
+                        '</select></label>' +
+                      '<label class="ov-filter">Proto' +
+                        '<select id="ovFilterProto"><option value="">All</option>' +
+                          '<option value="TCP">TCP</option><option value="UDP">UDP</option>' +
+                          '<option value="ICMP">ICMP</option></select></label>' +
+                      '<button id="ovClearFilters" class="device-btn" title="Clear search & filters">Clear</button>' +
+                      '<span class="ov-hist-status" id="ovHistStatus"></span>' +
+                    '</div>' +
                   '</div>' +
                 '</header>' +
                 '<div class="ov-scroll">' +
@@ -152,10 +177,66 @@ export function setupOverlay(app) {
             ov.querySelectorAll('.ov-page').forEach(p =>
                 p.classList.toggle('active', p.dataset.page === page));
             document.getElementById('ovTitle').textContent = titles[page] || '';
-            // The device scope selector only applies to Statistics + Connections.
-            document.getElementById('ovScope').style.display =
-                (page === 'stats' || page === 'conn') ? '' : 'none';
+            const isData = page === 'stats' || page === 'conn';
+            // The device scope selector and Live/History toggle apply only to the
+            // data pages (Statistics + Connections).
+            document.getElementById('ovScope').style.display = isData ? '' : 'none';
+            document.getElementById('ovMode').style.display = isData ? '' : 'none';
+            // The search box is shown on every page except Settings; the
+            // country/threat/proto filters only make sense on the data pages
+            // (on Devices the box just filters the legend).
+            document.getElementById('ovSearchBar').style.display = page === 'settings' ? 'none' : '';
+            document.getElementById('ovFilters').style.display = isData ? '' : 'none';
+            syncSearchUi(page);
+            // Entering History on a data page (re)loads from the DB.
+            if (isData && app.histMode === 'history') app.fetchHistory();
+            // The Devices tab pulls fresh per-device history totals on open.
+            if (page === 'devices') app.fetchDeviceStats?.();
             app.renderActivePage();
+        };
+
+        // Reflect the current query/filters in the controls and adapt the search
+        // box to whichever page is active (data search vs device-legend filter).
+        const searchInput = document.getElementById('ovSearch');
+        function syncSearchUi(page) {
+            if (page === 'devices') {
+                searchInput.placeholder = 'Search devices…';
+                searchInput.value = app.deviceQuery;
+            } else {
+                searchInput.placeholder = 'Search IP, host, org, country, MAC…';
+                searchInput.value = app.ovQuery;
+            }
+            const mode = document.getElementById('ovMode');
+            mode.querySelectorAll('.seg').forEach(b =>
+                b.classList.toggle('active', b.dataset.mode === app.histMode));
+            document.getElementById('ovFilterThreat').value = app.ovFilters.threat;
+            document.getElementById('ovFilterProto').value = app.ovFilters.protocol;
+            app.syncCountryFilter();
+        }
+        app.syncSearchUi = () => syncSearchUi(app.currentPage);
+
+        // Country options come from the history facets when available, otherwise
+        // from the live points, so the dropdown is useful in both modes.
+        app.syncCountryFilter = () => {
+            const sel = document.getElementById('ovFilterCountry');
+            if (!sel) return;
+            let countries;
+            if (app.histMode === 'history' && app.histData && app.histData.facets) {
+                countries = (app.histData.facets.countries || []).filter(Boolean);
+            } else {
+                countries = [...new Set(Object.values(app.points)
+                    .map(p => p.country).filter(c => c && c !== 'Unknown'))].sort();
+            }
+            const want = ['', ...countries];
+            const have = Array.from(sel.options).map(o => o.value);
+            if (want.join('') !== have.join('')) {
+                const frag = document.createDocumentFragment();
+                const mk = (text, value) => { const o = document.createElement('option'); o.textContent = text; o.value = value; return o; };
+                frag.appendChild(mk('All', ''));
+                countries.forEach(cn => frag.appendChild(mk(cn, cn)));
+                sel.replaceChildren(frag);
+            }
+            sel.value = app.ovFilters.country;
         };
 
         // ── Open / close ──
@@ -181,7 +262,55 @@ export function setupOverlay(app) {
         sel.addEventListener('change', () => {
             app.statsDevice = sel.value;
             localStorage.setItem('statsDevice', app.statsDevice);
+            if (app.histMode === 'history') app.fetchHistory();
             app.renderActivePage();
+        });
+
+        // ── Live / History mode toggle ──
+        document.getElementById('ovMode').querySelectorAll('.seg').forEach(b =>
+            b.addEventListener('click', () => {
+                if (app.histMode === b.dataset.mode) return;
+                app.histMode = b.dataset.mode;
+                localStorage.setItem('histMode', app.histMode);
+                app.syncSearchUi();
+                if (app.histMode === 'history') app.fetchHistory();
+                app.renderActivePage();
+            }));
+
+        // ── Search box (debounced). On the data pages it drives the query (live
+        // filter or DB fetch); on the Devices page it filters the legend. ──
+        let searchDebounce;
+        searchInput.addEventListener('input', e => {
+            const v = e.target.value.trim();
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                if (app.currentPage === 'devices') {
+                    app.deviceQuery = v.toLowerCase();
+                    app.buildDeviceLegend();
+                    return;
+                }
+                app.ovQuery = v.toLowerCase();
+                if (app.histMode === 'history') app.fetchHistory();
+                else app.renderActivePage();
+            }, 220);
+        });
+
+        // ── Country / Threat / Protocol filters ──
+        const onFilterChange = (key, value) => {
+            app.ovFilters[key] = value;
+            if (app.histMode === 'history') app.fetchHistory();
+            else app.renderActivePage();
+        };
+        document.getElementById('ovFilterCountry').addEventListener('change', e => onFilterChange('country', e.target.value));
+        document.getElementById('ovFilterThreat').addEventListener('change', e => onFilterChange('threat', e.target.value));
+        document.getElementById('ovFilterProto').addEventListener('change', e => onFilterChange('protocol', e.target.value));
+        document.getElementById('ovClearFilters').addEventListener('click', () => {
+            app.ovQuery = ''; app.deviceQuery = '';
+            app.ovFilters = { country: '', threat: '', protocol: '' };
+            app.syncSearchUi();
+            if (app.currentPage === 'devices') app.buildDeviceLegend();
+            else if (app.histMode === 'history') app.fetchHistory();
+            else app.renderActivePage();
         });
 
         // ── Colour-mode toggle (Devices page) ──

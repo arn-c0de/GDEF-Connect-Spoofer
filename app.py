@@ -725,6 +725,171 @@ def api_recent():
         return jsonify({"error": "recent unavailable"}), 500
 
 
+# Whitelisted sort columns for /api/connections (client key -> SQL expression).
+# Only these may be interpolated into ORDER BY, so the param can never inject SQL.
+_CONN_SORT_COLS = {
+    "ip": "d.ip", "last_seen": "d.last_seen", "first_seen": "s.first_seen",
+    "incoming_count": "d.incoming_count", "outgoing_count": "d.outgoing_count",
+    "country": "d.country", "org": "d.org", "protocol": "d.protocol",
+    "threat_level": "d.threat_level", "local_ip": "d.local_ip",
+}
+# Columns scanned by the free-text `q` parameter (ILIKE, OR-combined).
+_CONN_SEARCH_COLS = ("d.ip", "d.hostname", "d.org", "d.country", "d.city",
+                     "d.local_ip", "d.mac", "d.vendor")
+# Exact-match filter columns (client key -> SQL column). Country is free text;
+# threat/protocol are validated against a fixed vocabulary below.
+_CONN_FILTER_COLS = {"country": "d.country", "threat": "d.threat_level", "protocol": "d.protocol"}
+_CONN_THREATS = ("High", "Medium", "Low", "No Threat")
+_CONN_PROTOCOLS = ("TCP", "UDP", "ICMP")
+_EMPTY_CONN_SUMMARY = {"packets": 0, "lan_devices": 0, "protocol": {}, "threat": {}, "countries": []}
+
+
+def _connections_where(device, q, filters):
+    """Build the shared WHERE clause + params for the historical connections
+    query from the device scope, exact-match filters, free-text search, and the
+    in-memory set of stopped devices (whose traffic is never surfaced). Returns
+    (None, None) when the scope is a stopped device, i.e. there is nothing to
+    show. Every column referenced is `d.*` so the clause is reusable for the row
+    fetch and the aggregate queries alike."""
+    clauses, params = [], []
+    with locked(disabled_devices_lock):
+        disabled = list(disabled_devices)
+    if device and device != "all":
+        if device in disabled:
+            return None, None
+        clauses.append("d.device_id = %s")
+        params.append(device)
+    elif disabled:
+        clauses.append("d.device_id <> ALL(%s)")
+        params.append(disabled)
+    for key, col in _CONN_FILTER_COLS.items():
+        val = filters.get(key)
+        if val:
+            clauses.append(f"{col} = %s")
+            params.append(val)
+    if q:
+        like = f"%{q}%"
+        ors = " OR ".join(f"{col} ILIKE %s" for col in _CONN_SEARCH_COLS)
+        clauses.append(f"({ors})")
+        params.extend([like] * len(_CONN_SEARCH_COLS))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def _conn_row_to_dict(r):
+    (device_id, ip, local_ip, lat, lon, city, country, org, last_seen, protocol,
+     src_port, dst_port, mac, vendor, incoming_count, outgoing_count, hostname,
+     os_, threat_level, first_seen) = r
+    inc, out = incoming_count or 0, outgoing_count or 0
+    return {
+        "device_id": device_id, "ip": ip, "local_ip": local_ip,
+        "lat": lat, "lng": lon, "city": city, "country": country, "org": org,
+        "last_seen": last_seen, "protocol": protocol,
+        "src_port": src_port, "dst_port": dst_port, "mac": mac, "vendor": vendor,
+        "incoming_count": inc, "outgoing_count": out, "packet_count": inc + out,
+        # Private IPs show their own address rather than a (often misleading)
+        # reverse-DNS hostname, matching send_all_ips_to_client.
+        "hostname": ip if is_private_ip(ip) else hostname,
+        "os": os_, "threat_level": threat_level or "No Threat",
+        "first_seen": first_seen, "first_seen_ever": first_seen,
+    }
+
+
+@app.route('/api/connections')
+@login_required
+def api_connections():
+    """Search the full retained connection history (ip_data, ~30 days) instead of
+    only the live in-memory points. Powers the History mode of the Statistics +
+    Connections tabs: returns the matching rows (sorted, capped) plus aggregates
+    computed over the ENTIRE match set so the KPIs/charts reflect all history, not
+    just the returned page, plus a country facet for the filter dropdown."""
+    device = _short_str(request.args.get('device', 'all'), 'all', 64)
+    q = _short_str(request.args.get('q', '').strip(), '', 128)
+    sort_col = _CONN_SORT_COLS.get(request.args.get('sort'), "d.last_seen")
+    direction = "ASC" if request.args.get('dir') == 'asc' else "DESC"
+    limit = _clamp_int(request.args.get('limit'), 1, 1000, 500)
+    raw_threat = request.args.get('threat')
+    raw_proto = request.args.get('protocol')
+    filters = {
+        "country": _short_str(request.args.get('country', ''), '', 64) or None,
+        "threat": raw_threat if raw_threat in _CONN_THREATS else None,
+        "protocol": raw_proto if raw_proto in _CONN_PROTOCOLS else None,
+    }
+
+    # Facets (country dropdown) ignore the country/threat/protocol filters so the
+    # operator can always switch between every available value; rows + summary use
+    # the full filter set.
+    base_where, base_params = _connections_where(device, q, {})
+    where, params = _connections_where(device, q, filters)
+    if where is None:  # scope is a stopped device -> nothing to show
+        return jsonify({"rows": [], "total": 0, "summary": dict(_EMPTY_CONN_SUMMARY), "facets": {"countries": []}})
+
+    cols = ("d.device_id, d.ip, d.local_ip, d.lat, d.lon, d.city, d.country, d.org, "
+            "d.last_seen, d.protocol, d.src_port, d.dst_port, d.mac, d.vendor, "
+            "d.incoming_count, d.outgoing_count, d.hostname, d.os, d.threat_level, s.first_seen")
+    country_cond = "d.country IS NOT NULL AND d.country <> ''"
+    country_where = f"{where} AND {country_cond}" if where else f" WHERE {country_cond}"
+    facet_where = f"{base_where} AND {country_cond}" if base_where else f" WHERE {country_cond}"
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute(
+                f"SELECT {cols} FROM ip_data d LEFT JOIN ip_seen s ON s.ip = d.ip"
+                f"{where} ORDER BY {sort_col} {direction} NULLS LAST LIMIT %s",
+                (*params, limit))
+            rows = [_conn_row_to_dict(r) for r in c.fetchall()]
+            # Aggregates over the FULL filtered set (the page limit is ignored).
+            c.execute(f"SELECT COUNT(*), COALESCE(SUM(d.incoming_count + d.outgoing_count), 0), "
+                      f"COUNT(DISTINCT d.local_ip) FROM ip_data d{where}", params)
+            total, packets, lan_devices = c.fetchone()
+            c.execute(f"SELECT d.protocol, COUNT(*) FROM ip_data d{where} GROUP BY d.protocol", params)
+            protocol = {(r[0] or 'Other'): r[1] for r in c.fetchall()}
+            c.execute(f"SELECT d.threat_level, COUNT(*) FROM ip_data d{where} GROUP BY d.threat_level", params)
+            threat = {(r[0] or 'No Threat'): r[1] for r in c.fetchall()}
+            c.execute(f"SELECT d.country, COUNT(*) AS n FROM ip_data d{country_where} "
+                      f"GROUP BY d.country ORDER BY n DESC LIMIT 15", params)
+            countries = [[r[0], r[1]] for r in c.fetchall()]
+            # Country facet: distinct list (filter-independent) for the dropdown.
+            c.execute(f"SELECT DISTINCT d.country FROM ip_data d{facet_where} "
+                      f"ORDER BY d.country LIMIT 200", base_params)
+            facet_countries = [r[0] for r in c.fetchall()]
+        return jsonify({
+            "rows": rows,
+            "total": int(total or 0),
+            "summary": {
+                "packets": int(packets or 0),
+                "lan_devices": int(lan_devices or 0),
+                "protocol": protocol,
+                "threat": threat,
+                "countries": countries,
+            },
+            "facets": {"countries": facet_countries},
+        })
+    except Exception as e:
+        logger.error(f"Error in api_connections: {e}")
+        return jsonify({"error": "connections unavailable"}), 500
+
+
+@app.route('/api/devices/stats')
+@login_required
+def api_device_stats():
+    """Per-device totals over the full retained history (ip_data, ~30 days):
+    distinct connections, total packets and the most recent activity. Lets the
+    Devices tab show each device's history at a glance, not just its live state."""
+    try:
+        with db_connect() as conn:
+            c = conn.cursor()
+            c.execute("SELECT device_id, COUNT(*), "
+                      "COALESCE(SUM(incoming_count + outgoing_count), 0), MAX(last_seen) "
+                      "FROM ip_data GROUP BY device_id")
+            stats = {r[0]: {"connections": int(r[1]), "packets": int(r[2] or 0),
+                            "last_seen": r[3]} for r in c.fetchall()}
+        return jsonify(stats)
+    except Exception as e:
+        logger.error(f"Error in api_device_stats: {e}")
+        return jsonify({"error": "device stats unavailable"}), 500
+
+
 @app.route('/api/export/csv')
 @login_required
 def api_export_csv():

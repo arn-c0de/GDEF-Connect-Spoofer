@@ -126,6 +126,18 @@ export function createApp(myIpCoords) {
         statsListMode: localStorage.getItem('statsListMode') || 'rate',
         lanSortMode: localStorage.getItem('lanSortMode') || 'rate',
         enabledWidgets: [],  // populated by setupStats()
+
+        // ── History / search / filters (overlay tabs) ─────────
+        // 'live'  -> render the in-memory points (real-time, last hour);
+        // 'history' -> query the DB (/api/connections, ~30 days retained).
+        histMode: localStorage.getItem('histMode') || 'live',
+        ovQuery: '',                       // free-text search box (both modes)
+        ovFilters: { country: '', threat: '', protocol: '' },  // exact-match filters
+        deviceQuery: '',                   // device-tab legend filter
+        deviceStats: {},                   // per-device history totals (/api/devices/stats)
+        histData: null,                    // last /api/connections response
+        histLoading: false,
+        _histToken: 0,                     // guards against out-of-order fetches
     };
 
     // ── Derived helpers (depend only on app state) ────────────

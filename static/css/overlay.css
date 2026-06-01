@@ -70,14 +70,37 @@
 .ov-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
 .ov-pagehead {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: 12px;
     padding: 16px 18px;
     border-bottom: 1px solid var(--border);
 }
+.ov-head-top { display: flex; align-items: center; gap: 12px; }
 .ov-pagehead h2 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; color: var(--text); }
 .ov-head-tools { display: flex; align-items: center; gap: 10px; }
 .ov-scope { font-size: 0.78rem; color: var(--text-dim); display: flex; align-items: center; }
+
+/* Live/History toggle reuses the .seg / .seg-ctrl segmented-button styling. */
+.ov-mode { margin: 0; }
+
+/* Search + filter row beneath the title. */
+.ov-head-search { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ov-head-search .search-input { flex: 1 1 220px; min-width: 160px; }
+.ov-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ov-filter {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 0.74rem; color: var(--text-dim);
+}
+.ov-filter select {
+    background: var(--bg-secondary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 0.76rem;
+    max-width: 150px;
+}
+.ov-hist-status { font-size: 0.72rem; color: var(--text-dim); margin-left: auto; }
 .ov-close {
     background: var(--bg-secondary);
     color: var(--text-dim);

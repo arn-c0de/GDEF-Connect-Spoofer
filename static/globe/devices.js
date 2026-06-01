@@ -46,12 +46,35 @@ export function setupDevices(app) {
         for (const ip in app.points) app.points[ip].devices?.delete(id);
     };
 
+    // Per-device history totals (connections/packets over the retained window).
+    // Refreshed whenever the Devices tab is opened so the legend can show each
+    // device's history, not just its live online/offline state.
+    app.fetchDeviceStats = async () => {
+        try {
+            const { ok, body } = await apiJson('/api/devices/stats');
+            if (ok && body && typeof body === 'object') {
+                app.deviceStats = body;
+                app.buildDeviceLegend();
+            }
+        } catch (_) { /* non-fatal: legend just omits the history counts */ }
+    };
+
     app.buildDeviceLegend = () => {
         const list = document.getElementById('deviceLegendList');
         if (!list) return;
         const frag = document.createDocumentFragment();
-        const ids = Object.keys(app.origins).sort((a, b) =>
-            a === LOCAL_ID ? -1 : b === LOCAL_ID ? 1 : app.deviceName(a).localeCompare(app.deviceName(b)));
+        const q = app.deviceQuery;
+        const ids = Object.keys(app.origins)
+            .filter(id => !q || app.deviceName(id).toLowerCase().includes(q) || id.toLowerCase().includes(q))
+            .sort((a, b) =>
+                a === LOCAL_ID ? -1 : b === LOCAL_ID ? 1 : app.deviceName(a).localeCompare(app.deviceName(b)));
+        if (!ids.length) {
+            const empty = document.createElement('div');
+            empty.className = 'device-row muted';
+            empty.textContent = q ? 'No devices match your search.' : 'No devices.';
+            list.replaceChildren(empty);
+            return;
+        }
         ids.forEach(id => {
             const d = app.devices[id] || {};
             const row = document.createElement('div');
@@ -90,6 +113,17 @@ export function setupDevices(app) {
             kind.textContent = dkind === 'local' ? 'local' : dkind === 'pcap' ? 'module' : 'sensor';
 
             row.append(vis, swatch, nameEl, kind);
+
+            // History totals (retained ~30 days) for this device, if loaded.
+            const st = app.deviceStats[id];
+            if (st && st.connections) {
+                const hist = document.createElement('small');
+                hist.className = 'device-hist';
+                hist.textContent = `${st.connections.toLocaleString()} conns`;
+                hist.title = `${st.connections.toLocaleString()} connections · ` +
+                    `${(st.packets || 0).toLocaleString()} packets (retained history)`;
+                row.append(hist);
+            }
 
             // Start/Stop — every device. Stopping it halts all processing of its
             // traffic on the hub and clears it from the globe and lists.

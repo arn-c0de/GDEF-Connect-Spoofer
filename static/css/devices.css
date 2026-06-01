@@ -39,6 +39,13 @@
 .device-name.device-online::before  { content: "● "; color: #4caf50; }
 .device-name.device-offline::before { content: "● "; color: #777; }
 .device-kind { color: var(--text-dim); font-size: 0.7rem; flex: none; }
+.device-hist {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    flex: none;
+    white-space: nowrap;
+}
+.device-row.muted { color: var(--text-dim); font-size: 0.8rem; justify-content: center; }
 .device-btn {
     flex: none;
     background: var(--bg-hover);
