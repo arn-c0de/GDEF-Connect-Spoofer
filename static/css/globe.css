@@ -1,0 +1,172 @@
+/* ============================================================
+   Globe hover tooltip (.gv-tip)
+   ------------------------------------------------------------
+   The card shown when hovering a marker or cluster on the globe.
+   globe.gl renders pointLabel output inside a .scene-tooltip wrapper;
+   we strip its default chrome and drop in a glass card that speaks the
+   app's accent language. A threat-tinted rail (--tip-accent, set inline
+   per point) ties the card to the dot's colour on the globe.
+   See buildPointTip / buildClusterTip / buildOriginTip in globe-view.js.
+   ============================================================ */
+
+/* Neutralise globe.gl's built-in tooltip styling so our card is the
+   whole visual — no double background, padding, or default font. */
+.scene-tooltip {
+    background: transparent !important;
+    color: inherit !important;
+    padding: 0 !important;
+    font-family: inherit !important;
+    /* The tooltip tracks the cursor; nudge it clear so the pointer never
+       sits on top of the card it just summoned. */
+    transform: translate(0, -6px);
+}
+
+.gv-tip {
+    --tip-accent: var(--blue, #3b82f6);
+    position: relative;
+    min-width: 196px;
+    max-width: 300px;
+    padding: 11px 13px 10px 16px;
+    border-radius: 12px;
+    overflow: hidden;
+    color: var(--text, #e0e0e0);
+    font: 12px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif;
+    text-align: left;
+    /* Glass card: translucent dark fill + blur of whatever sits behind it,
+       a hairline edge for legibility, and depth from a soft drop shadow.
+       (2026 dark-glass pattern: lift contrast with layering, not saturation.) */
+    background: linear-gradient(180deg,
+        rgba(34, 38, 46, 0.86), rgba(22, 24, 30, 0.92));
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow:
+        0 10px 30px -8px rgba(0, 0, 0, 0.65),
+        0 0 0 1px rgba(0, 0, 0, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    backdrop-filter: blur(14px) saturate(1.2);
+    animation: gvTipIn 0.13s ease-out;
+}
+
+@keyframes gvTipIn {
+    from { opacity: 0; transform: translateY(3px) scale(0.98); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* The accent rail — the dot's threat colour, carried into the card. */
+.gv-tip__rail {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    width: 4px;
+    background: var(--tip-accent);
+    box-shadow: 0 0 12px -1px var(--tip-accent);
+}
+
+.gv-tip__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 2px;
+}
+.gv-tip__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 650;
+    letter-spacing: 0.2px;
+    color: #fff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.gv-tip__sub {
+    margin: 0 0 5px;
+    font-size: 11px;
+    color: var(--text-dim, #888);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gv-tip__rows {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 12px;
+    margin-top: 7px;
+}
+.gv-tip__row { display: contents; }
+.gv-tip__k {
+    color: var(--text-dim, #888);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+}
+.gv-tip__v {
+    color: var(--text, #e0e0e0);
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.gv-tip__io {
+    display: inline-block;
+    margin-left: 8px;
+    font-variant-numeric: tabular-nums;
+}
+.gv-tip__io:first-child { margin-left: 0; }
+
+/* Cluster member list */
+.gv-tip__members {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+}
+.gv-tip__member {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 2px 0;
+    font-size: 11.5px;
+}
+.gv-tip__dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    box-shadow: 0 0 6px -1px currentColor;
+}
+.gv-tip__mip {
+    flex: none;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+}
+.gv-tip__morg {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-dim, #888);
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.gv-tip__more {
+    margin-top: 5px;
+    font-size: 10.5px;
+    color: var(--text-dim, #888);
+}
+
+/* Footer affordance */
+.gv-tip__hint {
+    margin-top: 9px;
+    padding-top: 7px;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    font-size: 10px;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--tip-accent);
+    opacity: 0.85;
+}
+
+.gv-tip--origin .gv-tip__sub { margin-bottom: 0; }

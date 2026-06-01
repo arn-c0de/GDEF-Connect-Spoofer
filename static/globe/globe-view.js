@@ -9,7 +9,7 @@
 
 import { isValidCoord, recentPacketCount, isLocalNetwork } from './net.js';
 import { getCircleColor } from './classify.js';
-import { escapeHTML, showToast, toRGBA } from './format.js';
+import { escapeHTML, showToast, toRGBA, timeAgo, formatNum, truncate } from './format.js';
 
 export function setupGlobe(app) {
     const myIpCoords = app.myIpCoords;
@@ -190,6 +190,95 @@ export function setupGlobe(app) {
         dataList.style.display = 'none';
     });
 
+    // ── Hover tooltip (modernised glass card) ─────────────
+    // globe.gl injects whatever pointLabel returns into a .scene-tooltip div.
+    // We return a structured card (.gv-tip, styled in css/globe.css) instead of
+    // the old one-liner, so a single hover surfaces the key facts — identity,
+    // threat, org, location, traffic, LAN peer, freshness — in the app's accent
+    // language. A threat-tinted accent rail down the side carries the same colour
+    // the dot uses on the globe, tying tooltip and marker together at a glance.
+
+    // Map a marker's resolved circle colour to a vivid tooltip accent + badge.
+    // White (no threat / unclassified) borrows the app's blue accent so neutral
+    // cards still feel "of the program" rather than washed out.
+    const TIP_ACCENT = {
+        red:    '#ff5a5a', orange: '#ffa726', yellow: '#ffd23f',
+        green:  '#37d67a', white:  '#3b82f6',
+    };
+    function threatBadgeHTML(threatLevel) {
+        const raw = (threatLevel || 'no threat').toLowerCase().trim();
+        const map = { high: ['threat-high', 'HIGH'], medium: ['threat-medium', 'MED'],
+                      low: ['threat-low', 'LOW'] };
+        const [cls, label] = map[raw] || ['threat-no-threat', 'OK'];
+        return `<span class="threat-badge ${cls}">${label}</span>`;
+    }
+    // One label/value line; skips itself when the value is empty.
+    function tipRow(key, value) {
+        if (value === undefined || value === null || value === '') return '';
+        return `<div class="gv-tip__row"><span class="gv-tip__k">${escapeHTML(key)}</span>` +
+               `<span class="gv-tip__v">${value}</span></div>`;
+    }
+
+    function buildPointTip(point) {
+        const accent = TIP_ACCENT[getCircleColor(point.threat_level, point.org)] || TIP_ACCENT.white;
+        const ip     = escapeHTML(point.ip || 'N/A');
+        // hostname is set to the IP itself for private/unresolved hosts — only
+        // show it as a subtitle when it adds something beyond the IP.
+        const host   = point.hostname && point.hostname !== point.ip
+            ? `<div class="gv-tip__sub">${escapeHTML(truncate(point.hostname, 42))}</div>` : '';
+        const loc    = [point.city, point.country].filter(Boolean).map(escapeHTML).join(', ');
+        const inC    = point.incoming_count || 0;
+        const outC   = point.outgoing_count || 0;
+        const traffic = (inC || outC)
+            ? `<span class="gv-tip__io" title="incoming">↓ ${formatNum(inC)}</span>` +
+              `<span class="gv-tip__io" title="outgoing">↑ ${formatNum(outC)}</span>` : '';
+        const lan    = escapeHTML(app.localPeersText(point));
+        const rows =
+            tipRow('Org', point.org ? escapeHTML(truncate(point.org, 38)) : '') +
+            tipRow('Location', loc) +
+            tipRow('Protocol', point.protocol ? escapeHTML(point.protocol) : '') +
+            tipRow('Traffic', traffic) +
+            tipRow('LAN peer', lan) +
+            tipRow('Seen', point.last_seen ? escapeHTML(timeAgo(point.last_seen)) : '');
+        return `<div class="gv-tip" style="--tip-accent:${accent}">` +
+            `<span class="gv-tip__rail"></span>` +
+            `<div class="gv-tip__head"><span class="gv-tip__title">${ip}</span>` +
+            `${threatBadgeHTML(point.threat_level)}</div>` +
+            host +
+            `<div class="gv-tip__rows">${rows}</div>` +
+            `<div class="gv-tip__hint">Click for full details</div></div>`;
+    }
+
+    function buildClusterTip(point) {
+        const accent = TIP_ACCENT[getCircleColor(point.threat_level)] || TIP_ACCENT.white;
+        const members = point.members.slice()
+            .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0))
+            .slice(0, 6)
+            .map(m => {
+                const dot = TIP_ACCENT[getCircleColor(m.threat_level, m.org)] || TIP_ACCENT.white;
+                return `<li class="gv-tip__member">` +
+                    `<span class="gv-tip__dot" style="background:${dot}"></span>` +
+                    `<span class="gv-tip__mip">${escapeHTML(m.ip)}</span>` +
+                    `<span class="gv-tip__morg">${escapeHTML(truncate(m.org || 'Unknown', 22))}</span></li>`;
+            }).join('');
+        const more = point.count > 6
+            ? `<div class="gv-tip__more">+${point.count - 6} more here</div>` : '';
+        return `<div class="gv-tip gv-tip--cluster" style="--tip-accent:${accent}">` +
+            `<span class="gv-tip__rail"></span>` +
+            `<div class="gv-tip__head"><span class="gv-tip__title">${point.count} connections</span>` +
+            `${threatBadgeHTML(point.threat_level)}</div>` +
+            `<ul class="gv-tip__members">${members}</ul>` +
+            more +
+            `<div class="gv-tip__hint">Click to expand the pile</div></div>`;
+    }
+
+    function buildOriginTip(point) {
+        return `<div class="gv-tip gv-tip--origin" style="--tip-accent:${escapeHTML(point.color || '#FFD23F')}">` +
+            `<span class="gv-tip__rail"></span>` +
+            `<div class="gv-tip__head"><span class="gv-tip__title">${escapeHTML(point.label || 'Device')}</span></div>` +
+            `<div class="gv-tip__sub">Capture origin</div></div>`;
+    }
+
     // ── Globe ─────────────────────────────────────────────
     const globe = Globe()
         .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
@@ -209,19 +298,9 @@ export function setupGlobe(app) {
             return toRGBA(base, freshnessAlpha(point, app.EXPIRATION_SECONDS));
         })
         .pointLabel(point => {
-            if (point.isCluster) {
-                const names = point.members.slice()
-                    .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0))
-                    .slice(0, 6)
-                    .map(m => `${escapeHTML(m.ip)} — ${escapeHTML(m.org || 'N/A')}`)
-                    .join('<br>');
-                const more = point.count > 6 ? `<br>…+${point.count - 6} more` : '';
-                return `<div><b>${point.count} connections here</b><br>${names}${more}` +
-                       `<br><i>click to expand</i></div>`;
-            }
-            return point.isOrigin
-                ? `<div>${escapeHTML(point.label || 'Device')}</div>`
-                : `<div>${escapeHTML(point.ip) || 'N/A'} — ${escapeHTML(point.org) || 'N/A'}</div>`;
+            if (point.isCluster) return buildClusterTip(point);
+            if (point.isOrigin)  return buildOriginTip(point);
+            return buildPointTip(point);
         })
         // Members of an opened cluster carry a fan-out offset (_dispLat/_dispLng);
         // everything else renders at its true coordinate.

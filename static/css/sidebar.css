@@ -66,6 +66,13 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+    /* The menu sits ~10vh+94px down the right edge; with four sections the
+       panel grew past the viewport bottom and the last one (Rotation) was
+       clipped off-screen with no way to reach it. Cap it to the space below
+       the button and let it scroll so every section stays reachable. */
+    max-height: calc(100vh - 10% - 110px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .globe-quick-menu.open .globe-quick-panel {
